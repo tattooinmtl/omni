@@ -2,7 +2,7 @@
 //
 // Stores "knowledge cards" as plain markdown files with a small frontmatter
 // block, so the knowledge base is portable: readable in any editor, greppable,
-// diffable, and usable by any MCP client (NimAgent, Claude Code, etc.).
+// diffable, and usable by any MCP client (Omni, Claude Code, etc.).
 //
 // v2 adds a HIERARCHICAL INDEX on top of the flat card store:
 //   - cards live in a folder taxonomy (languages/go, patterns/testing, …)

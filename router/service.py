@@ -128,7 +128,7 @@ def classify(message: str, confidence_threshold: float = 0.60) -> dict:
     if result and result[1] >= confidence_threshold:
         return {"persona": result[0], "confidence": result[1], "method": "ml"}
 
-    # Default: coding (NimAgent's identity)
+    # Default: coding (Omni's identity)
     return {"persona": "coding", "confidence": 0.50, "method": "default"}
 
 
@@ -164,7 +164,7 @@ def render_template(template_path: str, messages: list, tools=None, **opts) -> d
     try:
         tmpl_path = Path(template_path)
         if not tmpl_path.is_absolute():
-            # Relative paths resolve from the NimAgent install root (parent of router/)
+            # Relative paths resolve from the Omni install root (parent of router/)
             tmpl_path = SIDECAR_DIR.parent / template_path
         if not tmpl_path.exists():
             return {"error": f"template not found: {tmpl_path}"}

@@ -1,7 +1,6 @@
 *.md export-ignore
 docs/ export-ignore
 site/downloads/ export-ignore
-whereIFailedNIMAGENT.md export-ignore
 agent/ export-ignore
 router/__pycache__/ export-ignore
 *.pyc export-ignore

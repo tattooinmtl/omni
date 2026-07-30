@@ -120,7 +120,7 @@ Override with the `OKF_DIR` environment variable.
 | `okf_delete` | Remove a card (reports dangling backlinks) |
 | `okf_reindex` | Rebuild all `index.okf` files after manual edits / git pull |
 
-It is registered in `nimagent.config.json` under `mcpServers.okf` with
+It is registered in `omni.config.json` under `mcpServers.okf` with
 `directTools: true`, so the tools appear as first-class `mcp__okf__*` tools.
 
 ## Local vs frontier models
