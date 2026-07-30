@@ -461,7 +461,7 @@ export const tools = [
     function: {
       name: "project_todo",
       description:
-        "Maintain a persistent project todo list in .nimagent/todos.json. Use it to plan, track, and close multi-step implementation work.",
+        "Maintain a persistent project todo list in omni/todos.json. Use it to plan, track, and close multi-step implementation work.",
       parameters: {
         type: "object",
         properties: {
@@ -581,7 +581,7 @@ export const tools = [
         type: "object",
         properties: {
           text: { type: "string", description: "The fact to remember, written so it makes sense out of context" },
-          tags: { type: "array", items: { type: "string" }, description: "Optional topic tags, e.g. ['preferences','nimagent']" },
+          tags: { type: "array", items: { type: "string" }, description: "Optional topic tags, e.g. ['preferences','omni']" },
         },
         required: ["text"],
       },
@@ -819,11 +819,11 @@ export const tools = [
       name: "create_tool",
       description:
         "Create a brand-new tool for yourself, right now — no restart needed. Write the " +
-        "full source of a NimAgent extension module: an ESM file that default-exports " +
+        "full source of an Omni Agent extension module: an ESM file that default-exports " +
         "{ name, tools: [...OpenAI function-tool schemas], impl: { toolName: fn } }. " +
         "It's written to extensions/<name>.js, hot-loaded into THIS session immediately " +
         "(the new tool name(s) are callable on your very next turn), and persisted to " +
-        "nimagent.config.json so it survives restarts. Calling this again with the same " +
+        "omni.config.json so it survives restarts. Calling this again with the same " +
         "`name` replaces the previous version — old tool names from that file are dropped " +
         "first, so you can iterate on a broken tool without leaving stale duplicates. " +
         "impl functions receive the parsed args object, may be sync or async, and whatever " +
@@ -1780,7 +1780,7 @@ function stopManagedProcess(id) {
 }
 
 function todoPath() {
-  return resolveForCreate(path.join(".nimagent", "todos.json"));
+  return resolveForCreate(path.join("omni", "todos.json"));
 }
 
 function readTodos() {
@@ -2163,21 +2163,21 @@ export async function registerExtensions(root, files = []) {
   return loaded;
 }
 
-function nimAgentConfigPath() {
-  return path.join(INSTALL_ROOT, "nimagent.config.json");
+function omniConfigPath() {
+  return path.join(INSTALL_ROOT, "omni.config.json");
 }
 
-// Read-modify-write nimagent.config.json's `extensions` array (never clobbers
+// Read-modify-write omni.config.json's `extensions` array (never clobbers
 // other keys). Mirrors the same pattern used by the package installer.
 function addExtensionToConfig(rel) {
   let cfg = {};
   try {
-    cfg = JSON.parse(fs.readFileSync(nimAgentConfigPath(), "utf8"));
+    cfg = JSON.parse(fs.readFileSync(omniConfigPath(), "utf8"));
   } catch {
     /* start fresh if missing/unparseable */
   }
   const extensions = [...new Set([...(cfg.extensions || []), rel])];
-  fs.writeFileSync(nimAgentConfigPath(), JSON.stringify({ ...cfg, extensions }, null, 2) + "\n", "utf8");
+  fs.writeFileSync(omniConfigPath(), JSON.stringify({ ...cfg, extensions }, null, 2) + "\n", "utf8");
 }
 
 // Backing implementation for the create_tool tool: write an extension's
@@ -2210,6 +2210,6 @@ async function createTool(name, code) {
 
   return (
     `Created and loaded extension "${registeredName}" (${rel}) — new tool(s) available now: ` +
-    `${toolNames.join(", ")}. Persisted to nimagent.config.json so it survives restarts.`
+    `${toolNames.join(", ")}. Persisted to omni.config.json so it survives restarts.`
   );
 }

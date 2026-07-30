@@ -1,5 +1,5 @@
 """
-router/train.py — Train the NimAgent intent classifier.
+router/train.py — Train the Omni intent classifier.
 
 Usage:
     python router/train.py           # train + save model.pkl

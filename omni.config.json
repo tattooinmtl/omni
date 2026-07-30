@@ -1,5 +1,5 @@
 {
-  "$schema": "./schema/nimagent.config.schema.json",
+  "$schema": "./schema/omni.config.schema.json",
   "promptFile": "prompts/default.md",
   "theme": "themes/forge-yellow.json",
   "extensions": [
@@ -10,11 +10,18 @@
     "skills/code-review",
     "skills/project-doctor",
     "skills/html-game-builder",
-    "skills/vs-project-starter"
+    "skills/vs-project-starter",
+    "skills/okf-knowledge"
   ],
   "autoDiscoverSkills": true,
   "registry": "https://globalwarningnetworks.com/repo",
-  "mcpServers": {},
+  "mcpServers": {
+    "okf": {
+      "command": "node",
+      "args": ["{{INSTALL_ROOT}}/packages/okf/server.mjs"],
+      "directTools": true
+    }
+  },
   "mcp": {
     "idleTimeout": 10,
     "directTools": false

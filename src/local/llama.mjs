@@ -1,5 +1,6 @@
-// Manage a local llama.cpp server (llama-server.exe) bundled in <root>/llama,
-// serving GGUF models from a configurable models directory. Exposes an
+// Manage a local llama.cpp server (llama-server.exe) bundled in <root>/server
+// (legacy installs used <root>/llama), serving GGUF models from a configurable
+// models directory. Exposes an
 // OpenAI-compatible API at http://<host>:<port>/v1 — which the "local" provider
 // in settings.json points at.
 
@@ -18,7 +19,12 @@ let current = null;  // { model, host, port, pid, url } while running
 // Merge the user's settings.llama block with sane defaults.
 export function llamaConfig(settings) {
   const cfg = (settings && settings.llama) || {};
-  const binDir = cfg.binDir || path.join(INSTALL_ROOT, "llama");
+  const binDir =
+    cfg.binDir ||
+    [path.join(INSTALL_ROOT, "server"), path.join(INSTALL_ROOT, "llama")].find(
+      (d) => fs.existsSync(path.join(d, "llama-server.exe"))
+    ) ||
+    path.join(INSTALL_ROOT, "server");
   return {
     binDir,
     exe: path.join(binDir, "llama-server.exe"),
@@ -28,7 +34,10 @@ export function llamaConfig(settings) {
     // contextSize 0 or "auto" => read the model's trained context from the GGUF.
     contextSize: cfg.contextSize ?? 0,
     maxAutoContext: cfg.maxAutoContext || 131072, // cap auto context to bound RAM/VRAM
-    ngl: cfg.ngl ?? 99,
+    // Default to CPU-only (0 GPU layers) — offloading is opt-in via llama.ngl.
+    // On machines without a working GPU, ngl > 0 with a Vulkan build can hang
+    // the whole system.
+    ngl: cfg.ngl ?? 0,
     defaultModel: cfg.defaultModel || "",
     extraArgs: Array.isArray(cfg.extraArgs) ? cfg.extraArgs : [],
   };

@@ -24,7 +24,7 @@ import { PERSONAS } from "../integrations/router.mjs";
 import { maskKey, normalizeProviderKey, restoreSessionMessages } from "./helpers.mjs";
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
-  pickModelWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
+  pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
@@ -120,13 +120,17 @@ export const COMMANDS = [
   },
   {
     name: "version", aliases: ["about"], usage: "/version", category: "Session",
-    summary: "NimAgent version",
-    handler: () => infoLine(`NimAgent v${pkgVersion()} — Vice Summer Edition 2026`),
+    summary: "Omni Agent version",
+    handler: () => infoLine(`Omni Agent v${pkgVersion()} — Vice Summer Edition 2026`),
   },
   {
     name: "exit", aliases: ["quit", "q"], usage: "/exit", category: "Session",
-    summary: "leave NimAgent",
-    handler: (ctx) => { ctx.rl.close(); return { closed: true }; },
+    summary: "leave Omni Agent",
+    handler: async (ctx) => {
+      console.log(c.dim("\n  bye 👋"));
+      ctx.rl.close();
+      return { closed: true };
+    },
   },
 
   // ── Agent ──────────────────────────────────────────────────────────────
@@ -168,7 +172,7 @@ export const COMMANDS = [
       const target = arg.trim().toLowerCase();
       if (!target) {
         if (!ctx.routerCfg.enabled) {
-          infoLine("router is disabled (set router.enabled=true in settings or nimagent.config.json)");
+          infoLine("router is disabled (set router.enabled=true in settings or omni.config.json)");
         } else {
           const name = ctx.activePersona?.id || ctx.routerCfg.default || "coding";
           const pinned = ctx.routePinned ? c.yellow(" [pinned]") : c.dim(" [auto]");
@@ -421,6 +425,11 @@ export const COMMANDS = [
     handler: (ctx, arg) => providerCommand(ctx, arg),
   },
   {
+    name: "providers", aliases: [], usage: "/providers", category: "Models & Providers",
+    summary: "interactive provider picker — arrow keys or click to switch",
+    handler: (ctx) => pickProviderWithArrows(ctx),
+  },
+  {
     name: "switch-provider", aliases: ["swp"], usage: "/switch-provider [account]", category: "Models & Providers",
     summary: "switch between provider accounts (e.g. nvidia1 / nvidia2)",
     handler: async (ctx, arg) => {
@@ -442,11 +451,23 @@ export const COMMANDS = [
       if (!provName) { errorLine(`no account "${target}" — /switch-provider lists them`); return; }
       const prov = ctx.settings.providers[provName];
       if (!String(prov.accounts[target] || "").trim()) {
-        warnLine(`account ${target} has no API key yet — set it with /apikey ${target} <key> or NIMAGENT_${target.toUpperCase()}_KEY in .env`);
+        warnLine(`account ${target} has no API key yet — set it with /apikey ${target} <key> or OMNI_${target.toUpperCase()}_KEY in .env`);
       }
       activateAccount(prov, target);
       await saveSettings(ctx.settings);
       infoLine(`${provName} now using account ${target} (key=${maskKey(prov.accounts[target])})`);
+      // Switching an account is an intent to *use* that provider — make it the
+      // active one too, so a bare /model picks from its models right away.
+      if (ctx.model.providerName !== provName) {
+        const def = ctx.settings.defaultModel;
+        const modelKey =
+          (def && ctx.settings.models[def]?.provider === provName && def) ||
+          Object.keys(ctx.settings.models).find((k) => ctx.settings.models[k].provider === provName);
+        if (modelKey) {
+          ctx.model = resolveModel(ctx.settings, modelKey);
+          infoLine(`switched to ${prov.label || provName} — model: ${modelKey}`);
+        }
+      }
     },
   },
   {
@@ -521,7 +542,7 @@ export const COMMANDS = [
       if (!name) { errorLine("usage: /install <package-name>"); return; }
       const { manifest, installedPaths, needsRestart } = await installPackage(name, { baseUrl: ctx.project.registry || DEFAULT_REGISTRY });
       infoLine(`installed ${manifest.name}@${manifest.version || "?"} (${manifest.type}) → ${installedPaths.join(", ")}`);
-      infoLine(needsRestart ? "restart NimAgent to load it." : (manifest.command ? `use it with ${manifest.command}` : "ready."));
+      infoLine(needsRestart ? "restart Omni Agent to load it." : (manifest.command ? `use it with ${manifest.command}` : "ready."));
     },
   },
   {

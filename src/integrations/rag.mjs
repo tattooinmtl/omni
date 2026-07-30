@@ -81,9 +81,11 @@ function* walkFiles(root) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
-      if (e.name.startsWith(".") && e.name !== ".env.example" && e.name !== ".gitignore") {
-        if (e.isDirectory()) continue;
-      }
+      // Skip hidden files AND directories (dotfiles routinely hold secrets —
+      // .env, .npmrc, .aws/credentials, a stray .mcp.json with inline env
+      // vars, etc.) except the two names explicitly safe to index.
+      const isHidden = e.name.startsWith(".") && e.name !== ".env.example" && e.name !== ".gitignore";
+      if (isHidden) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (!IGNORE_DIRS.has(e.name.toLowerCase())) stack.push(full);

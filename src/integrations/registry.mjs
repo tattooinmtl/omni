@@ -1,10 +1,10 @@
-// Package registry + installer for NimAgent.
+// Package registry + installer for Omni Agent.
 //
 // Resolves packages from a hosted registry.json, downloads the .zip, extracts
-// it, and places the payload where NimAgent can see it:
+// it, and places the payload where Omni Agent can see it:
 //   - skill      -> skills/<name>/        (auto-discovered, no config edit)
-//   - extension  -> extensions/<name>.js  (+ added to nimagent.config.json)
-//   - mcp        -> mcpServers.<name>      (written to nimagent.config.json)
+//   - extension  -> extensions/<name>.js  (+ added to omni.config.json)
+//   - mcp        -> mcpServers.<name>      (written to omni.config.json)
 //
 // Installed packages are tracked in <HOME>/packages.json so uninstall can undo
 // exactly what was added. No third-party dependencies — unzip shells out to the
@@ -88,8 +88,8 @@ export function listInstalled() {
 
 function registryBase(opts = {}) {
   const config = loadProjectConfig();
-  // Precedence: explicit arg > NIMAGENT_REGISTRY env > config > default.
-  return (opts.baseUrl || process.env.NIMAGENT_REGISTRY || config.registry || DEFAULT_REGISTRY).replace(/\/+$/, "");
+  // Precedence: explicit arg > OMNI_REGISTRY env > config > default.
+  return (opts.baseUrl || process.env.OMNI_REGISTRY || config.registry || DEFAULT_REGISTRY).replace(/\/+$/, "");
 }
 
 export async function fetchRegistry(baseUrl) {
@@ -161,20 +161,20 @@ function extractZip(zip, destDir) {
   throw new Error("unzip failed: need `unzip` or `tar` on PATH");
 }
 
-// The zip may extract flat or under a single top-level folder. Find nimpkg.json
+// The zip may extract flat or under a single top-level folder. Find omni-pkg.json
 // at the root or one level down, and return that directory as the payload root.
 function findManifestRoot(dir) {
-  if (fs.existsSync(path.join(dir, "nimpkg.json"))) return dir;
+  if (fs.existsSync(path.join(dir, "omni-pkg.json"))) return dir;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory() && fs.existsSync(path.join(dir, e.name, "nimpkg.json"))) {
+    if (e.isDirectory() && fs.existsSync(path.join(dir, e.name, "omni-pkg.json"))) {
       return path.join(dir, e.name);
     }
   }
-  throw new Error("nimpkg.json not found in package");
+  throw new Error("omni-pkg.json not found in package");
 }
 
 function readManifest(root) {
-  const m = JSON.parse(fs.readFileSync(path.join(root, "nimpkg.json"), "utf8"));
+  const m = JSON.parse(fs.readFileSync(path.join(root, "omni-pkg.json"), "utf8"));
   if (!m.name) throw new Error("manifest missing 'name'");
   if (!m.type) throw new Error("manifest missing 'type'");
   assertSafePackageName(m.name, "package manifest name");
@@ -205,7 +205,7 @@ function placePackage(manifest, root) {
     if (!fs.existsSync(path.join(root, "SKILL.md"))) {
       throw new Error("skill package has no SKILL.md");
     }
-    copyDirExcept(root, dest, ["nimpkg.json"]);
+    copyDirExcept(root, dest, ["omni-pkg.json"]);
     paths.push(`skills/${manifest.name}`);
   } else if (manifest.type === "extension") {
     if (!manifest.entry) throw new Error("extension package missing 'entry'");
@@ -244,7 +244,7 @@ export async function installPackage(name, opts = {}) {
   // below) — a compromised registry.json is exactly the threat model here.
   assertSafePackageName(pkg.name, "registry package name");
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nimpkg-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "omni-pkg-"));
   try {
     const zipPath = path.join(tmp, `${pkg.name}.zip`);
     const url = /^https?:/i.test(pkg.url)

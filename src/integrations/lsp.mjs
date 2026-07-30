@@ -12,8 +12,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 // Supported languages: extension mapping, server command, and how to get it.
-// Override any command with the NIMAGENT_LSP_<ID> environment variable,
-// e.g. NIMAGENT_LSP_PYTHON="pylsp".
+// Override any command with the OMNI_LSP_<ID> environment variable,
+// e.g. OMNI_LSP_PYTHON="pylsp".
 const LANGUAGES = [
   {
     id: "typescript",
@@ -38,7 +38,7 @@ const LANGUAGES = [
     id: "python",
     exts: [".py", ".pyi"],
     command: ["pyright-langserver", "--stdio"],
-    install: "npm i -g pyright  (or: pip install python-lsp-server and set NIMAGENT_LSP_PYTHON=pylsp)",
+    install: "npm i -g pyright  (or: pip install python-lsp-server and set OMNI_LSP_PYTHON=pylsp)",
   },
   {
     id: "rust",
@@ -78,10 +78,10 @@ function tsserverLib() {
   return null;
 }
 
-// Ordered command candidates for a language. The NIMAGENT_LSP_<ID> env var
+// Ordered command candidates for a language. The OMNI_LSP_<ID> env var
 // overrides everything with a single command.
 function serverCandidatesFor(lang) {
-  const env = process.env[`NIMAGENT_LSP_${lang.id.toUpperCase()}`];
+  const env = process.env[`OMNI_LSP_${lang.id.toUpperCase()}`];
   if (env) return [env.split(/\s+/).filter(Boolean)];
   return lang.candidates ? lang.candidates() : [lang.command];
 }

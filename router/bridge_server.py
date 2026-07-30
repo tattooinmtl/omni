@@ -27,7 +27,7 @@ import sys
 import os
 from pathlib import Path
 
-HERMES_ROOT = Path(os.environ.get("NIMAGENT_HERMES_ROOT", r"C:\hermes-agent"))
+HERMES_ROOT = Path(os.environ.get("OMNI_HERMES_ROOT", r"C:\hermes-agent"))
 
 # ---------------------------------------------------------------------------
 # Lazy hermes registry access
@@ -44,7 +44,7 @@ def _ensure_registry():
     if not HERMES_ROOT.exists():
         raise RuntimeError(
             f"hermes-agent not found at {HERMES_ROOT}. "
-            "Set NIMAGENT_HERMES_ROOT env var to point at your hermes-agent directory."
+            "Set OMNI_HERMES_ROOT env var to point at your hermes-agent directory."
         )
 
     # Add hermes to sys.path so its imports resolve.

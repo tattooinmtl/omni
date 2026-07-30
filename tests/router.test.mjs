@@ -160,7 +160,7 @@ test("DEFAULT_SETTINGS still has all original keys", async () => {
   // Load config and check the baseline keys are still present.
   const src = await import("../src/core/config.mjs");
   // loadSettings reads from disk; check the export shape instead.
-  // The real guarantee is tested by running NimAgent normally.
+  // The real guarantee is tested by running Omni normally.
   assert.ok(src.HOME, "HOME export must exist");
   assert.ok(src.SETTINGS_PATH, "SETTINGS_PATH export must exist");
 });

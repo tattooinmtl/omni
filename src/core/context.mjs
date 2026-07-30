@@ -36,6 +36,7 @@ const FAMILY_WINDOWS = [
   [/mistral|mixtral|codestral|magistral/i, 131072],
   [/grok/i, 131072],
   [/nemotron/i, 131072],
+  [/agnes/i, 32768],
 ];
 
 export function familyContextWindow(modelId) {

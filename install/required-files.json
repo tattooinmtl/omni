@@ -1,11 +1,11 @@
 [
-  "bin/nimagent.mjs",
-  "src/agent.mjs",
-  "src/config.mjs",
-  "src/router.mjs",
-  "src/tools.mjs",
+  "bin/omni.mjs",
+  "src/core/agent.mjs",
+  "src/core/config.mjs",
+  "src/integrations/router.mjs",
+  "src/tools/index.mjs",
   "scripts/setup.mjs",
   "package.json",
-  "nimagent.config.json",
+  "omni.config.json",
   "settings.example.json"
 ]

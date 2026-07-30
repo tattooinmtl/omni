@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// NimAgent CLI launcher — all logic lives in src/cli/.
+// Omni CLI launcher — all logic lives in src/cli/.
 import { main } from "../src/cli/main.mjs";
 
 main(process.argv.slice(2)).catch((e) => {

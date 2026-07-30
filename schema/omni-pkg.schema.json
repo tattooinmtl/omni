@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://nimagent.local/schema/nimpkg.schema.json",
-  "title": "NimAgent package manifest",
-  "description": "nimpkg.json — the manifest at the root of a NimAgent package zip.",
+  "$id": "https://omni.local/schema/omni-pkg.schema.json",
+  "title": "Omni package manifest",
+  "description": "omni-pkg.json — the manifest at the root of an Omni package zip.",
   "type": "object",
   "required": ["name", "type"],
   "properties": {

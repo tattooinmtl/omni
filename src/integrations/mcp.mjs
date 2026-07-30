@@ -6,7 +6,7 @@
 // tool metadata is cached to <HOME>/mcp-cache.json so search/describe work with
 // no live connection, and idle servers disconnect after a timeout.
 //
-// Optional `directTools` promotes selected tools to first-class NimAgent tools
+// Optional `directTools` promotes selected tools to first-class Omni Agent tools
 // (named mcp__<server>__<tool>) registered from the cache.
 //
 // Transports: stdio (command/args/env) and StreamableHTTP (url/headers).
@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME } from "../core/config.mjs";
 import { tools, impl } from "../tools/index.mjs";
+import { INSTALL_ROOT } from "../paths.mjs";
 
 const CACHE_PATH = path.join(HOME, "mcp-cache.json");
 const TRUST_PATH = path.join(HOME, "mcp-trust.json");
@@ -118,6 +119,13 @@ function cachedTools(name) {
 
 // ---- transports ------------------------------------------------------------
 
+// A package/config-supplied command or arg can't know where Omni itself is
+// installed on this machine — {{INSTALL_ROOT}} lets a manifest reference it
+// portably instead of baking in a machine-specific absolute path.
+function substituteInstallRoot(s) {
+  return typeof s === "string" ? s.split("{{INSTALL_ROOT}}").join(INSTALL_ROOT) : s;
+}
+
 function connectStdio(name, def) {
   const env = { ...(def.inheritEnv ? process.env : baseEnv()), ...(def.env || {}) };
   const opts = { env, cwd: def.cwd || process.cwd(), stdio: ["pipe", "pipe", "pipe"] };
@@ -126,8 +134,8 @@ function connectStdio(name, def) {
   // (ENOENT). We run through the shell so PATHEXT finds them — but as a single
   // quoted command STRING (no args array) to avoid the DEP0190 warning that
   // fires when args are passed under shell:true.
-  let command = def.command;
-  let args = def.args || [];
+  let command = substituteInstallRoot(def.command);
+  let args = (def.args || []).map(substituteInstallRoot);
   if (process.platform === "win32") {
     const quoted = args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
     command = quoted ? `${def.command} ${quoted}` : def.command;
@@ -300,7 +308,7 @@ async function ensureConnected(name) {
   await rpc(conn, "initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "NimAgent", version: "0.1.0" },
+    clientInfo: { name: "Omni Agent", version: "0.1.0" },
   });
   await notify(conn, "notifications/initialized", {});
   const list = await rpc(conn, "tools/list", {});
@@ -429,7 +437,7 @@ const proxyToolDef = {
 async function mcpProxy(a = {}) {
   const names = Object.keys(servers);
   if (names.length === 0) {
-    return "No MCP servers configured. Add one to nimagent.config.json `mcpServers`, a project .mcp.json, or `nimagent install` an mcp package.";
+    return "No MCP servers configured. Add one to omni.config.json `mcpServers`, a project .mcp.json, or `omni install` an mcp package.";
   }
 
   // call a tool

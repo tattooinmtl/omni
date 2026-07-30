@@ -1,13 +1,13 @@
-// NimAgent settings template.
+// Omni settings template.
 //
-// NimAgent generates a real settings.json on first run inside its home dir
-// (<install>/agent/settings.json, or %NIMAGENT_HOME%/settings.json). That file
+// Omni generates a real settings.json on first run inside its home dir
+// (<install>/agent/settings.json, or %OMNI_HOME%/settings.json). That file
 // is git-ignored and holds YOUR keys — never commit it.
 //
 // To use this template: copy it to that location and fill in your keys, OR just
-// run NimAgent once and set keys from the REPL with `/apikey <provider> <key>`.
+// run Omni once and set keys from the REPL with `/apikey <provider> <key>`.
 // Only whole-line `//` comments are supported. Keys may also come from
-// environment variables (NIMAGENT_<PROVIDER>_KEY), which override the file.
+// environment variables (OMNI_<PROVIDER>_KEY), which override the file.
 {
   "defaultProvider": "nvidia",
   "defaultModel": "nvidia/glm-5.2",
@@ -66,6 +66,11 @@
       "baseUrl": "http://localhost:8080/v1",
       "apiKey": "not-needed",
       "reasoningParam": "none"
+    },
+    // Agnes AI — get key from https://apihub.agnes-ai.com
+    "agnes": {
+      "baseUrl": "https://apihub.agnes-ai.com/v1",
+      "apiKey": ""
     }
   },
 
@@ -79,14 +84,19 @@
     "openai/gpt-4.1":       { "provider": "openai",     "id": "gpt-4.1",                     "maxTokens": 16384 },
     "openai/o4-mini":       { "provider": "openai",     "id": "o4-mini",                     "maxTokens": 16384, "reasoning": true },
     "openrouter/sonnet":    { "provider": "openrouter", "id": "anthropic/claude-3.5-sonnet", "maxTokens": 8192 },
+    "openrouter/llama-3-8b": { "provider": "openrouter", "id": "meta-llama/llama-3-8b-instruct:free", "maxTokens": 8192, "free": true },
+    "openrouter/mistral-7b": { "provider": "openrouter", "id": "mistralai/mistral-7b-instruct:free", "maxTokens": 8192, "free": true },
+    "openrouter/neural-8b": { "provider": "openrouter", "id": "undi95/toppy-m-7b:free", "maxTokens": 8192, "free": true },
+    "agnes/2.0-flash":      { "provider": "agnes",      "id": "agnes-2.0-flash",            "maxTokens": 8192, "free": true },
     "local/coder":          { "provider": "local",      "id": "your-model-name",             "maxTokens": 8192 }
   },
 
   // Local llama.cpp server (drives the "local" provider). Point modelsDir at your
   // own folder of .gguf files; manage with /llama list|start|stop|status.
-  // binDir "" defaults to <install>/llama. contextSize "auto" (or 0) loads the
+  // binDir "" auto-detects <install>/server (or legacy <install>/llama). contextSize "auto" (or 0) loads the
   // model's full trained context from the GGUF header, capped at maxAutoContext
-  // to bound RAM/VRAM. ngl is GPU layers (0 = CPU only). defaultModel loads on
+  // to bound RAM/VRAM. ngl is GPU layers (0 = CPU only, the safe default —
+  // only raise it on a machine with a working GPU). defaultModel loads on
   // a bare /llama start.
   "llama": {
     "binDir": "",

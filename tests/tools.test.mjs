@@ -37,7 +37,7 @@ console.log("\nTest 1: jq_query");
 
 await assert("reads top-level string field",
   await runTool("jq_query", { filter: ".name", path: "package.json", raw: true }),
-  r => r.trim() === "nimagent2"
+  r => r.trim() === "omni-agent"
 );
 
 await assert("extracts object keys",
@@ -113,7 +113,7 @@ await assert("resolvePackage returns null for unknown name",
 await assert("seed manifests declare required fields per type",
   fs.readdirSync("packages", { withFileTypes: true }).filter(e => e.isDirectory()),
   dirs => dirs.every(d => {
-    const m = JSON.parse(fs.readFileSync(`packages/${d.name}/nimpkg.json`, "utf8"));
+    const m = JSON.parse(fs.readFileSync(`packages/${d.name}/omni-pkg.json`, "utf8"));
     if (!m.name || !["skill", "extension", "mcp"].includes(m.type)) return false;
     if (m.type === "extension" && !m.entry) return false;
     if (m.type === "mcp" && !m.mcp) return false;
@@ -178,7 +178,7 @@ try {
       await runTool("project_todo", { action: "done", id: "T001" });
       return await runTool("project_todo", { action: "list" });
     }),
-    r => r.includes("T001 [done] ship safer tools") && fs.existsSync(".nimagent/todos.json")
+    r => r.includes("T001 [done] ship safer tools") && fs.existsSync("omni/todos.json")
   );
 } finally {
   process.chdir(originalCwd);
@@ -296,7 +296,7 @@ await assert("deps detects npm from package.json",
 
 await assert("deps list runs the manager command",
   await runTool("deps", { action: "list", timeout_ms: 60000 }),
-  r => r.startsWith("$ npm ls") && r.includes("nimagent2")
+  r => r.startsWith("$ npm ls") && r.includes("omni-agent")
 );
 
 await assert("deps rejects unknown manager",
@@ -363,12 +363,12 @@ await assert("language detection maps extensions to servers",
   r => r[0] === "typescript" && r[1] === "python" && r[2] === "rust" && r[3] === "go" && r[4] === null
 );
 
-process.env.NIMAGENT_LSP_TYPESCRIPT = "definitely-not-a-real-lsp-binary --stdio";
+process.env.OMNI_LSP_TYPESCRIPT = "definitely-not-a-real-lsp-binary --stdio";
 await assert("missing server fails gracefully with an install hint",
   await resultOf(() => runTool("lsp", { action: "symbols", path: "src/ui.mjs" })),
   r => String(r).startsWith("ERROR:") && String(r).includes("Install it with")
 );
-delete process.env.NIMAGENT_LSP_TYPESCRIPT;
+delete process.env.OMNI_LSP_TYPESCRIPT;
 
 await assert("unsupported extension is rejected with the supported list",
   await resultOf(() => runTool("lsp", { action: "symbols", path: "README.md" })),

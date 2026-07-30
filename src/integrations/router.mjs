@@ -1,4 +1,4 @@
-// src/router.mjs — Intent router for NimAgent.
+// src/router.mjs — Intent router for Omni Agent.
 //
 // Two things live here:
 //   1. PERSONAS  — coding vs assistant persona definitions (system prompt +
@@ -25,7 +25,7 @@ const SIDECAR_SCRIPT = path.join(__dirname, "..", "..", "router", "service.py");
 // Persona definitions
 // ---------------------------------------------------------------------------
 // Both personas expose the FULL shared tool registry (src/tools.mjs + any
-// loaded extensions/MCP/NimTools).  The difference is system prompt + budget.
+// loaded extensions/MCP/Omni).  The difference is system prompt + budget.
 
 export const PERSONAS = {
   coding: {
@@ -42,7 +42,7 @@ export const PERSONAS = {
     maxIterations: 12,
     systemPrompt() {
       return [
-        "You are NimAgent, a knowledgeable AI assistant.",
+        "You are Omni, a knowledgeable AI assistant.",
         "Help the user with questions, explanations, research, planning, and analysis.",
         `Working directory: ${process.cwd()}`,
         "",
@@ -179,7 +179,7 @@ export function warmSidecar(settings = {}) {
   _sidecarCall({ type: "ping" }, pythonExe).catch(() => {});
 }
 
-/** Kill the sidecar on NimAgent exit. */
+/** Kill the sidecar on Omni exit. */
 export function killSidecar() {
   if (_proc) {
     try { _proc.kill(); } catch { /* already dead */ }

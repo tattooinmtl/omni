@@ -1,0 +1,12 @@
+{
+  "name": "okf",
+  "version": "2.0.0",
+  "type": "mcp",
+  "description": "Open Knowledge Format — hierarchical, indexed markdown knowledge cards served over MCP (okf_browse/okf_search/okf_add/…), so the agent navigates and grows coding knowledge across sessions.",
+  "mcp": {
+    "transport": "stdio",
+    "command": "node",
+    "args": ["{{INSTALL_ROOT}}/packages/okf/server.mjs"],
+    "directTools": true
+  }
+}

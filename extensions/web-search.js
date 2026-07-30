@@ -1,4 +1,4 @@
-// NimAgent extension: web search + page fetch with NO third-party API service.
+// Omni extension: web search + page fetch with NO third-party API service.
 // Search uses DuckDuckGo directly (no key, no account); web_fetch reads any
 // http(s) page as plain text.
 
@@ -6,7 +6,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 
 const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NimAgent/0.1 (+https://localhost)";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Omni/0.1 (+https://localhost)";
 
 // SSRF guard for web_fetch — a fetched page's content feeds straight into the
 // model (indirect prompt injection), and that page can name any URL for a

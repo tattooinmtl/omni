@@ -1,4 +1,4 @@
-// Loads project-level config: nimagent.config.json, the system prompt file,
+// Loads project-level config: omni.config.json, the system prompt file,
 // and skills (skills/<name>/SKILL.md with frontmatter). Extensions are loaded
 // separately by tools.registerExtensions.
 
@@ -10,7 +10,7 @@ import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
-const CONFIG_PATH = path.join(INSTALL_ROOT, "nimagent.config.json");
+const CONFIG_PATH = path.join(INSTALL_ROOT, "omni.config.json");
 
 export function loadProjectConfig() {
   try {
@@ -20,7 +20,7 @@ export function loadProjectConfig() {
   }
 }
 
-// Persist a shallow patch into nimagent.config.json (read-modify-write so we
+// Persist a shallow patch into omni.config.json (read-modify-write so we
 // never clobber concurrent edits to other keys). Used by the package installer
 // to add/remove `extensions` and `mcpServers` entries. Pretty-printed UTF-8.
 export function writeProjectConfig(patch) {
@@ -35,13 +35,13 @@ export function writeProjectConfig(patch) {
   return next;
 }
 
-// Merge MCP server definitions from nimagent.config.json and a project-local
+// Merge MCP server definitions from omni.config.json and a project-local
 // .mcp.json (the vendor-neutral standard). .mcp.json wins on name collisions.
 // Returns { servers: { <name>: def }, settings: {...}, untrusted: Set<name> }.
 //
 // `untrusted` names every server sourced from .mcp.json — that file travels
 // with a cloned repo, so it can name a server the repo's author chose, not the
-// person running NimAgent. mcp.mjs requires a one-time human confirmation
+// person running Omni Agent. mcp.mjs requires a one-time human confirmation
 // before ever connecting to one (see setMcpConfirm / the trust-fingerprint
 // cache), so opening an unfamiliar project can't silently spawn a process or
 // call out to an attacker-controlled endpoint using this machine's credentials.
@@ -146,7 +146,7 @@ export function buildSystemPrompt(config, skills) {
     "# Environment",
     `Working directory: ${process.cwd()}`,
     `Platform: ${process.platform}`,
-    `NimAgent install root (your own extensions/, skills/, docs/): ${INSTALL_ROOT}`,
+    `Omni Agent install root (your own extensions/, skills/, docs/): ${INSTALL_ROOT}`,
   ].join("\n");
   let sk = "";
   if (skills && skills.length) {

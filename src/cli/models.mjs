@@ -266,7 +266,17 @@ function renderModelPicker(ctx, rows, selected, providerName) {
 }
 
 export async function pickModelWithArrows(ctx, providerName = ctx.model.providerName, filter = "") {
-  const rows = await fetchModelsForProvider(ctx, providerName, { save: true, filter });
+  const provKey = normalizeProviderKey(providerName || ctx.model.providerName);
+  // Auto-filter to free models for openrouter and agnes if no explicit filter given
+  let autoFilter = filter;
+  if (!filter && (provKey === "openrouter" || provKey === "agnes")) {
+    const freeModels = Object.entries(ctx.settings.models)
+      .filter(([, m]) => m.provider === provKey && m.free);
+    if (freeModels.length) {
+      infoLine(`${provKey}: showing ${freeModels.length} free model(s) only`);
+    }
+  }
+  const rows = await fetchModelsForProvider(ctx, providerName, { save: true, filter: autoFilter });
   if (!rows?.length) return;
   if (!ctx.canRaw) {
     warnLine("arrow picker needs an interactive terminal; use /model <number> instead");
@@ -330,6 +340,117 @@ export async function pickModelWithArrows(ctx, providerName = ctx.model.provider
     await switchModel(ctx, chosen.key);
   } finally {
     process.stdout.write("\x1b[?25h");
+    if (ctx.canRaw) process.stdin.setRawMode(false);
+    ctx.rl.resume();
+  }
+}
+
+function renderProviderPicker(ctx, rows, selected) {
+  const max = Math.min(rows.length, 18);
+  const half = Math.floor(max / 2);
+  let start = Math.max(0, selected - half);
+  start = Math.min(start, Math.max(0, rows.length - max));
+  const visible = rows.slice(start, start + max);
+  process.stdout.write("\x1b[2J\x1b[H");
+  console.log(c.bold("Select provider"));
+  console.log(c.dim("Use ↑/↓ or click, Enter to confirm, Esc/q to cancel\n"));
+  for (let i = 0; i < visible.length; i++) {
+    const rowIndex = start + i;
+    const row = visible[i];
+    const pointer = rowIndex === selected ? c.cyan("›") : " ";
+    const active = row.name === ctx.model.providerName ? c.green("●") : " ";
+    const label = `${pointer} ${active} ${row.name}${row.label ? c.dim("  " + row.label) : ""}`;
+    console.log(rowIndex === selected ? c.bold(label) : label);
+  }
+  if (rows.length > max) console.log(c.dim(`\n${selected + 1}/${rows.length}`));
+  return start;
+}
+
+export async function pickProviderWithArrows(ctx) {
+  const rows = Object.entries(ctx.settings.providers).map(([name, p]) => ({
+    name,
+    label: p.label || "",
+  }));
+  if (!rows.length) { infoLine("no providers configured"); return; }
+  if (!ctx.canRaw) {
+    warnLine("arrow picker needs an interactive terminal; use /provider <name> instead");
+    return;
+  }
+
+  let selected = Math.max(0, rows.findIndex((r) => r.name === ctx.model.providerName));
+  let scrollStart = 0;
+  const HEADER = 3; // title + hint + blank line
+
+  ctx.rl.pause();
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdout.write("\x1b[?25l\x1b[?1000h\x1b[?1006h");
+
+  try {
+    const chosen = await new Promise((resolve) => {
+      const confirm = () => { cleanup(); resolve(rows[selected]); };
+      const cancel  = () => { cleanup(); resolve(null); };
+
+      const onKeypress = (_str, key = {}) => {
+        if (key.name === "up") {
+          selected = (selected - 1 + rows.length) % rows.length;
+          scrollStart = renderProviderPicker(ctx, rows, selected);
+        } else if (key.name === "down") {
+          selected = (selected + 1) % rows.length;
+          scrollStart = renderProviderPicker(ctx, rows, selected);
+        } else if (key.name === "return") {
+          confirm();
+        } else if (key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
+          cancel();
+        }
+      };
+
+      const onData = (buf) => {
+        const str = buf.toString();
+        const m = str.match(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
+        if (!m) return;
+        const btn = parseInt(m[1]);
+        const termRow = parseInt(m[3]);
+        const press = m[4] === "M";
+        if (!press) return;
+        if (btn === 64) {
+          selected = Math.max(0, selected - 1);
+          scrollStart = renderProviderPicker(ctx, rows, selected);
+        } else if (btn === 65) {
+          selected = Math.min(rows.length - 1, selected + 1);
+          scrollStart = renderProviderPicker(ctx, rows, selected);
+        } else if (btn === 0) {
+          const clickedIdx = scrollStart + (termRow - 1 - HEADER);
+          if (clickedIdx >= 0 && clickedIdx < rows.length) {
+            if (clickedIdx === selected) {
+              confirm();
+            } else {
+              selected = clickedIdx;
+              scrollStart = renderProviderPicker(ctx, rows, selected);
+            }
+          }
+        }
+      };
+
+      const cleanup = () => {
+        process.stdin.off("keypress", onKeypress);
+        process.stdin.off("data", onData);
+      };
+
+      process.stdin.on("keypress", onKeypress);
+      process.stdin.on("data", onData);
+      scrollStart = renderProviderPicker(ctx, rows, selected);
+    });
+
+    if (!chosen) { infoLine("provider selection canceled"); return; }
+    const provKey = chosen.name;
+    const modelKey = Object.keys(ctx.settings.models).find((k) => ctx.settings.models[k].provider === provKey);
+    if (!modelKey) { errorLine(`provider "${provKey}" has no models configured — add one with /addmodel`); return; }
+    ctx.model = resolveModel(ctx.settings, modelKey);
+    const label = ctx.settings.providers[provKey].label || provKey;
+    infoLine(`switched to ${label} — model: ${modelKey}`);
+  } finally {
+    process.stdout.write("\x1b[?25h\x1b[?1000l\x1b[?1006l");
     if (ctx.canRaw) process.stdin.setRawMode(false);
     ctx.rl.resume();
   }

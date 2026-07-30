@@ -1,4 +1,4 @@
-// NimAgent extension: cryptographic hashes for strings and files.
+// Omni extension: cryptographic hashes for strings and files.
 // Contract: export default { name, tools: [...], impl: { toolName: fn } }
 
 import fs from "node:fs";

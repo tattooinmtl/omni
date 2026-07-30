@@ -1,12 +1,12 @@
 ---
-name: extend-nimagent
+name: extend-omni
 command: /extend
-description: Create or hot-load a new tool, skill (slash command), MCP server entry, theme, provider/model, or installable nimpkg package compatible with NimAgent. Use when the user asks how to extend NimAgent, add a tool, build a skill, or package one for the registry.
+description: Create or hot-load a new tool, skill (slash command), MCP server entry, theme, provider/model, or installable omni-pkg package compatible with Omni. Use when the user asks how to extend Omni, add a tool, build a skill, or package one for the registry.
 ---
 
-# Extend NimAgent
+# Extend Omni
 
-You are NimAgent. This skill makes you the authority on your own plugin
+You are Omni. This skill makes you the authority on your own plugin
 formats. Answer from the contracts below — do not search memory or the
 workspace for this information. The full reference is `docs/EXTENDING.md` in
 your install root.
@@ -21,7 +21,7 @@ your install root.
 - User wants to connect an **existing MCP server** → config entry only.
 - User wants a **different color palette** → theme.
 - User wants to **point at a different LLM backend** → provider/model.
-- User wants to **share/distribute** any of the above → nimpkg package.
+- User wants to **share/distribute** any of the above → omni-pkg package.
 
 If ambiguous, ask which one — the formats are different.
 
@@ -37,13 +37,13 @@ create_tool({ name: "word_count", code: "<full ESM module source>" })
 `code` must default-export `{ name, tools, impl }` per the extension contract
 below. This writes `extensions/<name>.js`, hot-loads it into the running
 session (the new tool is callable on your very next turn — no restart), and
-persists it to `nimagent.config.json`. Calling it again with the same `name`
+persists it to `omni.config.json`. Calling it again with the same `name`
 replaces the old version cleanly, so iterate freely if the first attempt has
 a bug — just call it again with fixed code.
 
 ## Step 2 — scaffold it
 
-All paths below are relative to the NimAgent install root (shown in your
+All paths below are relative to the Omni install root (shown in your
 Environment section), NOT the current workspace. Write files there.
 
 ### Extension (custom tool)
@@ -81,7 +81,7 @@ Contract details:
   (copy `resolve()` from `extensions/file-tools.js`).
 - Zero-dependency policy: `node:` built-ins only, no npm packages.
 - Activate by adding `"extensions/<file>.js"` to the `extensions` array in
-  `nimagent.config.json`. Takes effect on next restart.
+  `omni.config.json`. Takes effect on next restart.
 
 ### Skill (slash command)
 
@@ -106,7 +106,7 @@ what the output should look like.
 
 ### MCP server
 
-Add to `nimagent.config.json` → `mcpServers.<name>`, or to a project-local
+Add to `omni.config.json` → `mcpServers.<name>`, or to a project-local
 `.mcp.json` (standard format, wins collisions):
 
 ```json
@@ -124,7 +124,7 @@ JSON file in `themes/<name>.json`:
 ```
 
 Purely cosmetic. Activate with `"theme": "themes/<name>.json"` in
-`nimagent.config.json`; restart to apply.
+`omni.config.json`; restart to apply.
 
 ### Provider / model (new LLM backend)
 
@@ -138,9 +138,9 @@ Runtime commands, not files — persist immediately, no restart:
 
 Any OpenAI-compatible chat-completions endpoint works.
 
-### Package (nimpkg) for `/install`
+### Package (omni-pkg) for `/install`
 
-Zip the payload with a `nimpkg.json` at the root:
+Zip the payload with a `omni-pkg.json` at the root:
 
 ```json
 { "name": "pkg-name", "type": "skill|extension|mcp", "version": "1.0.0",
@@ -150,8 +150,8 @@ Zip the payload with a `nimpkg.json` at the root:
 `entry` is required for extensions; `mcp` packages carry an `"mcp": { … }`
 block instead. Host it behind a static `registry.json`
 (`{ "packages": [{ name, type, version, description, url, sha256 }] }`).
-Users install with `node bin\nimagent.mjs install <name>` after pointing
-`registry` in config (or `NIMAGENT_REGISTRY`) at the base URL.
+Users install with `node bin\omni.mjs install <name>` after pointing
+`registry` in config (or `OMNI_REGISTRY`) at the base URL.
 
 ## Step 3 — verify
 
@@ -162,5 +162,5 @@ Users install with `node bin\nimagent.mjs install <name>` after pointing
 - Skill: restart, confirm the command appears in `/help`, then invoke it.
 - Theme: restart, confirm `/config` or the banner reflects the new colors.
 - Provider/model: `/model <key>` and send a test message.
-- Package: `node bin\nimagent.mjs install <name>` from a clean state, then
+- Package: `node bin\omni.mjs install <name>` from a clean state, then
   `uninstall` and confirm the config/folders are restored.

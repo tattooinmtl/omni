@@ -1,21 +1,21 @@
-// src/bridge.mjs — NimTools bridge (hermes capability backend).
+// src/bridge.mjs — Omni bridge (hermes capability backend).
 //
-// Registers ONE "nimtools" proxy tool into the agent's tool registry (~200
+// Registers ONE "omni-bridge" proxy tool into the agent's tool registry (~200
 // tokens of context), exactly like the MCP proxy in src/mcp.mjs.  The model
 // uses it to list, describe, and call the full hermes tool set without
 // blowing up the context window.
 //
 // The bridge_server.py process is kept warm (lazy-spawned on first call,
-// kept alive across turns, killed on NimAgent exit).  If hermes-agent is
-// not installed or the bridge server crashes, the nimtools tool is simply
+// kept alive across turns, killed on Omni Agent exit).  If hermes-agent is
+// not installed or the bridge server crashes, the omni-bridge tool is simply
 // absent from the registry — everything else still works.
 //
 // Usage in the agent:
-//   nimtools({})                              → list all NimTools
-//   nimtools({ search: "screenshot" })        → search by keyword
-//   nimtools({ describe: "web_search" })      → full schema for one tool
-//   nimtools({ tool: "web_search",
-//              args: '{"query":"…"}' })       → call a NimTool
+//   omni_bridge({})                              → list all bridge tools
+//   omni_bridge({ search: "screenshot" })        → search by keyword
+//   omni_bridge({ describe: "web_search" })      → full schema for one tool
+//   omni_bridge({ tool: "web_search",
+//                 args: '{"query":"…"}' })       → call a bridge tool
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -163,7 +163,7 @@ async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pyth
 
 // ---------------------------------------------------------------------------
 // Register: adds "nimtools" to the shared tools array + impl map.
-// Called from bin/nimagent.mjs when bridge.enabled = true.
+// Called from bin/omni.mjs when bridge.enabled = true.
 // ---------------------------------------------------------------------------
 export function registerNimToolsProxy(bridgeCfg = {}) {
   const pythonExe = bridgeCfg.python?.interpreter || "python";

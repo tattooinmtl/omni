@@ -28,8 +28,8 @@ function checkBool(label, actual) {
 
 // 1. Real-world GLM hybrid: unclosed tool_call, bare <path> key, stray </function>
 check("hybrid unclosed sample",
-  `Inspecting now.<tool_call>list_dir<path>.nimagent</parameter>\n<parameter=recursive>true</parameter>\n</function>`,
-  [{ name: "list_dir", args: { path: ".nimagent", recursive: true } }]);
+  `Inspecting now.<tool_call>list_dir<path>omni-todos</parameter>\n<parameter=recursive>true</parameter>\n</function>`,
+  [{ name: "list_dir", args: { path: "omni-todos", recursive: true } }]);
 
 // 2. Canonical instructed format
 check("canonical format",

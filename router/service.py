@@ -1,5 +1,5 @@
 """
-router/service.py — NimAgent warm sidecar.
+router/service.py — Omni warm sidecar.
 
 Two jobs, one process:
   1. Intent classification  — local ML (hashing + logistic regression).

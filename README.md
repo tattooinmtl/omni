@@ -1,6 +1,6 @@
-# NimAgent V2.1
+# OMNI-AGENT
 
-*Vice Summer Edition 2026*
+Omni-present harness for agents
 
 A from-scratch terminal coding agent for Windows — now with expanded capabilities for semantic
 code navigation, test coverage analysis, and security scanning. Talks to **OpenAI-compatible**
@@ -22,30 +22,30 @@ mode — all with **zero npm dependencies** (pure Node ≥ 20 + built-in `fetch`
 
 ```powershell
 # Requires Git and Node.js 20+
-git clone https://github.com/tattooinmtl/NimAgent2.git
-cd NimAgent2
+git clone https://github.com/tattooinmtl/omni.git
+cd omni
 .\install\install.ps1
-nim2
+omni
 ```
 
-NimAgent ships **with no API keys** — supply your own. First run writes a clean
+Omni ships **with no API keys** — supply your own. First run writes a clean
 `settings.json` into `agent/` (git-ignored). A free NVIDIA NIM key (the default
 provider) is available at <https://build.nvidia.com>:
 
 ```powershell
-node bin\nimagent.mjs --set-key nvidia nvapi-xxxxxxxx   # persist a key, then exit
-$env:NIMAGENT_NVIDIA_KEY = "nvapi-xxxxxxxx"             # or an env var (overrides the file)
+node bin\omni.mjs --set-key nvidia nvapi-xxxxxxxx   # persist a key, then exit
+$env:OMNI_NVIDIA_KEY = "nvapi-xxxxxxxx"             # or an env var (overrides the file)
 # …or inside the REPL:  /apikey nvidia nvapi-xxxxxxxx
 ```
 
-Got a second NVIDIA account? Give each its own key and NimAgent fails over to
+Got a second NVIDIA account? Give each its own key and Omni fails over to
 the other one automatically when a key gets rate-limited (429), instead of
 waiting out the backoff:
 
 ```powershell
 # .env (or the REPL: /apikey nvidia1 <key>  /apikey nvidia2 <key>)
-NIMAGENT_NVIDIA1_KEY=nvapi-xxxxxxxx
-NIMAGENT_NVIDIA2_KEY=nvapi-yyyyyyyy
+OMNI_NVIDIA1_KEY=nvapi-xxxxxxxx
+OMNI_NVIDIA2_KEY=nvapi-yyyyyyyy
 # switch manually anytime:  /switch-provider nvidia1|nvidia2   (alias /swp)
 ```
 
@@ -56,10 +56,10 @@ with empty placeholders. `agent/`, `.env`, and `vendor/` are git-ignored.
 ## Usage
 
 ```powershell
-nim2                                   # interactive REPL
-node bin\nimagent.mjs "fix the bug"    # one-shot mode
-node bin\nimagent.mjs --model local/coder --resume
-node bin\nimagent.mjs install <pkg>    # package manager (install|uninstall|list|search)
+omni                                   # interactive REPL
+node bin\omni.mjs "fix the bug"        # one-shot mode
+node bin\omni.mjs --model local/coder --resume
+node bin\omni.mjs install <pkg>        # package manager (install|uninstall|list|search)
 ```
 
 ## Commands
@@ -84,7 +84,7 @@ with `\`.
 ```
 
 Sets an objective the agent keeps working toward **across turns automatically**
-— when a turn ends without the objective being met, NimAgent queues a
+— when a turn ends without the objective being met, Omni queues a
 continuation until the model calls the `goal_complete` tool with a verified
 summary, the iteration cap (25) is hit, or the token budget runs out.
 
@@ -114,12 +114,12 @@ mode `ask` behaves as `deny`.
 File tools are sandboxed to the workspace root (symlink-aware — no `..` or
 link escapes). Where that root lands depends on how you launch:
 
-- **From nowhere in particular** (home, Documents, a drive root): NimAgent
-  creates and enters the **workflow hub** — `Documents\NimAgentWorkflow` — the
+- **From nowhere in particular** (home, Documents, a drive root): Omni
+  creates and enters the **workflow hub** — `Documents\OmniWorkflow` — the
   home for every project it builds. If your Documents folder is OneDrive-synced,
-  the first run offers a local `C:\NimAgentWorkflow` instead (build output and
+  the first run offers a local `C:\OmniWorkflow` instead (build output and
   sync clients don't mix). The choice persists in `settings.json`.
-- **Inside a project folder** (`nim2` in a repo): a one-time *"trust this
+- **Inside a project folder** (`omni` in a repo): a one-time *"trust this
   folder?"* prompt — trusted folders are cached in `agent/folder-trust.json`,
   declining drops you into the hub instead.
 
@@ -166,11 +166,11 @@ corrective retry instead of silently ending the turn.
 Three extension points, one package format — see [docs/EXTENDING.md](docs/EXTENDING.md):
 
 - **Extensions** — drop an ESM file exporting `{ name, tools, impl }` into
-  `extensions/` and list it in `nimagent.config.json` to give the agent new tools
+  `extensions/` and list it in `omni.config.json` to give the agent new tools
 - **Skills** — a `skills/<name>/SKILL.md` with frontmatter becomes a `/slash-command`
   (auto-discovered at startup)
 - **MCP servers** — add to `mcpServers` in the config or a project-local `.mcp.json`
-- **Packages** — zip any of the above with a `nimpkg.json` and host it behind a
+- **Packages** — zip any of the above with a `omni-pkg.json` and host it behind a
   static `registry.json` for `/install`
 
 Inside the REPL, `/extend` walks the agent through scaffolding one for you.
@@ -178,8 +178,8 @@ Inside the REPL, `/extend` walks the agent through scaffolding one for you.
 ## Layout
 
 ```
-NimAgent2/
-  bin/nimagent.mjs        thin launcher
+Omni/
+  bin/omni.mjs            thin launcher
   src/
     cli/                  REPL, command registry, goal mode, model picker
     core/                 agent loop, tool-call parser, provider client, config

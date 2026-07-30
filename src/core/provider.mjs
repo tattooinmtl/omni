@@ -109,7 +109,7 @@ function formatProviderError(res, text, model) {
   if (/DEGRADED function cannot be invoked/i.test(msg)) {
     return [
       `Provider ${res.status} ${res.statusText}: ${msg}`,
-      `NVIDIA reports model "${model.id}" is degraded. This happened on a no-tools request too, so it is the hosted NVIDIA function status, not NimAgent tool calling.`,
+      `NVIDIA reports model "${model.id}" is degraded. This happened on a no-tools request too, so it is the hosted NVIDIA function status, not Omni Agent tool calling.`,
     ].join("\n");
   }
   if (/end of life|no longer available/i.test(msg)) {

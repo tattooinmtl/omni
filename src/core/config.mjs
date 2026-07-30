@@ -4,8 +4,8 @@
 //   <home>/settings.json          provider + model config
 //   <home>/sessions/<cwd-slug>/<ts>.jsonl    one line per message/event
 //
-// <home> resolves to %NIMAGENT_HOME% if set, otherwise <install-dir>/agent,
-// where install-dir is the NimAgent project root (parent of this file's dir).
+// <home> resolves to %OMNI_HOME% if set, otherwise <install-dir>/agent,
+// where install-dir is the Omni Agent project root (parent of this file's dir).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -16,16 +16,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
 
 export const HOME =
-  process.env.NIMAGENT_HOME || path.join(INSTALL_ROOT, "agent");
+  process.env.OMNI_HOME || path.join(INSTALL_ROOT, "agent");
 
 export const SETTINGS_PATH = path.join(HOME, "settings.json");
 export const SESSIONS_DIR = path.join(HOME, "sessions");
 
-// Default config — the shape NimAgent writes to settings.json on first run.
+// Default config — the shape Omni Agent writes to settings.json on first run.
 // IMPORTANT: never hardcode secrets here. API keys start empty and are supplied
 // by each user via the REPL (`/apikey <provider> <key>`), by editing their own
 // settings.json, or via environment variables:
-//   NIMAGENT_NVIDIA_KEY, NIMAGENT_OPENAI_KEY, NIMAGENT_<PROVIDER>_KEY, …
+//   OMNI_NVIDIA_KEY, OMNI_OPENAI_KEY, OMNI_<PROVIDER>_KEY, …
 // See settings.example.json for a fully-commented template.
 const DEFAULT_SETTINGS = {
   defaultProvider: "nvidia",
@@ -42,8 +42,8 @@ const DEFAULT_SETTINGS = {
   // tools not listed. Manage from the REPL with /perm.
   permissions: {},
   // Workspace sandbox (see core/workspace.mjs). root is the workflow hub every
-  // project lands in when NimAgent isn't launched inside a trusted folder
-  // (empty = pick on first run: Documents\NimAgentWorkflow, or C:\NimAgentWorkflow
+  // project lands in when Omni Agent isn't launched inside a trusted folder
+  // (empty = pick on first run: Documents\OmniWorkflow, or C:\OmniWorkflow
   // if the user opts out of OneDrive). scope "folder" confines file tools to
   // the workspace; "system" lifts containment machine-wide. Manage with /workspace.
   workspace: { root: "", scope: "folder" },
@@ -100,6 +100,11 @@ const DEFAULT_SETTINGS = {
       label: "Mistral",
       reasoningParam: "none",
     },
+    agnes: {
+      baseUrl: "https://apihub.agnes-ai.com/v1",
+      apiKey: "",
+      label: "Agnes AI",
+    },
     together: {
       baseUrl: "https://api.together.xyz/v1",
       apiKey: "",
@@ -124,12 +129,9 @@ const DEFAULT_SETTINGS = {
       label: "Local llama.cpp",
       reasoningParam: "none",
     },
-    gwn: {
-      baseUrl: "http://173.212.202.219:8000/v1",
-      apiKey: "not-needed",
-      label: "GWN (free)",  // shown in UI instead of the raw URL
-      chatTemplate: "templates/qwythos_chat_template.j2",
-    },
+    // NOTE: no default third-party/community endpoint ships here on purpose —
+    // a raw IP baked into every install is a standing risk if it ever changes
+    // hands. Add your own via /addprovider if you want one.
   },
   // Local llama.cpp server (bundled llama-server.exe). Drives the "local"
   // provider above. Manage it from the REPL with /llama list|start|stop|status.
@@ -155,7 +157,7 @@ const DEFAULT_SETTINGS = {
     "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384 },
     "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384 },
     "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true },
-    "gwn/mythos": { provider: "gwn", id: "Qwythos-9B-Mythos", maxTokens: 32768 },
+    "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384 },
     "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096 },
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384 },
@@ -255,8 +257,8 @@ export function findAccountProvider(settings, name) {
   return null;
 }
 
-// Allow env var overrides for API keys: NIMAGENT_<PROVIDER>_KEY, and per
-// account NIMAGENT_<ACCOUNT>_KEY (e.g. NIMAGENT_NVIDIA1_KEY).
+// Allow env var overrides for API keys: OMNI_<PROVIDER>_KEY, and per
+// account OMNI_<ACCOUNT>_KEY (e.g. OMNI_NVIDIA1_KEY).
 function applyEnvKeyOverrides(settings) {
   // Env/.env keys are runtime-only overrides. Remember each provider's on-disk
   // key in settings._env so saveSettings can restore it instead of persisting
@@ -268,14 +270,14 @@ function applyEnvKeyOverrides(settings) {
   // (e.g. /apikey nvidia1 <key>), the change is the user's and persists.
   const savedAccounts = {};
   for (const [name, prov] of Object.entries(settings.providers)) {
-    const envKey = `NIMAGENT_${name.toUpperCase()}_KEY`;
+    const envKey = `OMNI_${name.toUpperCase()}_KEY`;
     if (process.env[envKey]) {
       savedKeys[name] = prov.apiKey || "";
       prov.apiKey = process.env[envKey];
     }
     const acctNames = Object.keys(prov.accounts || {});
     for (const acct of acctNames) {
-      const acctEnv = `NIMAGENT_${acct.toUpperCase()}_KEY`;
+      const acctEnv = `OMNI_${acct.toUpperCase()}_KEY`;
       if (process.env[acctEnv]) {
         (savedAccounts[name] ||= {})[acct] = { was: prov.accounts[acct] || "", imposed: process.env[acctEnv] };
         prov.accounts[acct] = process.env[acctEnv];
@@ -378,7 +380,7 @@ export async function saveSettings(settings) {
     clean.providers = { ...clean.providers };
     for (const [name, savedKey] of Object.entries(_env.savedKeys)) {
       const prov = clean.providers[name];
-      const envVal = process.env[`NIMAGENT_${name.toUpperCase()}_KEY`];
+      const envVal = process.env[`OMNI_${name.toUpperCase()}_KEY`];
       if (prov && prov.apiKey === envVal) {
         clean.providers[name] = { ...prov, apiKey: savedKey };
       }
@@ -445,7 +447,7 @@ export function providerKeyMissing(model) {
 
 // The environment variable that overrides a provider's key (see loadSettings).
 export function providerKeyEnvVar(providerName) {
-  return `NIMAGENT_${String(providerName).toUpperCase()}_KEY`;
+  return `OMNI_${String(providerName).toUpperCase()}_KEY`;
 }
 
 function cwdSlug() {

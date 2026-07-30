@@ -4,7 +4,7 @@
 //
 //   node scripts/pack.mjs [registryBaseUrl]
 //
-// registryBaseUrl defaults to $NIMAGENT_REGISTRY or the production URL. Pass a
+// registryBaseUrl defaults to $OMNI_REGISTRY or the production URL. Pass a
 // local URL (e.g. http://localhost:8000) to build a registry for local testing.
 
 import fs from "node:fs";
@@ -19,7 +19,7 @@ const PKG_SRC = path.join(ROOT, "packages");
 const SITE = path.join(ROOT, "site");
 const DOWNLOADS = path.join(SITE, "downloads");
 
-const REGISTRY_BASE = (process.argv[2] || process.env.NIMAGENT_REGISTRY || "https://globalwarningnetworks.com/repo").replace(/\/+$/, "");
+const REGISTRY_BASE = (process.argv[2] || process.env.OMNI_REGISTRY || "https://globalwarningnetworks.com/repo").replace(/\/+$/, "");
 
 function zipDir(srcDir, outZip) {
   fs.mkdirSync(path.dirname(outZip), { recursive: true });
@@ -57,9 +57,9 @@ function main() {
 
   for (const e of dirs) {
     const dir = path.join(PKG_SRC, e.name);
-    const manifestPath = path.join(dir, "nimpkg.json");
+    const manifestPath = path.join(dir, "omni-pkg.json");
     if (!fs.existsSync(manifestPath)) {
-      console.warn(`skip ${e.name}: no nimpkg.json`);
+      console.warn(`skip ${e.name}: no omni-pkg.json`);
       continue;
     }
     const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));

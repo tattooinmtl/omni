@@ -1,6 +1,6 @@
 param(
   [string]$RepoOwner = "tattooinmtl",
-  [string]$RepoName = "nimagent",
+  [string]$RepoName = "omni",
   [string]$Branch,
   [switch]$WithRouter,
   [switch]$AutoUpdate,
@@ -14,8 +14,19 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Resolve-Path (Join-Path $ScriptRoot "..")
 $RequiredListPath = Join-Path $ScriptRoot "required-files.json"
 
+# Same gradient + mascot as the app's own terminal UI (src/ui.mjs) — this
+# script updates an existing local clone; for a fresh-machine one-liner see
+# bootstrap.ps1 (deployed at https://omni.globalwarningnetworks.com/install.ps1).
+$Gradient = @(@(80, 236, 240), @(168, 96, 240), @(255, 145, 92))
+$ESC = [char]27
+$UseColor = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
+function Rgb([int[]]$c, [string]$text) {
+  if (-not $UseColor) { return $text }
+  return "$ESC[38;2;$($c[0]);$($c[1]);$($c[2])m$text$ESC[0m"
+}
+
 function Write-Info([string]$Message) {
-  Write-Host "[NimAgent Installer] $Message"
+  Write-Host "  $(Rgb $Gradient[0] '(•‿•)')  [Omni Installer] $Message"
 }
 
 function Ensure-Command([string]$Name, [string]$Hint) {
@@ -25,7 +36,7 @@ function Ensure-Command([string]$Name, [string]$Hint) {
 }
 
 function Get-Json([string]$Uri) {
-  return Invoke-RestMethod -Uri $Uri -Headers @{ "User-Agent" = "nimagent-installer" }
+  return Invoke-RestMethod -Uri $Uri -Headers @{ "User-Agent" = "omni-installer" }
 }
 
 function Get-RequiredPaths() {
@@ -37,7 +48,7 @@ function Get-RequiredPaths() {
 }
 
 function Check-RequiredFiles() {
-  Write-Info "Checking required NimAgent files"
+  Write-Info "Checking required OMNI files"
   $requiredPaths = Get-RequiredPaths
   $missing = @()
 
@@ -102,7 +113,7 @@ function Update-FromZip([string]$DefaultBranch) {
   Write-Info "No .git folder detected, using GitHub archive update"
 
   $zipUrl = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$DefaultBranch.zip"
-  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("nimagent-install-" + [guid]::NewGuid().ToString("N"))
+  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("omni-install-" + [guid]::NewGuid().ToString("N"))
   $zipPath = Join-Path $tempRoot "repo.zip"
   $extractPath = Join-Path $tempRoot "extract"
 
@@ -111,7 +122,7 @@ function Update-FromZip([string]$DefaultBranch) {
 
   try {
     Write-Info "Downloading latest source from $DefaultBranch"
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -Headers @{ "User-Agent" = "nimagent-installer" }
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -Headers @{ "User-Agent" = "omni-installer" }
 
     Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
     $repoFolder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
@@ -190,5 +201,7 @@ Check-RepoUpdates -DefaultBranch $defaultBranch
 Check-RequiredFiles
 Run-ProjectSetup
 
-Write-Info "Install complete"
-Write-Info "Run NimAgent with: npm start"
+$installedVersion = (Get-Content (Join-Path $ProjectRoot "package.json") -Raw | ConvertFrom-Json).version
+Write-Host ""
+Write-Host "  $(Rgb $Gradient[2] '(^‿^)')  Omi: install complete — Omni v$installedVersion"
+Write-Info "Run Omni with: npm start (or 'omni' if you've run 'npm link')"

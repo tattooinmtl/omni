@@ -1,31 +1,31 @@
 {
-  "name": "nimagent2",
+  "name": "omni-agent",
   "version": "2.1.0",
   "private": true,
   "type": "module",
-  "description": "NimAgent V2 - a from-scratch terminal coding agent for OpenAI-compatible providers (Vice Summer Edition 2026)",
+  "description": "OMNI-AGENT - Omni-present harness for agents",
   "author": "Erik Boivin <erik.boivin@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/tattooinmtl/NimAgent2#readme",
+  "homepage": "https://github.com/tattooinmtl/omni#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tattooinmtl/NimAgent2.git"
+    "url": "git+https://github.com/tattooinmtl/omni.git"
   },
   "bugs": {
-    "url": "https://github.com/tattooinmtl/NimAgent2/issues"
+    "url": "https://github.com/tattooinmtl/omni/issues"
   },
   "bin": {
-    "nim2": "./bin/nimagent.mjs"
+    "omni": "./bin/omni.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
-    "start": "node ./bin/nimagent.mjs",
+    "start": "node ./bin/omni.mjs",
     "test": "node ./tests/run-all.mjs",
     "setup": "node ./scripts/setup.mjs",
     "setup:router": "node ./scripts/setup.mjs --with-router",
-    "zip:source": "git archive --worktree-attributes --format=zip --output dist/nimagent-source.zip HEAD",
+    "zip:source": "git archive --worktree-attributes --format=zip --output dist/omni-source.zip HEAD",
     "install:check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install.ps1 -SkipRepoUpdate",
     "install:update": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install.ps1 -AutoUpdate"
   }

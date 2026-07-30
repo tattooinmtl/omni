@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://nimagent.local/schema/nimagent.config.schema.json",
-  "title": "NimAgent project config",
-  "description": "Top-level configuration for a NimAgent project (nimagent.config.json).",
+  "$id": "https://omni.local/schema/omni.config.schema.json",
+  "title": "Omni project config",
+  "description": "Top-level configuration for an Omni project (omni.config.json).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -31,7 +31,7 @@
     },
     "registry": {
       "type": "string",
-      "description": "Base URL of the package registry. `nimagent install <name>` reads <registry>/registry.json and downloads from <registry>/downloads/."
+      "description": "Base URL of the package registry. `omni install <name>` reads <registry>/registry.json and downloads from <registry>/downloads/."
     },
     "mcpServers": {
       "type": "object",
@@ -84,7 +84,7 @@
     },
     "bridge": {
       "type": "object",
-      "description": "NimTools bridge — exposes the hermes capability set (browser, computer_use, media, memory, etc.) via a single nimtools proxy tool.",
+      "description": "Omni bridge — exposes the hermes capability set (browser, computer_use, media, memory, etc.) via a single omni proxy tool.",
       "properties": {
         "enabled": { "type": "boolean", "description": "Register the nimtools proxy tool. Default false." },
         "hermesRoot": { "type": "string", "description": "Absolute path to the hermes-agent directory. Default C:\\hermes-agent." },

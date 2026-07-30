@@ -123,7 +123,7 @@ function main() {
   maybeInstallRouterDeps();
 
   log("Setup complete.");
-  log("Run: npm start");
+  log("Run: omni");
 }
 
 main();

@@ -1,17 +1,17 @@
 // Workspace selection + folder trust.
 //
-// NimAgent's file tools are sandboxed to process.cwd() (see assertInsideWorkspace
+// Omni Agent's file tools are sandboxed to process.cwd() (see assertInsideWorkspace
 // in tools/index.mjs), so *choosing* the cwd at startup is the whole security
 // story. Two launch modes:
 //
 //   1. Launched from a "nowhere" directory (home, the install dir, Documents
 //      itself, a drive root) → chdir into the workflow hub, a dedicated root
-//      for every project NimAgent creates. Default: Documents\NimAgentWorkflow.
+//      for every project Omni Agent creates. Default: Documents\OmniWorkflow.
 //      If Documents is OneDrive-synced the user is offered a local
-//      C:\NimAgentWorkflow instead (sync churn + file locks make OneDrive a
+//      C:\OmniWorkflow instead (sync churn + file locks make OneDrive a
 //      poor place for build output). The choice persists in settings.workspace.root.
 //
-//   2. Launched inside a real project folder (`nim2` in a repo) → one-time
+//   2. Launched inside a real project folder (`omni` in a repo) → one-time
 //      trust prompt, cached per-realpath in <home>/folder-trust.json — same
 //      pattern as the MCP server trust cache. Declining falls back to the hub.
 //
@@ -28,7 +28,7 @@ import { HOME, saveSettings } from "./config.mjs";
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 
 const TRUST_PATH = path.join(HOME, "folder-trust.json");
-const HUB_NAME = "NimAgentWorkflow";
+const HUB_NAME = "OmniWorkflow";
 
 // Local (never-synced) fallback hub, offered when Documents lives in OneDrive.
 const LOCAL_HUB = process.platform === "win32"
@@ -117,7 +117,7 @@ export function untrustFolder(dir) {
 
 // Confirm we can actually create files here before promising the agent it can.
 export function probeWriteAccess(dir) {
-  const probe = path.join(dir, `.nimagent-probe-${process.pid}`);
+  const probe = path.join(dir, `omni-probe-${process.pid}`);
   try {
     fs.writeFileSync(probe, "ok");
     fs.readFileSync(probe);
@@ -146,7 +146,7 @@ function isInsidePath(child, parent) {
 // project folder, so we route them into the hub instead of sandboxing the
 // agent to their entire home directory or drive root. The install dir counts
 // as nowhere only when it isn't a git checkout — a shortcut's "Start in"
-// lands there, but a developer hacking on NimAgent itself wants the trust
+// lands there, but a developer hacking on Omni Agent itself wants the trust
 // flow, not a teleport to the hub.
 function isNowhereCwd(cwd, documentsDir) {
   const candidates = [
@@ -170,7 +170,7 @@ async function ask(question) {
 
 async function chooseHubLocation(docsHub) {
   console.log(c.yellow("  your Documents folder is synced by OneDrive."));
-  console.log("  where should NimAgent keep its projects?");
+  console.log("  where should Omni Agent keep its projects?");
   console.log(`    1) ${docsHub}  ${c.dim("(synced to OneDrive)")}`);
   console.log(`    2) ${LOCAL_HUB}  ${c.dim("(local only — skips OneDrive sync)")}`);
   const answer = await ask(c.yellow("  choose [1/2] (default 1): "));
@@ -217,7 +217,7 @@ export async function initWorkspace({ settings, interactive }) {
       warnLine(`working in untrusted folder ${cwd} (non-interactive — trust it from a REPL session)`);
       return { root: cwd, mode: "untrusted" };
     }
-    console.log(c.yellow(`  NimAgent was started in: ${cwd}`));
+    console.log(c.yellow(`  Omni Agent was started in: ${cwd}`));
     console.log(c.dim("  trusting it lets the agent read, write and run commands inside this folder (and only here)."));
     const answer = await ask(c.yellow("  trust this folder? [y/N] "));
     if (/^(y|yes)$/i.test(answer)) {
@@ -226,7 +226,7 @@ export async function initWorkspace({ settings, interactive }) {
       infoLine(`trusted ${cwd} (revoke with /workspace untrust)`);
       return { root: cwd, mode: "trusted" };
     }
-    infoLine("okay — using your NimAgentWorkflow folder instead.");
+    infoLine("okay — using your OmniWorkflow folder instead.");
   }
 
   // Hub flow: first run picks (and persists) the hub location.

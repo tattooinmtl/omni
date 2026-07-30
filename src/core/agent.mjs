@@ -10,10 +10,11 @@ import {
   stripThink, stripToolCallText, textToolInstructions, recoveryMessage,
   createThinkSplitter, extractThink,
 } from "./toolcalls.mjs";
+import { syncOkfNavGuidance } from "./okfnav.mjs";
 import {
   c, assistantPrefix, toolLine, toolResultLine, errorLine, warnLine,
   startStatus, stopStatus, startGenerationStatus, diffPreviewLine,
-  streamWrite, streamNewline
+  streamWrite, streamNewline, mascotLine
 } from "../ui.mjs";
 
 // Most recent turn's full <think>…</think> reasoning text, regardless of
@@ -176,6 +177,7 @@ async function chatStreamWithRetry({ model, messages, tools, signal, onToken, _t
           rotations++;
           warnLine(`rate-limited (${msg.split("\n")[0].slice(0, 60)})`);
           warnLine(`switching to account ${next} and retrying…`);
+          mascotLine("provider", false);
           await abortableSleep(1200, signal);
           continue;
         }
@@ -185,6 +187,7 @@ async function chatStreamWithRetry({ model, messages, tools, signal, onToken, _t
       const secs  = Math.round(delay / 1000);
       warnLine(`provider unavailable (${msg.split("\n")[0].slice(0, 80)})`);
       warnLine(`retrying in ${secs}s… (attempt ${attempt}/${MAX_RETRIES})`);
+      mascotLine("provider", false);
       await abortableSleep(delay, signal);
     }
   }
@@ -203,7 +206,7 @@ function statusForTools(calls) {
 
 export function systemPrompt() {
   return [
-    "You are NimAgent, a terminal-based coding agent.",
+    "You are Omni Agent, a terminal-based coding agent.",
     "You help with software engineering tasks in the user's current working directory.",
     `Working directory: ${process.cwd()}`,
     `Platform: ${process.platform}`,
@@ -227,7 +230,7 @@ export function systemPrompt() {
     "- Use git_status and git_diff before summarizing changes or committing.",
     "- Use git_commit only when the user explicitly asks you to commit.",
     "- Use start_process for long-running dev servers, process_status for logs, and stop_process when done.",
-    "- File tools are workspace-scoped. Do not try to work outside the current directory unless the user changes cwd before launching NimAgent.",
+    "- File tools are workspace-scoped. Do not try to work outside the current directory unless the user changes cwd before launching Omni Agent.",
     "- Use run_shell with dry_run=true to inspect risk before uncertain commands.",
     "- run_shell blocks obviously destructive commands unless allow_unsafe=true; set that only when the user explicitly authorized the exact action.",
     "- When searching, prefer specific patterns over broad ones to reduce noise.",
@@ -381,6 +384,9 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
       messages[0] = { role: "system", content: persona.systemPrompt() };
     }
   }
+  // Local models get strict index-first OKF navigation rules; frontier
+  // providers are left alone. Re-synced every turn so /model switches apply.
+  syncOkfNavGuidance(messages, model, tools);
   // Template-aware path: render messages through Jinja2 then use /v1/completions.
   // Active when the resolved model's provider has a chatTemplate configured.
   const useTemplate = Boolean(model.chatTemplate);
@@ -419,7 +425,7 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
       // While the model is producing its first token, show the framed token
       // meter (the yellow-bounded bottom panel). As soon as text arrives we
       // tear the panel down and stream the answer inline, token by token.
-      startGenerationStatus(() => tokenCount);
+      startGenerationStatus(() => tokenCount, { contextWindow: model.contextWindow });
 
       if (useTemplate) {
         // Render the full message history through the provider's Jinja2 template,
@@ -450,9 +456,13 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
           messages: providerMessages,
           tools: useNativeTools ? tools : null,
           signal,
-          onToken: useTextTools ? undefined : function onToken(token) {
+          // Always count real deltas so the generation panel's token/TPS
+          // readout is accurate. In text-tools mode we still skip routing
+          // through the live think/answer splitter — that raw text contains
+          // unparsed tool-call syntax the user shouldn't see streamed inline.
+          onToken(token) {
             tokenCount++;
-            router.onToken(token);
+            if (!useTextTools) router.onToken(token);
           },
         });
       }
@@ -588,7 +598,8 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
       if (!p.permission.allowed) warnLine(`${p.name}: ${p.permission.message.split(":")[0].toLowerCase()} by permissions`);
     }
 
-    startStatus(statusForTools(calls));
+    const toolCategory = statusForTools(calls);
+    startStatus(toolCategory);
     const toolResults = await Promise.all(
       parsed.map(async ({ call, name, args, permission }) => {
         let result;
@@ -617,6 +628,13 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
         content: typeof result === "string" ? result : JSON.stringify(result),
       });
     }
+    // Omi reacts to what it just did — cheer if every call in the batch
+    // succeeded, grumble if any of them blew up.
+    const anyFailed = toolResults.some(
+      ({ result }) => typeof result === "string" &&
+        (result.startsWith("ERROR:") || result.startsWith("DENIED:") || result.startsWith("BLOCKED"))
+    );
+    mascotLine(toolCategory, !anyFailed);
   }
   errorLine(`Stopped after ${maxIterations} tool iterations.`);
 }

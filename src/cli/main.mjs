@@ -37,7 +37,7 @@ export async function main(args) {
     });
   }
 
-  // Project config: extensions + skills + prompt (nimagent.config.json).
+  // Project config: extensions + skills + prompt (omni.config.json).
   const project = loadProjectConfig();
   const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
   const skills = loadSkills(project);
@@ -55,22 +55,22 @@ export async function main(args) {
   if (routerCfg.enabled) warmSidecar(settings);
 
   // Package-management subcommands run once and exit (no model/API key needed):
-  //   nimagent install <name> | uninstall <name> | list | search <query>
+  //   omni install <name> | uninstall <name> | list | search <query>
   if (PKG_CMDS.has(args[0])) {
     const [sub, ...rest] = args;
-    const baseUrl = process.env.NIMAGENT_REGISTRY || project.registry || DEFAULT_REGISTRY;
+    const baseUrl = process.env.OMNI_REGISTRY || project.registry || DEFAULT_REGISTRY;
     try {
       if (sub === "install") {
         const name = rest[0];
-        if (!name) throw new Error("usage: nimagent install <package-name>");
+        if (!name) throw new Error("usage: omni install <package-name>");
         infoLine(`installing ${name} from ${baseUrl} …`);
         const { manifest, installedPaths, needsRestart } = await installPackage(name, { baseUrl });
         infoLine(`installed ${manifest.name}@${manifest.version || "?"} (${manifest.type}) → ${installedPaths.join(", ")}`);
-        if (needsRestart) infoLine("restart NimAgent to load it.");
+        if (needsRestart) infoLine("restart Omni Agent to load it.");
         else infoLine(manifest.command ? `use it with ${manifest.command}` : "ready to use.");
       } else if (sub === "uninstall" || sub === "remove") {
         const name = rest[0];
-        if (!name) throw new Error("usage: nimagent uninstall <package-name>");
+        if (!name) throw new Error("usage: omni uninstall <package-name>");
         const rec = uninstallPackage(name);
         infoLine(`uninstalled ${rec.name} (${rec.type}) — removed ${(rec.installedPaths || []).join(", ")}`);
       } else if (sub === "list") {
@@ -80,7 +80,7 @@ export async function main(args) {
       } else if (sub === "search") {
         const results = await searchRegistry(rest.join(" "), { baseUrl });
         if (!results.length) infoLine("no matching packages.");
-        else for (const p of results) console.log(`  ${p.name.padEnd(24)} ${c.dim(`${p.type} ${p.version || ""}`)}  ${p.description || ""}\n    ${c.dim("nimagent install " + p.name)}`);
+        else for (const p of results) console.log(`  ${p.name.padEnd(24)} ${c.dim(`${p.type} ${p.version || ""}`)}  ${p.description || ""}\n    ${c.dim("omni install " + p.name)}`);
       }
       process.exit(0);
     } catch (e) {
@@ -95,7 +95,7 @@ export async function main(args) {
     const prov = args[ski + 1];
     const key = args[ski + 2];
     if (!prov || !key) {
-      errorLine("usage: NimAgent --set-key <provider> <apiKey>");
+      errorLine("usage: omni --set-key <provider> <apiKey>");
       process.exit(1);
     }
     if (!settings.providers[prov]) {
@@ -160,7 +160,7 @@ export async function main(args) {
   };
   registerGoalTool(ctx);
 
-  // One-shot mode: `NimAgent "do this"` or `NimAgent /skill args` runs once and exits.
+  // One-shot mode: `omni "do this"` or `omni /skill args` runs once and exits.
   const promptArg = args.filter((a) => !a.startsWith("--")).join(" ").trim();
   if (promptArg) {
     if (reportMissingKey(ctx.model)) {
