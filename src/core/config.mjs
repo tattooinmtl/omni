@@ -41,9 +41,9 @@ const DEFAULT_SETTINGS = {
   // error), or "ask" (interactive confirmation). "*" sets the default for
   // tools not listed. Manage from the REPL with /perm.
   permissions: {},
-  // Workspace sandbox (see core/workspace.mjs). root is the workflow hub every
+  // Workspace sandbox (see core/workspace.mjs). root is the workspace hub every
   // project lands in when Omni Agent isn't launched inside a trusted folder
-  // (empty = pick on first run: Documents\OmniWorkflow, or C:\OmniWorkflow
+  // (empty = pick on first run: Documents\OmniWorkspace, or C:\OmniWorkspace
   // if the user opts out of OneDrive). scope "folder" confines file tools to
   // the workspace; "system" lifts containment machine-wide. Manage with /workspace.
   workspace: { root: "", scope: "folder" },

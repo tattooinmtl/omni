@@ -9,13 +9,13 @@ tool-calling agent loop with per-tool permissions, persistent memory, and goal
 mode — all with **zero npm dependencies** (pure Node ≥ 20 + built-in `fetch`).
 
 ```
-███╗   ██╗██╗███╗   ███╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗   ██╗   ██╗██████╗     ██╗
-████╗  ██║██║████╗ ████║     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝   ██║   ██║╚════██╗   ███║
-██╔██╗ ██║██║██╔████╔██║████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║      ██║   ██║ █████╔╝   ╚██║
-██║╚██╗██║██║██║╚██╔╝██║╚═══╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║      ╚██╗ ██╔╝██╔═══╝     ██║
-██║ ╚████║██║██║ ╚═╝ ██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║       ╚████╔╝ ███████╗██╗ ██║
-╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝        ╚═══╝  ╚══════╝╚═╝ ╚═╝
-                                                      v i c e   s u m m e r   e d i t i o n   2 0 2 6
+ ██████╗ ███╗   ███╗███╗   ██╗██╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+██╔═══██╗████╗ ████║████╗  ██║██║     ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+██║   ██║██╔████╔██║██╔██╗ ██║██║████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║
+██║   ██║██║╚██╔╝██║██║╚██╗██║██║╚═══╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║
+╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║     ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
+ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
+                        Omni-present harness for agents
 ```
 
 ## Install
@@ -115,9 +115,9 @@ File tools are sandboxed to the workspace root (symlink-aware — no `..` or
 link escapes). Where that root lands depends on how you launch:
 
 - **From nowhere in particular** (home, Documents, a drive root): Omni
-  creates and enters the **workflow hub** — `Documents\OmniWorkflow` — the
+  creates and enters the **workspace hub** — `Documents\OmniWorkspace` — the
   home for every project it builds. If your Documents folder is OneDrive-synced,
-  the first run offers a local `C:\OmniWorkflow` instead (build output and
+  the first run offers a local `C:\OmniWorkspace` instead (build output and
   sync clients don't mix). The choice persists in `settings.json`.
 - **Inside a project folder** (`omni` in a repo): a one-time *"trust this
   folder?"* prompt — trusted folders are cached in `agent/folder-trust.json`,

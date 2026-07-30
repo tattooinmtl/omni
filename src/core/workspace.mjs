@@ -5,10 +5,10 @@
 // story. Two launch modes:
 //
 //   1. Launched from a "nowhere" directory (home, the install dir, Documents
-//      itself, a drive root) → chdir into the workflow hub, a dedicated root
-//      for every project Omni Agent creates. Default: Documents\OmniWorkflow.
+//      itself, a drive root) → chdir into the workspace hub, a dedicated root
+//      for every project Omni Agent creates. Default: Documents\OmniWorkspace.
 //      If Documents is OneDrive-synced the user is offered a local
-//      C:\OmniWorkflow instead (sync churn + file locks make OneDrive a
+//      C:\OmniWorkspace instead (sync churn + file locks make OneDrive a
 //      poor place for build output). The choice persists in settings.workspace.root.
 //
 //   2. Launched inside a real project folder (`omni` in a repo) → one-time
@@ -28,7 +28,7 @@ import { HOME, saveSettings } from "./config.mjs";
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 
 const TRUST_PATH = path.join(HOME, "folder-trust.json");
-const HUB_NAME = "OmniWorkflow";
+const HUB_NAME = "OmniWorkspace";
 
 // Local (never-synced) fallback hub, offered when Documents lives in OneDrive.
 const LOCAL_HUB = process.platform === "win32"
@@ -226,7 +226,7 @@ export async function initWorkspace({ settings, interactive }) {
       infoLine(`trusted ${cwd} (revoke with /workspace untrust)`);
       return { root: cwd, mode: "trusted" };
     }
-    infoLine("okay — using your OmniWorkflow folder instead.");
+    infoLine("okay — using your OmniWorkspace folder instead.");
   }
 
   // Hub flow: first run picks (and persists) the hub location.
