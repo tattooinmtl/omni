@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fdPath, INSTALL_ROOT } from "../paths.mjs";
 import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
+import { HOME } from "../core/config.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
@@ -35,20 +36,46 @@ export function writeProjectConfig(patch) {
   return next;
 }
 
+// Registry-installed "mcp" packages write straight into omni.config.json's
+// mcpServers (see registry.mjs placePackage) — that command/args came from
+// a downloaded package, not something the person running Omni typed
+// themselves, so it deserves the exact same one-time confirmation as a
+// .mcp.json-sourced server, not silent inherited trust. <HOME>/packages.json
+// already records "mcpServers.<name>" in installedPaths for these (used by
+// uninstallPackage to clean up); reuse that same ledger here instead of
+// tracking it twice.
+function registryInstalledMcpNames() {
+  const names = new Set();
+  try {
+    const installed = JSON.parse(fs.readFileSync(path.join(HOME, "packages.json"), "utf8"));
+    for (const rec of Object.values(installed)) {
+      for (const p of rec.installedPaths || []) {
+        if (p.startsWith("mcpServers.")) names.add(p.slice("mcpServers.".length));
+      }
+    }
+  } catch {
+    /* no packages.json yet — fine */
+  }
+  return names;
+}
+
 // Merge MCP server definitions from omni.config.json and a project-local
 // .mcp.json (the vendor-neutral standard). .mcp.json wins on name collisions.
 // Returns { servers: { <name>: def }, settings: {...}, untrusted: Set<name> }.
 //
-// `untrusted` names every server sourced from .mcp.json — that file travels
-// with a cloned repo, so it can name a server the repo's author chose, not the
-// person running Omni Agent. mcp.mjs requires a one-time human confirmation
-// before ever connecting to one (see setMcpConfirm / the trust-fingerprint
-// cache), so opening an unfamiliar project can't silently spawn a process or
-// call out to an attacker-controlled endpoint using this machine's credentials.
+// `untrusted` names every server sourced from .mcp.json, plus every server
+// added via the package registry (see registryInstalledMcpNames above).
+// .mcp.json travels with a cloned repo, so it can name a server the repo's
+// author chose, not the person running Omni Agent; a registry package is
+// similarly something a human hasn't hand-vetted the exact command/args of.
+// mcp.mjs requires a one-time human confirmation before ever connecting to
+// either (see setMcpConfirm / the trust-fingerprint cache), so neither can
+// silently spawn a process or call out to an attacker-controlled endpoint
+// using this machine's credentials.
 export function loadMcpConfig(config = loadProjectConfig()) {
   const servers = { ...(config.mcpServers || {}) };
   const settings = { idleTimeout: 10, directTools: false, ...(config.mcp || {}) };
-  const untrusted = new Set();
+  const untrusted = registryInstalledMcpNames();
   try {
     const dotMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".mcp.json"), "utf8"));
     for (const name of Object.keys(dotMcp.mcpServers || {})) untrusted.add(name);

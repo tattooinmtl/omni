@@ -18,7 +18,17 @@ mode — all with **zero npm dependencies** (pure Node ≥ 20 + built-in `fetch`
                         Omni-present harness for agents
 ```
 
+**[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
+
 ## Install
+
+One line, straight from here — checks the latest version, downloads it, and wires up the `omni` command:
+
+```powershell
+irm https://omni.globalwarningnetworks.com/install.ps1 | iex
+```
+
+Or clone it yourself:
 
 ```powershell
 # Requires Git and Node.js 20+

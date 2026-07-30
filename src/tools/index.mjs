@@ -1213,6 +1213,11 @@ export const impl = {
   },
 
   async lsp({ action, path: p, line, character }) {
+    // Unlike every other read tool here, lspRequest itself never checked
+    // containment — it just path.resolve()'d whatever it was given, so it
+    // could read/analyze any file on disk with a supported extension. Same
+    // workspace boundary as resolve() uses everywhere else.
+    resolve(p);
     return clip(await lspRequest({ action, path: p, line, character }));
   },
 
@@ -1972,7 +1977,24 @@ function runQuiet(cmd, timeout = 5000) {
   });
 }
 
+// resolveOnPath/probeVersion build a shell:true command string (needed so
+// Windows .cmd/.bat shims like npm/tsc resolve via PATHEXT), and both are
+// reachable with a caller-supplied name (where_is's `name`, dev_env_report's
+// optional `tools` list) — without this check, a name like "x & calc.exe"
+// or "x; rm -rf ~" would be interpreted by the shell instead of treated as
+// a literal (missing) executable. Real executable names and version flags
+// never need anything outside this charset.
+const SAFE_EXEC_ARG_RE = /^[A-Za-z0-9_.+-]+$/;
+function assertSafeExecArg(value, label) {
+  const s = String(value);
+  if (!SAFE_EXEC_ARG_RE.test(s)) {
+    throw new Error(`${label} "${s}" contains characters not allowed in an executable/argument name`);
+  }
+  return s;
+}
+
 async function resolveOnPath(name) {
+  assertSafeExecArg(name, "executable name");
   const isWin = process.platform === "win32";
   const out = await runQuiet(isWin ? `where.exe ${name}` : `which -a ${name}`, 8000);
   // wsl and friends can emit UTF-16 (strip NULs); keep only path-shaped lines.
@@ -1984,6 +2006,8 @@ async function resolveOnPath(name) {
 }
 
 async function probeVersion(name, versionArg) {
+  assertSafeExecArg(name, "executable name");
+  assertSafeExecArg(versionArg, "version argument");
   // java/perl/ssh print the version to stderr; strip UTF-16 NULs (wsl).
   const out = (await runQuiet(`${name} ${versionArg}`, 5000)).replace(/\u0000/g, "");
   const first = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || "";

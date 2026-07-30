@@ -33,6 +33,23 @@ function isBlockedIp(ip) {
     if (low === "::1" || low === "::") return true;      // loopback / unspecified
     if (low.startsWith("fe80:")) return true;            // link-local
     if (/^f[cd][0-9a-f]{0,2}:/.test(low)) return true;   // unique local (fc00::/7)
+    // IPv4-mapped (::ffff:a.b.c.d) / IPv4-compatible (::a.b.c.d) IPv6 —
+    // net.isIP classifies these as version 6, so without unwrapping them a
+    // literal like "::ffff:127.0.0.1" or "::ffff:169.254.169.254" sails
+    // straight past every rule above despite embedding a blocked IPv4
+    // address. The WHATWG URL parser (what a real fetch() URL goes
+    // through) normalizes these to canonical hex-group form — e.g.
+    // "::ffff:127.0.0.1" becomes "::ffff:7f00:1" — not dotted decimal, so
+    // both forms are handled here.
+    const dotted = low.match(/^::(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/);
+    if (dotted && net.isIP(dotted[1]) === 4) return isBlockedIp(dotted[1]);
+    const hex = low.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const high = parseInt(hex[1], 16);
+      const lowWord = parseInt(hex[2], 16);
+      const octets = [high >> 8, high & 0xff, lowWord >> 8, lowWord & 0xff];
+      return isBlockedIp(octets.join("."));
+    }
     return false;
   }
   return false;
