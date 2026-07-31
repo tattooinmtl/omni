@@ -14,19 +14,11 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Resolve-Path (Join-Path $ScriptRoot "..")
 $RequiredListPath = Join-Path $ScriptRoot "required-files.json"
 
-# Same gradient + mascot as the app's own terminal UI (src/ui.mjs) — this
-# script updates an existing local clone; for a fresh-machine one-liner see
-# bootstrap.ps1 (deployed at https://omni.globalwarningnetworks.com/install.ps1).
-$Gradient = @(@(80, 236, 240), @(168, 96, 240), @(255, 145, 92))
-$ESC = [char]27
-$UseColor = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
-function Rgb([int[]]$c, [string]$text) {
-  if (-not $UseColor) { return $text }
-  return "$ESC[38;2;$($c[0]);$($c[1]);$($c[2])m$text$ESC[0m"
-}
+# This script updates an existing local clone; for a fresh-machine one-liner
+# see website/install.ps1 (deployed at https://omni.globalwarningnetworks.com/install.ps1).
 
 function Write-Info([string]$Message) {
-  Write-Host "  $(Rgb $Gradient[0] '(•‿•)')  [Omni Installer] $Message"
+  Write-Host "[Omni Installer] $Message"
 }
 
 function Ensure-Command([string]$Name, [string]$Hint) {
@@ -203,5 +195,5 @@ Run-ProjectSetup
 
 $installedVersion = (Get-Content (Join-Path $ProjectRoot "package.json") -Raw | ConvertFrom-Json).version
 Write-Host ""
-Write-Host "  $(Rgb $Gradient[2] '(^‿^)')  Omi: install complete — Omni v$installedVersion"
+Write-Info "Install complete - Omni v$installedVersion"
 Write-Info "Run Omni with: npm start (or 'omni' if you've run 'npm link')"
