@@ -14,6 +14,11 @@ import {
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
 import { compactMessages, estimateTokens, getLastThinking } from "../core/agent.mjs";
+import {
+  resolveProviderName, providers as memoryProviders, currentAtoms,
+  extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
+} from "../core/memory-provider.mjs";
+import { neuralViewCommand } from "./neuralview.mjs";
 import { detectContextWindow, parseContextSize, formatContextSize } from "../core/context.mjs";
 import { buildIndex, searchIndex, indexStatus, clearIndex } from "../integrations/rag.mjs";
 import { INSTALL_ROOT } from "../integrations/extras.mjs";
@@ -60,7 +65,11 @@ export const COMMANDS = [
       const perms = Object.entries(ctx.settings.permissions || {});
       infoLine(`perms:    ${perms.length ? perms.map(([t, s]) => `${t}=${s}`).join(", ") : "all allowed"}`);
       const mem = await runTool("memory_list", { limit: 1 });
-      infoLine(`memory:   ${mem.startsWith("(") ? "empty" : mem.split("\n")[0]}`);
+      const provName = resolveProviderName(ctx.settings);
+      const atomNote = provName === "layered-okf"
+        ? ` (layered-okf: ${currentAtoms().filter((a) => a.status === "active").length} active atoms)`
+        : "";
+      infoLine(`memory:   ${mem.startsWith("(") ? "empty" : mem.split("\n")[0]}${atomNote}`);
       costLine(ctx.session);
     },
   },
@@ -79,6 +88,11 @@ export const COMMANDS = [
     handler: (ctx, arg) => {
       const force = arg.trim().toLowerCase() === "now";
       const before = ctx.messages.length;
+      // Layered-okf: pull L1 atoms out of the messages about to be dropped,
+      // before they're gone for good — see NewPlanConversion.md Phase 3.
+      if (resolveProviderName(ctx.settings) === "layered-okf") {
+        try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
+      }
       const did = compactMessages(ctx.messages, { keepTail: force ? 2 : 8 });
       if (!did) {
         infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
@@ -127,6 +141,9 @@ export const COMMANDS = [
     name: "exit", aliases: ["quit", "q"], usage: "/exit", category: "Session",
     summary: "leave Omni Agent",
     handler: async (ctx) => {
+      if (resolveProviderName(ctx.settings) === "layered-okf") {
+        try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
+      }
       console.log(c.dim("\n  bye 👋"));
       ctx.rl.close();
       return { closed: true };
@@ -193,6 +210,15 @@ export const COMMANDS = [
     },
   },
   {
+    name: "btw", aliases: [], usage: "/btw <note>", category: "Agent",
+    summary: "drop a steering note into the conversation without derailing the current task",
+    handler: (ctx, arg) => {
+      const note = arg.trim();
+      if (!note) { errorLine("usage: /btw <note> — e.g. /btw keep this backwards compatible"); return; }
+      return { startTurn: true, prompt: `(btw — steering note, not a new task; keep working on what you were doing and factor this in): ${note}` };
+    },
+  },
+  {
     name: "diff", aliases: [], usage: "/diff", category: "Agent",
     summary: "toggle diff preview for edits",
     handler: (ctx) => {
@@ -201,17 +227,51 @@ export const COMMANDS = [
     },
   },
   {
-    name: "memory", aliases: ["mem"], usage: "/memory [search <q>|forget <id>]", category: "Agent",
-    summary: "list, search, or delete persistent memories",
+    name: "memory", aliases: ["mem"], usage: "/memory [search <q>|forget <id>|provider [name]|extract|atoms|explain <id>|deprecate <id>]", category: "Agent",
+    summary: "inspect persistent memory: legacy flat facts, or auto-weighted layered-okf atoms (nothing is ever added or approved manually)",
     handler: async (ctx, arg) => {
       const [sub, ...rest] = arg.trim().split(/\s+/).filter(Boolean);
       try {
         if (!sub || sub === "list") console.log("  " + (await runTool("memory_list", {})).replace(/\n/g, "\n  "));
         else if (sub === "search") console.log("  " + (await runTool("memory_search", { query: rest.join(" ") })).replace(/\n/g, "\n  "));
         else if (sub === "forget") infoLine(await runTool("memory_forget", { id: rest[0] }));
-        else errorLine("usage: /memory | /memory search <query> | /memory forget <id>");
+        else if (sub === "provider") {
+          const name = rest[0];
+          if (!name) {
+            infoLine(`active provider: ${resolveProviderName(ctx.settings)} (options: ${Object.keys(memoryProviders).join(", ")})`);
+            return;
+          }
+          if (!memoryProviders[name]) { errorLine(`unknown provider "${name}" — options: ${Object.keys(memoryProviders).join(", ")}`); return; }
+          ctx.settings.memory = { ...ctx.settings.memory, provider: name };
+          await saveSettings(ctx.settings);
+          infoLine(`memory provider set to ${name} (saved)`);
+        } else if (sub === "extract") {
+          // Manually kicks the automatic indexer early (it already runs on
+          // /compact and /exit) — not a way to hand-author a memory. Every
+          // atom it finds is weighted and placed as active immediately.
+          const created = extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" });
+          if (!created.length) { infoLine("no new cue-phrase matches found in this conversation"); return; }
+          infoLine(`indexed ${created.length} atom(s), weighted and active:`);
+          for (const a of created) console.log("    " + formatMemoryRecord(a));
+        } else if (sub === "atoms") {
+          const status = rest.find((_, i) => rest[i - 1] === "status") || (["active", "superseded", "deprecated"].includes(rest[0]) ? rest[0] : "");
+          console.log("  " + (await runTool("memory_atoms", { status })).replace(/\n/g, "\n  "));
+        } else if (sub === "explain") {
+          if (!rest[0]) { errorLine("usage: /memory explain <atom-id>"); return; }
+          console.log("  " + explainAtomText(rest[0]).replace(/\n/g, "\n  "));
+        } else if (sub === "deprecate") {
+          if (!rest[0]) { errorLine("usage: /memory deprecate <atom-id> [reason...]"); return; }
+          infoLine(await runTool("memory_deprecate", { id: rest[0], reason: rest.slice(1).join(" ") }));
+        } else {
+          errorLine("usage: /memory | search <q> | forget <id> | provider [name] | extract | atoms [status] | explain <id> | deprecate <id>");
+        }
       } catch (e) { errorLine(e.message); }
     },
+  },
+  {
+    name: "neuralview", aliases: ["neural", "galaxy"], usage: "/neuralview", category: "Agent",
+    summary: "open the live galaxy view of the OKF knowledge base + memory index (always running in the background)",
+    handler: () => neuralViewCommand(),
   },
   {
     name: "rag", aliases: [], usage: "/rag [index|search <q>|status|clear]", category: "Agent",

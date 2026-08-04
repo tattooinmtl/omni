@@ -9,8 +9,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { knownContextWindow } from "./context.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
@@ -47,6 +49,12 @@ const DEFAULT_SETTINGS = {
   // if the user opts out of OneDrive). scope "folder" confines file tools to
   // the workspace; "system" lifts containment machine-wide. Manage with /workspace.
   workspace: { root: "", scope: "folder" },
+  // Which memory-provider implementation backs memory_save/search/list/forget
+  // (see core/memory-provider.mjs). "legacy-jsonl" is the original flat store
+  // and the default/rollback path; "layered-okf" adds typed, weighted L1
+  // atoms that are auto-placed (active->superseded/deprecated) by the
+  // indexer — no manual add/approve step. Switch with /memory provider <legacy-jsonl|layered-okf>.
+  memory: { provider: "legacy-jsonl" },
   providers: {
     openai: {
       baseUrl: "https://api.openai.com/v1",
@@ -356,6 +364,7 @@ export async function loadSettings() {
       models:      { ...DEFAULT_SETTINGS.models, ...(saved.models || {}) },
       permissions: { ...(saved.permissions || {}) },
       workspace:   { ...DEFAULT_SETTINGS.workspace, ...(saved.workspace || {}) },
+      memory:      { ...DEFAULT_SETTINGS.memory, ...(saved.memory || {}) },
     };
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
@@ -458,6 +467,47 @@ function cwdSlug() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// L0 evidence: every session record gets a stable event id + schema version,
+// and likely secrets are stripped before the record ever hits disk. This is
+// what NewPlanConversion.md's Phase 2 calls "immutable evidence" — raw, but
+// safe to later feed into L1 atom extraction (see core/memory-provider.mjs).
+// ---------------------------------------------------------------------------
+
+const L0_SCHEMA_VERSION = 1;
+
+const SECRET_PATTERNS = [
+  /sk-[a-zA-Z0-9_-]{16,}/g,
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /AKIA[0-9A-Z]{16}/g,
+  /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g,
+  /\b(?:api[_-]?key|token|secret|password|passwd)\b\s*[:=]\s*["']?[^\s"'{}]{8,}["']?/gi,
+];
+
+function redactSecrets(text) {
+  let out = text;
+  for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
+  return out;
+}
+
+// Walk a JSON-shaped value and redact string leaves only, so structure
+// (message roles, tool-call shapes, etc.) is never disturbed.
+function deepRedact(value, depth = 0) {
+  if (depth > 8) return value;
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map((v) => deepRedact(v, depth + 1));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = deepRedact(v, depth + 1);
+    return out;
+  }
+  return value;
+}
+
+export function stableEventId() {
+  return crypto.randomUUID();
+}
+
 export class Session {
   constructor() {
     ensureHome();
@@ -487,7 +537,15 @@ export class Session {
 
   async append(record) {
     try {
-      await fs.promises.appendFile(this.file, JSON.stringify(record) + "\n");
+      const stamped = deepRedact({
+        eventId: stableEventId(),
+        schemaVersion: L0_SCHEMA_VERSION,
+        ...record,
+      });
+      await fs.promises.appendFile(this.file, JSON.stringify(stamped) + "\n");
+      // "session events -> L0 immutable conversation log" (NewPlanConversion.md)
+      // — every captured record pulses the L0 node in the /neuralview map.
+      publishActivity({ kind: "l0_event", eventType: record.type || "event" });
     } catch {
       /* non-fatal */
     }

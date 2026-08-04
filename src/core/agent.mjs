@@ -11,6 +11,19 @@ import {
   createThinkSplitter, extractThink,
 } from "./toolcalls.mjs";
 import { syncOkfNavGuidance } from "./okfnav.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
+import { CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID } from "../local/graph-ids.mjs";
+
+// Which /neuralview architecture node a tool call represents, per
+// NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
+// Memory, Skills, Wiki, CodeGraph}" diagram. Used to route the live pulse
+// to the right subsystem instead of just a generic "something happened".
+function routeForTool(name) {
+  if (name.startsWith("memory_")) return CHAT_MEMORY_ID;
+  if (name.startsWith("okf_")) return OKF_ROOT_ID;
+  if (name === "find_symbol" || name === "rag_search" || name === "deps") return CODEGRAPH_ID;
+  return null;
+}
 import {
   c, assistantPrefix, toolLine, toolResultLine, errorLine, warnLine,
   startStatus, stopStatus, startGenerationStatus, diffPreviewLine,
@@ -603,15 +616,18 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
     const toolResults = await Promise.all(
       parsed.map(async ({ call, name, args, permission }) => {
         let result;
+        const route = routeForTool(name);
         if (!permission.allowed) {
           result = permission.message;
         } else {
+          publishActivity({ kind: "tool_call", tool: name, phase: "start", route });
           try {
             result = await runTool(name, args);
           } catch (e) {
             result = "ERROR: " + e.message;
           }
         }
+        publishActivity({ kind: "tool_call", tool: name, phase: "done", route, ok: typeof result !== "string" || !result.startsWith("ERROR:") });
         return { call, name, args, result };
       })
     );

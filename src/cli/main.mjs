@@ -21,6 +21,7 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
+import { startNeuralView } from "../local/neuralview-server.mjs";
 
 export async function main(args) {
   const settings = await loadSettings();
@@ -199,6 +200,11 @@ export async function main(args) {
     await shutdown(0);
     return;
   }
+
+  // The neural-view server is background infrastructure for the memory
+  // system, not a thing the user starts — bind it now, silently, and let
+  // /neuralview just open a browser onto whatever's already running.
+  startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
 
   await startRepl(ctx, { resumeMode });
 }

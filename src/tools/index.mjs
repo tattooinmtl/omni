@@ -11,6 +11,9 @@ import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
 import { HOME } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
+import {
+  activeProviderFromDisk, layeredProvider, currentAtoms, formatMemoryRecord, explainAtomText,
+} from "../core/memory-provider.mjs";
 import { buildIndex as ragBuild, searchIndex as ragSearch } from "../integrations/rag.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 
@@ -626,6 +629,48 @@ export const tools = [
           id: { type: "string", description: "Memory id, e.g. 'm1a2b3c4'" },
         },
         required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_deprecate",
+      description: "Mark a memory atom deprecated (wrong, obsolete, or no longer relevant) without deleting its history.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_explain",
+      description: "Show the full lifecycle of a memory atom: its status history, sources, and which atoms it contradicts, is contradicted by, or supersedes. Use this before trusting or acting on a surprising recalled memory.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_atoms",
+      description: "List layered-okf memory atoms (weight-ranked, heaviest first), optionally filtered by status (active|superseded|deprecated) or type.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["active", "superseded", "deprecated"] },
+          type: { type: "string" },
+          limit: { type: "integer" },
+        },
       },
     },
   },
@@ -1404,49 +1449,65 @@ export const impl = {
   stop_process({ id }) {
     return stopManagedProcess(id);
   },
+  // Routed through the active memory provider (settings.memory.provider —
+  // "legacy-jsonl" by default, or "layered-okf"). See core/memory-provider.mjs.
   memory_save({ text, tags = [] }) {
     if (!text || !String(text).trim()) throw new Error("text is required");
-    const rec = {
-      id: "m" + Date.now().toString(36) + Math.floor(Math.random() * 100),
-      text: String(text).trim(),
-      tags: Array.isArray(tags) ? tags.map(String) : [],
-      createdAt: new Date().toISOString(),
-    };
-    fs.mkdirSync(path.dirname(memoryFile()), { recursive: true });
-    fs.appendFileSync(memoryFile(), JSON.stringify(rec) + "\n");
-    return `Saved memory ${rec.id}: ${rec.text.slice(0, 120)}`;
+    const provider = activeProviderFromDisk();
+    // An explicit save is a stronger signal than a heuristic cue-phrase
+    // match, so it outweighs (and, on conflict, supersedes) an extracted
+    // atom about the same subject — see memory-provider.mjs's weighting.
+    const rec = provider.name === "layered-okf"
+      ? provider.propose({ type: "fact", text, tags, confidence: 0.85 })
+      : provider.propose({ text, tags });
+    return `Saved memory ${rec.id}: ${String(rec.text).slice(0, 120)}`;
   },
 
   memory_search({ query, limit = 8 }) {
     if (!query || !String(query).trim()) throw new Error("query is required");
-    const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean);
-    const scored = readMemories()
-      .map((m) => {
-        const hay = (m.text + " " + (m.tags || []).join(" ")).toLowerCase();
-        const score = terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
-        return { m, score };
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score || (a.m.createdAt < b.m.createdAt ? 1 : -1))
-      .slice(0, Math.max(1, Math.min(Number(limit) || 8, 50)));
-    if (!scored.length) return `(no memories matched "${query}")`;
-    return clip(scored.map(({ m }) => formatMemory(m)).join("\n"));
+    const provider = activeProviderFromDisk();
+    const hits = provider.search(query, {}, { limit: Math.max(1, Math.min(Number(limit) || 8, 50)) });
+    if (!hits.length) return `(no memories matched "${query}")`;
+    return clip(hits.map(formatMemoryRecord).join("\n"));
   },
 
   memory_list({ limit = 20 } = {}) {
-    const all = readMemories();
-    if (!all.length) return "(no memories saved yet)";
-    const recent = all.slice(-Math.max(1, Math.min(Number(limit) || 20, 100))).reverse();
-    return clip(`${all.length} memories total, most recent first:\n` + recent.map(formatMemory).join("\n"));
+    const provider = activeProviderFromDisk();
+    const n = Math.max(1, Math.min(Number(limit) || 20, 100));
+    const recent = provider.search("", {}, { limit: n });
+    if (!recent.length) return "(no memories saved yet)";
+    const total = provider.search("", {}, { limit: 1e6 }).length;
+    return clip(`${total} memories total (provider: ${provider.name}), most recent first:\n` + recent.map(formatMemoryRecord).join("\n"));
   },
 
   memory_forget({ id }) {
     if (!id) throw new Error("id is required");
-    const all = readMemories();
-    const kept = all.filter((m) => m.id !== id);
-    if (kept.length === all.length) throw new Error(`memory not found: ${id}`);
-    fs.writeFileSync(memoryFile(), kept.map((m) => JSON.stringify(m)).join("\n") + (kept.length ? "\n" : ""));
-    return `Forgot memory ${id}`;
+    const rec = activeProviderFromDisk().deprecate(id);
+    return `Forgot memory ${rec.id || id}`;
+  },
+
+  // --- layered-okf atom inspection/correction (read-only + deprecate; there
+  // is deliberately no tool to hand-author or approve an atom — every atom
+  // is placed automatically by memory_save or the heuristic extractor and
+  // weighed by the indexer, never by manual curation) -------------------------
+  memory_deprecate({ id, reason = "" }) {
+    if (!id) throw new Error("id is required");
+    const atom = layeredProvider.deprecate(id, reason);
+    return `Deprecated atom ${atom.id}.`;
+  },
+
+  memory_explain({ id }) {
+    if (!id) throw new Error("id is required");
+    return clip(explainAtomText(id));
+  },
+
+  memory_atoms({ status = "", type = "", limit = 20 } = {}) {
+    const atoms = currentAtoms()
+      .filter((a) => (!status || a.status === status) && (!type || a.type === type))
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+      .slice(0, Math.max(1, Math.min(Number(limit) || 20, 100)));
+    if (!atoms.length) return "(no atoms match)";
+    return clip(atoms.map(formatMemoryRecord).join("\n"));
   },
 
   system_info() {
@@ -1852,45 +1913,33 @@ export async function runTool(name, args) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent memory — one JSON record per line in <HOME>/memory.jsonl.
-// Survives across sessions and working directories.
+// Persistent memory — routed through core/memory-provider.mjs. Default
+// provider is legacy-jsonl (<HOME>/memory.jsonl, one record per line,
+// unchanged since before the memory-provider split). layered-okf adds L1
+// atoms with status/provenance in <HOME>/memory-atoms.jsonl.
 // ---------------------------------------------------------------------------
-
-function memoryFile() {
-  return path.join(HOME, "memory.jsonl");
-}
-
-function readMemories() {
-  try {
-    return fs
-      .readFileSync(memoryFile(), "utf8")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function formatMemory(m) {
-  const tags = m.tags?.length ? ` [${m.tags.join(", ")}]` : "";
-  return `- (${m.id}, ${String(m.createdAt).slice(0, 10)})${tags} ${m.text}`;
-}
 
 // Injected into the system prompt at startup so recent memories are always in
 // context. Returns "" when nothing is saved.
 export function memoryPreamble(limit = 15) {
-  const all = readMemories();
-  if (!all.length) return "";
-  const recent = all.slice(-limit).reverse();
-  return [
-    "",
-    "# Persistent memories",
-    `You have ${all.length} saved memories; the most recent are below. Use memory_search for older ones,`,
-    "memory_save to record new durable facts, and memory_forget to remove wrong/obsolete ones.",
-    ...recent.map(formatMemory),
-  ].join("\n");
+  const provider = activeProviderFromDisk();
+  const recent = provider.search("", {}, { limit });
+  if (!recent.length) return "";
+  const header = provider.name === "layered-okf"
+    ? [
+      "",
+      "# Persistent memories (layered-okf)",
+      `You have ${recent.length} active memory atoms shown below (weight-ranked, heaviest first). Use memory_search for others,`,
+      "memory_explain <id> to see why an atom is active/superseded, memory_save for a durable fact (weighted straight in,",
+      "no review step), and memory_deprecate <id> to correct a wrong one.",
+    ]
+    : [
+      "",
+      "# Persistent memories",
+      `You have ${recent.length} saved memories shown below (most recent first). Use memory_search for older ones,`,
+      "memory_save to record new durable facts, and memory_forget to remove wrong/obsolete ones.",
+    ];
+  return [...header, ...recent.map(formatMemoryRecord)].join("\n");
 }
 
 // ---------------------------------------------------------------------------
