@@ -368,7 +368,10 @@ export function activeProviderFromDisk() {
 
 // ---------------------------------------------------------------------------
 // Phase 3: heuristic L1 extraction (no model call — dependency-free, so it
-// can run on every /compact or /exit without cost or latency surprises).
+// can run on every turn without cost or latency surprises — see agent.mjs,
+// which calls this after every completed turn, not just /compact or /exit).
+// No user effort required: no magic phrasing, no okf_add, nothing manual —
+// this is the only thing that has to run for Chat Memory to grow.
 // ---------------------------------------------------------------------------
 
 // Per-cue base weight: how much the indexer trusts a heuristic match of this
@@ -378,10 +381,21 @@ const CUES = [
   { type: "constraint", re: /\b(never|don'?t|do not|must not)\b/i, weight: 0.6 },
   { type: "correction", re: /\b(no,? that'?s (?:wrong|not right|not it)|actually,|instead of that)\b/i, weight: 0.65 },
   { type: "preference", re: /\bi (?:prefer|like|want|always want|generally want)\b/i, weight: 0.5 },
-  { type: "decision", re: /\b(let'?s (?:use|go with)|we(?:'ll| will) use|we decided to|decided to use)\b/i, weight: 0.55 },
+  { type: "decision", re: /\b(let'?s (?:use|go with)|we(?:'ll| will) use|we decided to|decided to use|going with)\b/i, weight: 0.55 },
   { type: "successful_technique", re: /\b(that worked|that fixed it|good,? that works|works now)\b/i, weight: 0.45 },
   { type: "failed_technique", re: /\b(that didn'?t work|that failed|still broken|doesn'?t work)\b/i, weight: 0.45 },
+  { type: "constraint", re: /\b(always|make sure to|please always|from now on)\b/i, weight: 0.5 },
+  { type: "project_state", re: /\b(we should|we need to|the plan is|the goal is)\b/i, weight: 0.35 },
 ];
+
+// Whole-sentence filler that's never worth remembering even at low
+// confidence — pure acknowledgments carry no durable information.
+const FILLER_RE = /^(ok(ay)?|sure|sounds good|got it|thanks|thank you|great|yes|no|got you|cool|nice|perfect|noted)[.!]?$/i;
+// Looks like code/a command rather than prose — leave that to the L0 log.
+const CODE_LIKE_RE = /[{}<>;]|=>|\bfunction\b|\bconst\b|\bimport\b|^\s*[-*]\s|^\$ /;
+// Catch-all captures (no cue phrase matched) per extraction pass — keeps a
+// single long paste from flooding the store in one shot.
+const MAX_CATCHALL = 5;
 
 function sentencesOf(text) {
   return String(text || "").split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
@@ -393,33 +407,74 @@ function messageText(content) {
   return "";
 }
 
-// Scans user-authored messages for cue phrases and weighs+places a matching
-// sentence straight into the index (see layeredProvider.propose — no review
-// step). Deduplicates against existing atoms with identical normalized text
-// so repeated runs (e.g. every /compact) don't spam.
+// Scans user AND assistant messages for cue phrases (typed statements of
+// preference/constraint/decision/correction/outcome) and weighs+places a
+// matching sentence straight into the index (layeredProvider.propose — no
+// review step). Sentences that don't match a cue but look like real,
+// substantive prose still get captured at a low baseline weight, so nothing
+// requires a specific phrasing to be remembered — the weighting system sorts
+// out what actually matters later. Deduplicates against existing atoms with
+// identical normalized text so repeated runs don't spam.
 export function extractAtomsFromMessages(messages, { source = "session" } = {}) {
   const existingText = new Set(currentAtoms().map((a) => a.text.toLowerCase().trim()));
   const created = [];
+  let catchAllUsed = 0;
   for (const msg of messages || []) {
-    if (msg.role !== "user") continue;
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
     const text = messageText(msg.content);
     for (const sentence of sentencesOf(text)) {
       if (sentence.length < 8 || sentence.length > 300) continue;
-      const cue = CUES.find((c) => c.re.test(sentence));
-      if (!cue) continue;
       const norm = sentence.toLowerCase().trim();
       if (existingText.has(norm)) continue;
+      const cue = CUES.find((c) => c.re.test(sentence));
+      let type, confidence;
+      if (cue) {
+        type = cue.type; confidence = cue.weight;
+      } else if (
+        msg.role === "user" && catchAllUsed < MAX_CATCHALL &&
+        sentence.length >= 24 && !sentence.endsWith("?") &&
+        !FILLER_RE.test(sentence.trim()) && !CODE_LIKE_RE.test(sentence)
+      ) {
+        type = "fact"; confidence = 0.2; catchAllUsed++;
+      } else {
+        continue;
+      }
       existingText.add(norm);
       const atom = layeredProvider.propose({
-        type: cue.type,
+        type,
         text: sentence,
-        confidence: cue.weight,
+        confidence,
         sources: [{ source, snippet: sentence.slice(0, 160) }],
       });
       created.push(atom);
     }
   }
   return created;
+}
+
+// Tools whose SUCCESSFUL result is itself worth remembering (a test run
+// passing/failing is durable project state); anything else that errors out
+// is worth remembering as a failed technique regardless of which tool it
+// was. Runs automatically after every tool call (agent.mjs) — bypasses OKF
+// entirely, straight into Chat Memory, zero effort from the user or model.
+const TEST_LIKE_TOOLS = new Set(["run_test", "test_coverage"]);
+
+export function captureToolActivity({ tool, args = {}, result }) {
+  const resultText = typeof result === "string" ? result : "";
+  const failed = /^(ERROR|DENIED|BLOCKED)/.test(resultText);
+  let type, text;
+  if (TEST_LIKE_TOOLS.has(tool)) {
+    type = failed ? "failed_technique" : "successful_technique";
+    text = `${tool}${args.command ? " (" + String(args.command).slice(0, 80) + ")" : ""}: ${failed ? "failed" : "passed"}`;
+  } else if (failed) {
+    type = "failed_technique";
+    text = `${tool} failed: ${resultText.replace(/^(ERROR|DENIED|BLOCKED)[:\s]*/i, "").slice(0, 120)}`;
+  } else {
+    return null;
+  }
+  const norm = text.toLowerCase().trim();
+  if (currentAtoms().some((a) => a.text.toLowerCase().trim() === norm)) return null;
+  return layeredProvider.propose({ type, text, tags: [tool], confidence: 0.3, sources: [{ source: `tool:${tool}` }] });
 }
 
 // ---------------------------------------------------------------------------

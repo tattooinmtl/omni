@@ -88,11 +88,11 @@ export const COMMANDS = [
     handler: (ctx, arg) => {
       const force = arg.trim().toLowerCase() === "now";
       const before = ctx.messages.length;
-      // Layered-okf: pull L1 atoms out of the messages about to be dropped,
-      // before they're gone for good — see NewPlanConversion.md Phase 3.
-      if (resolveProviderName(ctx.settings) === "layered-okf") {
-        try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
-      }
+      // Pull L1 atoms out of the messages about to be dropped, before
+      // they're gone for good — see NewPlanConversion.md Phase 3. Runs
+      // regardless of the active memory provider (atoms are additive); this
+      // is a safety-net pass, the main one runs every turn (see agent.mjs).
+      try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
       const did = compactMessages(ctx.messages, { keepTail: force ? 2 : 8 });
       if (!did) {
         infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
@@ -141,9 +141,7 @@ export const COMMANDS = [
     name: "exit", aliases: ["quit", "q"], usage: "/exit", category: "Session",
     summary: "leave Omni Agent",
     handler: async (ctx) => {
-      if (resolveProviderName(ctx.settings) === "layered-okf") {
-        try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
-      }
+      try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
       console.log(c.dim("\n  bye 👋"));
       ctx.rl.close();
       return { closed: true };

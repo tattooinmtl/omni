@@ -110,7 +110,7 @@ const DEFAULT_SETTINGS = {
     },
     agnes: {
       baseUrl: "https://apihub.agnes-ai.com/v1",
-      apiKey: "",
+      apiKey: "", // get a free key at https://platform.agnes-ai.com/ — Starter tier: 1,500 agnes-2.5-flash requests per 5 hours
       label: "Agnes AI",
     },
     together: {

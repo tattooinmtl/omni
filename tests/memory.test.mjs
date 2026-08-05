@@ -32,7 +32,7 @@ process.env.OMNI_HOME = tmpHome;
 const u = (p) => pathToFileURL(path.join(root, "src", p)).href;
 const {
   activeProviderFromDisk, layeredProvider, currentAtoms, findContradictions,
-  extractAtomsFromMessages, explainAtomText, resolveProviderName,
+  extractAtomsFromMessages, explainAtomText, resolveProviderName, captureToolActivity,
 } = await import(u("core/memory-provider.mjs"));
 const { runTool } = await import(u("tools/index.mjs"));
 const { findCommand, dispatchCommand } = await import(u("cli/commands.mjs"));
@@ -98,6 +98,41 @@ assert("extracted atoms carry a per-cue weight lighter than an explicit manual s
 const rerun = extractAtomsFromMessages(fakeMessages, { source: "test" });
 assert("re-running extraction on the same messages does not duplicate atoms",
   rerun, (list) => list.length === 0);
+
+// ---- Zero-effort capture: no cue phrase, no manual save, still remembered --
+
+const catchAllMessages = [
+  { role: "user", content: "The staging database migration takes about twenty minutes to complete." },
+  { role: "assistant", content: "The staging database migration takes about twenty minutes to complete." }, // same text, assistant — must not double-capture
+  { role: "user", content: "Sounds good." }, // filler — must not become an atom
+  { role: "user", content: "Is the server running yet?" }, // question — must not become an atom
+];
+const catchAll = extractAtomsFromMessages(catchAllMessages, { source: "test" });
+assert("a plain factual sentence with no cue phrase is still captured automatically",
+  catchAll, (list) => list.some((a) => a.type === "fact" && /staging database migration/.test(a.text)));
+assert("catch-all captures land lighter than any cue match",
+  catchAll, (list) => list.filter((a) => /staging database/.test(a.text)).every((a) => a.confidence === 0.2));
+assert("filler acknowledgments are never captured, even at low confidence",
+  catchAll, (list) => !list.some((a) => /sounds good/i.test(a.text)));
+assert("questions are never captured by the catch-all tier",
+  catchAll, (list) => !list.some((a) => a.text.includes("?")));
+assert("assistant text is scanned for cue phrases but not the catch-all tier (avoids restating the same fact twice)",
+  catchAll, (list) => list.filter((a) => /staging database/.test(a.text)).length === 1);
+
+// ---- Zero-effort capture: tool outcomes (bypasses OKF entirely) ------------
+
+const failAtom = captureToolActivity({ tool: "run_shell", args: {}, result: "ERROR: command not found: fooo" });
+assert("a failed tool call is captured as a failed_technique automatically",
+  failAtom, (a) => a && a.type === "failed_technique" && /command not found/.test(a.text));
+const passAtom = captureToolActivity({ tool: "run_test", args: { command: "npm test" }, result: "42 passed, 0 failed" });
+assert("a successful test run is captured as a successful_technique automatically",
+  passAtom, (a) => a && a.type === "successful_technique" && /npm test/.test(a.text));
+const readAtom = captureToolActivity({ tool: "read_file", args: { path: "x.txt" }, result: "hello" });
+assert("routine successful reads/edits are NOT captured (would just duplicate the L0 log)",
+  readAtom, (a) => a === null);
+const dupeAtom = captureToolActivity({ tool: "run_test", args: { command: "npm test" }, result: "42 passed, 0 failed" });
+assert("an identical tool-activity outcome is not captured twice",
+  dupeAtom, (a) => a === null);
 
 // ---- Phase 4: contradiction detection + weight-based auto-supersede --------
 

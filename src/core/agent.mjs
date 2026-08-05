@@ -13,6 +13,7 @@ import {
 import { syncOkfNavGuidance } from "./okfnav.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID } from "../local/graph-ids.mjs";
+import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider.mjs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -573,6 +574,11 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
         continue;
       }
       if (truncated) warnLine("response was truncated by the max_tokens limit");
+      // Runs on every completed turn, regardless of which memory provider is
+      // active (see core/memory-provider.mjs) — atoms are a separate,
+      // additive store, so this always keeps the indexer/graph current
+      // instead of only firing on an explicit /compact or /exit.
+      try { extractAtomsFromMessages(messages, { source: session?.file || "session" }); } catch { /* best-effort */ }
       return; // model is done
     }
 
@@ -628,6 +634,10 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
           }
         }
         publishActivity({ kind: "tool_call", tool: name, phase: "done", route, ok: typeof result !== "string" || !result.startsWith("ERROR:") });
+        // Zero-effort capture: a failed tool call or a test run is durable
+        // signal worth remembering on its own, no cue phrase or okf_add
+        // needed — see memory-provider.mjs's captureToolActivity.
+        try { captureToolActivity({ tool: name, args, result }); } catch { /* best-effort */ }
         return { call, name, args, result };
       })
     );
