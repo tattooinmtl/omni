@@ -187,6 +187,7 @@ export async function main(args) {
     ctx.currentAbort = new AbortController();
     await runTurn({
       model: ctx.model,
+      settings,
       messages,
       session,
       maxIterations: ctx.maxIterations,

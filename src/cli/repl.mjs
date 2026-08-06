@@ -19,7 +19,66 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 
+// How long a gap between consecutive plain (non-slash, non-continuation)
+// readline "line" events is still considered "the same paste" rather than
+// two separate deliberate submissions. This has to absorb real-world paste
+// jitter, not just the ideal case: a pasted multi-line block usually arrives
+// as one synchronous burst, but on some terminal/shell combinations (seen on
+// Windows) the lines can land tens to a couple hundred ms apart. A window
+// that's too tight silently splits ONE paste into N separate agent turns —
+// each one a real model request, which can burn through a rate limit in
+// seconds. A human manually typing two distinct one-line messages back to
+// back essentially never does it within half a second of each other, so this
+// stays well clear of that case while giving paste plenty of room.
+export const BURST_PASTE_WINDOW_MS = 500;
+
+export function shouldImmediateSubmit(rawInput, multiLineActive = false) {
+  const trimmed = String(rawInput || "").trim();
+  return trimmed.startsWith("/") || trimmed.endsWith("\\") || Boolean(multiLineActive);
+}
+
+// Pure helper used by tests to verify burst grouping behavior without
+// requiring an interactive terminal.
+export function coalesceBurstInputs(events, { windowMs = BURST_PASTE_WINDOW_MS } = {}) {
+  const out = [];
+  const burst = [];
+  let lastAt = 0;
+
+  function flushBurst() {
+    if (!burst.length) return;
+    out.push({ text: burst.join("\n"), fromPaste: true });
+    burst.length = 0;
+  }
+
+  for (const ev of events || []) {
+    const input = String(ev?.input || "");
+    const at = Number.isFinite(ev?.at) ? ev.at : lastAt;
+    const immediate = shouldImmediateSubmit(input, Boolean(ev?.multiLineActive));
+
+    if (immediate) {
+      flushBurst();
+      out.push({ text: input, fromPaste: false });
+      lastAt = at;
+      continue;
+    }
+
+    if (burst.length && at - lastAt > windowMs) flushBurst();
+    burst.push(input);
+    lastAt = at;
+  }
+
+  flushBurst();
+  return out;
+}
+
 export async function startRepl(ctx, { resumeMode = false } = {}) {
+  const BRACKET_PASTE_ON = "\x1b[?2004h";
+  const BRACKET_PASTE_OFF = "\x1b[?2004l";
+  const BRACKET_PASTE_START = "\x1b[200~";
+  const BRACKET_PASTE_END = "\x1b[201~";
+  // (BURST_PASTE_WINDOW_MS is the module-level export above — one definition,
+  // so the live behavior and the unit tests can never drift apart again.)
+
   banner(ctx.model.key);
   if (ctx.loadedExtensions.length || ctx.skills.length || ctx.mcpInfo.servers) {
     const mcpNames = ctx.mcpInfo.names || [];
@@ -67,6 +126,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     },
   });
   ctx.rl = rl;
+  const canBracketPaste = process.stdin.isTTY && process.stdout.isTTY;
+  if (canBracketPaste) process.stdout.write(BRACKET_PASTE_ON);
 
   // Ctrl-C interrupt: wired to BOTH process and rl (rl.pause() mutes rl's
   // SIGINT on Windows, so the process-level handler covers generation time).
@@ -123,14 +184,29 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       readline.clearLine(process.stdout, 0);
       readline.cursorTo(process.stdout, 0);
     }
+    // Otherwise a stale "/..." from the PREVIOUS prompt would make the very
+    // next Up/Down on this fresh, empty prompt think the menu is still
+    // active and hijack normal history navigation.
+    menuLastLine = "";
+    menuSelected = 0;
   }
 
   // ── Live "/" command menu ────────────────────────────────────────────────
   // While the input line starts with "/", a filtered command list renders
   // below the prompt and narrows as the user types (e.g. "/m" shows every
-  // command starting with m). Cleared on submit or when the "/" is deleted.
+  // command starting with m — an empty "/" shows all of them). Up/Down move
+  // a highlighted selection through it; Enter runs whichever row is
+  // highlighted (not literally whatever text was typed — see the "line"
+  // handler below, which substitutes the selected row's command). Cleared on
+  // submit or when the "/" is deleted.
   const MENU_MAX = 12;
   let menuLines = 0;      // rows the menu currently occupies below the input
+  let menuSelected = 0;   // index into the current menu rows, highlighted row
+  let menuLastLine = "";  // rl.line as of the last non-arrow keystroke — see
+                           // the keypress handler: readline applies its own
+                           // history substitution to rl.line for Up/Down
+                           // BEFORE our listener runs, so this is what lets
+                           // us restore the real filter text afterward.
   let promptActive = false;
 
   function buildMenuRows(line) {
@@ -149,16 +225,29 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     const line = rl.line || "";
     const rows = line.startsWith("/") ? buildMenuRows(line) : [];
     if (!rows.length && !menuLines) return;
+    if (menuSelected >= rows.length) menuSelected = Math.max(0, rows.length - 1);
+    if (menuSelected < 0) menuSelected = 0;
 
     const width = process.stdout.columns || 80;
     const usageCol = Math.min(34, Math.max(16, width - 30));
-    const shown = rows.slice(0, MENU_MAX);
-    const lines = shown.map((r) => {
+    // Scroll the visible window with the selection instead of always
+    // showing rows[0..MENU_MAX) — otherwise Up/Down past the first page
+    // moves menuSelected but the screen never shows it (same windowing
+    // models.mjs's arrow pickers already use for /model, /provider).
+    const half = Math.floor(MENU_MAX / 2);
+    let start = Math.max(0, menuSelected - half);
+    start = Math.min(start, Math.max(0, rows.length - MENU_MAX));
+    const shown = rows.slice(start, start + MENU_MAX);
+    const lines = shown.map((r, i) => {
+      const rowIndex = start + i;
       const usage = r.usage.length > usageCol ? r.usage.slice(0, usageCol - 1) + "…" : r.usage.padEnd(usageCol);
       const summary = String(r.summary || "").slice(0, Math.max(0, width - usageCol - 4));
-      return "  " + c.cyan(usage) + " " + c.dim(summary);
+      const pointer = rowIndex === menuSelected ? c.cyan("›") : " ";
+      const row = ` ${pointer} ${c.cyan(usage)} ${c.dim(summary)}`;
+      return rowIndex === menuSelected ? c.bold(row) : row;
     });
-    if (rows.length > MENU_MAX) lines.push(c.dim(`  … ${rows.length - MENU_MAX} more — keep typing to filter`));
+    if (rows.length > MENU_MAX) lines.push(c.dim(`  ${menuSelected + 1}/${rows.length} — ↑/↓ select · Enter run · keep typing to filter`));
+    else if (rows.length) lines.push(c.dim("  ↑/↓ select · Enter run · keep typing to filter"));
 
     let cols = 2 + (rl.cursor ?? line.length); // fallback: "› " + cursor offset
     try { cols = rl.getCursorPos().cols; } catch { /* older readline */ }
@@ -179,6 +268,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     menuLines = lines.length;
   }
 
+  // Redraw the input row itself (prompt + text) — used after we restore
+  // rl.line following a readline history-substitution we're overriding.
+  function redrawInputLine(text) {
+    if (!process.stdout.isTTY) return;
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+    process.stdout.write(c.cyan("› ") + text);
+  }
+
   function clearMenuAfterSubmit() {
     // Called from the line handler: readline has already echoed the newline,
     // so the cursor sits on the menu's first row — erase down from here.
@@ -186,11 +284,32 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       process.stdout.write("\r\x1b[0J");
       menuLines = 0;
     }
+    menuSelected = 0;
   }
 
   process.stdin.on("keypress", (_str, key) => {
     if (!promptActive || ctx.currentAbort) return;
     if (key && (key.name === "return" || key.name === "enter")) return;
+
+    if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/")) {
+      // Readline's own listener (registered before ours, at
+      // readline.createInterface() time) already ran for this same keypress
+      // and applied its default Up/Down history substitution to rl.line —
+      // override that: restore the real filter text and move the menu
+      // selection instead of recalling a previous command.
+      const rows = buildMenuRows(menuLastLine);
+      if (rows.length) {
+        rl.line = menuLastLine;
+        rl.cursor = menuLastLine.length;
+        menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
+        redrawInputLine(menuLastLine);
+        renderMenu();
+      }
+      return;
+    }
+
+    menuLastLine = rl.line || "";
+    menuSelected = 0;
     setImmediate(renderMenu);
   });
 
@@ -217,6 +336,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       ctx.currentAbort = new AbortController();
       await runTurn({
         model: ctx.model,
+        settings: ctx.settings,
         messages: ctx.messages,
         session: ctx.session,
         maxIterations: ctx.maxIterations,
@@ -253,27 +373,38 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   }
 
   let multiLine = "";
+  let pasteActive = false;
+  let pasteLines = [];
+  let burstLines = [];
+  let burstTimer = null;
+  let burstLastAt = 0;
+  let submitChain = Promise.resolve();
 
-  rl.on("line", async (input) => {
-    promptActive = false;
-    clearMenuAfterSubmit();
-    const line = input.trim();
+  function stripBracketPasteMarkers(value) {
+    return String(value || "")
+      .replaceAll(BRACKET_PASTE_START, "")
+      .replaceAll(BRACKET_PASTE_END, "");
+  }
+
+  async function handleSubmittedText(rawText, { fromPaste = false } = {}) {
+    const line = fromPaste ? String(rawText || "") : String(rawText || "").trim();
 
     // Multi-line continuation
-    if (line.endsWith("\\") && !line.startsWith("/")) {
+    if (!fromPaste && line.endsWith("\\") && !line.startsWith("/")) {
       multiLine += line.slice(0, -1) + "\n";
       process.stdout.write(c.dim("… "));
       return;
     }
 
-    const fullLine = multiLine + line;
+    const fullLine = fromPaste ? line.replace(/\r/g, "") : multiLine + line;
     multiLine = "";
-    if (!fullLine) return showPrompt();
+    if (!fullLine.trim()) return showPrompt();
 
     promptBottom();
 
-    if (fullLine.startsWith("/")) {
-      const parts = fullLine.split(/\s+/);
+    const commandLine = fullLine.trim();
+    if (!fromPaste && commandLine.startsWith("/")) {
+      const parts = commandLine.split(/\s+/);
       const cmdName = parts[0].slice(1);
       const arg = parts.slice(1).join(" ");
 
@@ -308,10 +439,83 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
     await runAgentTurns();
     showPrompt();
+  }
+
+  function queueSubmittedText(rawText, opts) {
+    submitChain = submitChain
+      .then(() => handleSubmittedText(rawText, opts))
+      .catch((e) => {
+        warnLine(e?.message || String(e));
+      });
+    return submitChain;
+  }
+
+  function clearBurstTimer() {
+    if (burstTimer) {
+      clearTimeout(burstTimer);
+      burstTimer = null;
+    }
+  }
+
+  function flushBurstBuffer() {
+    clearBurstTimer();
+    if (!burstLines.length) return Promise.resolve();
+    const pasted = burstLines.join("\n");
+    burstLines = [];
+    return queueSubmittedText(pasted, { fromPaste: true });
+  }
+
+  rl.on("line", async (rawInput) => {
+    let input = rawInput;
+    promptActive = false;
+    const hasPasteStart = input.includes(BRACKET_PASTE_START);
+    const hasPasteEnd = input.includes(BRACKET_PASTE_END);
+    // Enter runs whichever row is highlighted in the live "/" menu, not
+    // necessarily the literal text typed (e.g. typed "/mod", arrowed to
+    // "/model", Enter runs "/model" — or just the top match if you never
+    // touched the arrows at all).
+    if (menuLines > 0 && !pasteActive && !hasPasteStart && !hasPasteEnd) {
+      const rows = buildMenuRows(input);
+      if (rows.length && rows[menuSelected]) {
+        input = rows[menuSelected].usage.split(/\s+/)[0];
+      }
+    }
+    clearMenuAfterSubmit();
+    if (pasteActive || hasPasteStart || hasPasteEnd) {
+      if (hasPasteStart) pasteActive = true;
+      pasteLines.push(stripBracketPasteMarkers(input));
+      if (hasPasteEnd) {
+        pasteActive = false;
+        const pasted = pasteLines.join("\n");
+        pasteLines = [];
+        return handleSubmittedText(pasted, { fromPaste: true });
+      }
+      return;
+    }
+
+    const needsImmediate = shouldImmediateSubmit(input, Boolean(multiLine));
+
+    if (needsImmediate) {
+      await flushBurstBuffer();
+      return queueSubmittedText(input);
+    }
+
+    const now = Date.now();
+    if (burstLines.length && now - burstLastAt > BURST_PASTE_WINDOW_MS) {
+      await flushBurstBuffer();
+    }
+    burstLastAt = now;
+    burstLines.push(input);
+    clearBurstTimer();
+    burstTimer = setTimeout(() => {
+      void flushBurstBuffer();
+    }, BURST_PASTE_WINDOW_MS);
   });
 
   rl.on("close", async () => {
     replClosed = true;
+    await flushBurstBuffer();
+    if (canBracketPaste && process.stdout.isTTY) process.stdout.write(BRACKET_PASTE_OFF);
     disconnectAll();
     disconnectBridge();
     killSidecar();

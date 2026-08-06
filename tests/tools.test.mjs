@@ -375,6 +375,31 @@ await assert("unsupported extension is rejected with the supported list",
   r => String(r).startsWith("ERROR:") && String(r).includes("supported:")
 );
 
+// ── Test 11: edit_file / diffPreviewLine — regression for a real crash ────
+// A user hit a fatal, uncaught TypeError when the model called edit_file
+// with a missing old_string: diffPreviewLine's preview rendering (called
+// BEFORE the tool itself ever runs, so before runTool's own try/catch) did
+// `oldStr.split("\n")` on undefined and crashed the whole process, losing
+// the session. Locks in both the fix (diffPreviewLine tolerates undefined)
+// and a clearer error from edit_file itself for the same missing-arg case.
+console.log("\nTest 11: edit_file / diffPreviewLine — missing-argument crash regression");
+
+const { diffPreviewLine } = await import("../src/ui.mjs");
+await assert("diffPreviewLine never throws on a missing old_string/new_string",
+  await resultOf(() => { diffPreviewLine("whatever.js", undefined, "new"); diffPreviewLine("whatever.js", "old", undefined); return "ok"; }),
+  r => r === "ok"
+);
+
+await assert("edit_file reports a clear error for a missing old_string (not a filesystem error)",
+  await resultOf(() => runTool("edit_file", { path: "src/ui.mjs", new_string: "x" })),
+  r => String(r) === "ERROR: old_string is required"
+);
+
+await assert("edit_file reports a clear error for a missing new_string",
+  await resultOf(() => runTool("edit_file", { path: "src/ui.mjs", old_string: "x" })),
+  r => String(r) === "ERROR: new_string is required"
+);
+
 // ── Summary ───────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

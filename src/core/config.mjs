@@ -111,6 +111,10 @@ const DEFAULT_SETTINGS = {
     agnes: {
       baseUrl: "https://apihub.agnes-ai.com/v1",
       apiKey: "", // get a free key at https://platform.agnes-ai.com/ — Starter tier: 1,500 agnes-2.5-flash requests per 5 hours
+      // Mirrors NVIDIA's account pattern so 429 failover can target agnes1/2.
+      // The active account key is mirrored into apiKey for request code.
+      accounts: { agnes1: "", agnes2: "" },
+      activeAccount: "agnes1",
       label: "Agnes AI",
     },
     together: {
@@ -165,6 +169,7 @@ const DEFAULT_SETTINGS = {
     "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384 },
     "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384 },
     "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true },
+    "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192 },
     "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384 },
     "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096 },
@@ -268,6 +273,12 @@ export function findAccountProvider(settings, name) {
 // Allow env var overrides for API keys: OMNI_<PROVIDER>_KEY, and per
 // account OMNI_<ACCOUNT>_KEY (e.g. OMNI_NVIDIA1_KEY).
 function applyEnvKeyOverrides(settings) {
+  // Back-compat alias used in some local setups: map OMNI_AGNES_KEY2 to the
+  // account-scoped name consumed by the generic account loader.
+  if (!process.env.OMNI_AGNES2_KEY && process.env.OMNI_AGNES_KEY2) {
+    process.env.OMNI_AGNES2_KEY = process.env.OMNI_AGNES_KEY2;
+  }
+
   // Env/.env keys are runtime-only overrides. Remember each provider's on-disk
   // key in settings._env so saveSettings can restore it instead of persisting
   // the secret into settings.json (saveSettings drops _env itself).
@@ -327,6 +338,14 @@ function migrateSettings(settings) {
   if (settings.llama && !settings.llama.maxAutoContext) {
     settings.llama.maxAutoContext = 131072;
   }
+
+  // Some OpenRouter accounts do not expose the :free suffixed variant for
+  // this model; normalize to the base id so failover does not dead-end on 404.
+  const orFallback = settings.models?.["openrouter/llama-3-8b"];
+  if (orFallback?.id === "meta-llama/llama-3-8b-instruct:free") {
+    orFallback.id = "meta-llama/llama-3-8b-instruct";
+  }
+
   return settings;
 }
 

@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
-import { HOME } from "../core/config.mjs";
+import { HOME, loadSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
 import {
   activeProviderFromDisk, layeredProvider, currentAtoms, formatMemoryRecord, explainAtomText,
@@ -21,6 +21,8 @@ const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
 const managedProcesses = new Map();
 let nextProcessId = 1;
+const managedAgents = new Map();
+let nextAgentId = 1;
 
 function clip(s) {
   s = String(s);
@@ -37,11 +39,24 @@ function workspaceRoot() {
 // read/write escape the workspace undetected. Realpath the nearest existing
 // ancestor (the target may not exist yet — e.g. a new file being created) and
 // reattach the not-yet-existing suffix before re-checking containment.
+// Skills are part of the harness itself, not any one project — every project
+// should be able to read the installed skill library (e.g. to use one
+// skill's documented pattern as a reference while building something else),
+// regardless of which folder is the current workspace. Read-only: this does
+// NOT exempt writes, so authoring/editing a skill still goes through the
+// normal per-project write scope.
+const SKILLS_ROOT = path.resolve(INSTALL_ROOT, "skills");
+function isUnderSkillsRoot(full) {
+  const rel = path.relative(SKILLS_ROOT, full);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 function assertInsideWorkspace(full, label = "path") {
   // "system" scope (settings.workspace.scope, set by the human via
   // /workspace scope system) lifts containment: the user has explicitly
   // granted the whole machine.
   if (getWorkspaceScope() === "system") return full;
+  if (isUnderSkillsRoot(full)) return full;
   const root = workspaceRoot();
   const rel = path.relative(root, full);
   if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) {
@@ -577,6 +592,50 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "spawn_agent",
+      description:
+        "Spawn an independent sub-agent on a self-contained sub-task, running in the BACKGROUND in parallel with you — you keep working, then check agent_status later for its result. Give it a `model` (e.g. 'agnes/agnes-2.0-flash') to run it on a different provider than your own, so the two run truly concurrently instead of competing for the same rate limit. The sub-agent shares this workspace and has the same tools you do, but its own isolated conversation — write the prompt so it makes sense with zero context from this conversation (what to do, relevant file paths, what \"done\" looks like). Caution: it can read/write the SAME files you can, at the same time — only spawn one for a sub-task that doesn't overlap files you're actively touching, to avoid both of you editing the same file at once.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Full, self-contained task description for the sub-agent — it has no memory of this conversation." },
+          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.0-flash' or 'nvidia/glm-5.2'. Defaults to the default model if omitted." },
+          name: { type: "string", description: "Optional short label shown in agent_status." },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "agent_status",
+      description: "Check on a sub-agent started by spawn_agent: still running, or its final result. Omit id to list every spawned sub-agent.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Optional sub-agent id returned by spawn_agent" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_agent",
+      description: "Cancel a running sub-agent started by spawn_agent.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Sub-agent id returned by spawn_agent" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "memory_save",
       description:
         "Save a durable fact to persistent memory (survives across sessions and projects). Use for user preferences, project goals, decisions, and lessons learned — not for things already in the code or this conversation.",
@@ -1015,6 +1074,8 @@ export const impl = {
   },
 
   edit_file({ path: p, old_string, new_string }) {
+    if (old_string === undefined) throw new Error("old_string is required");
+    if (new_string === undefined) throw new Error("new_string is required");
     const full = resolve(p);
     if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
     const text = fs.readFileSync(full, "utf8");
@@ -1449,6 +1510,18 @@ export const impl = {
   stop_process({ id }) {
     return stopManagedProcess(id);
   },
+
+  spawn_agent({ prompt, model, name }) {
+    return spawnSubAgent({ prompt, model, name });
+  },
+
+  agent_status({ id }) {
+    return subAgentStatus({ id });
+  },
+
+  stop_agent({ id }) {
+    return stopSubAgent(id);
+  },
   // Routed through the active memory provider (settings.memory.provider —
   // "legacy-jsonl" by default, or "layered-okf"). See core/memory-provider.mjs.
   memory_save({ text, tags = [] }) {
@@ -1840,6 +1913,103 @@ function stopManagedProcess(id) {
   if (rec.status === "running") {
     rec.child.kill();
     rec.status = "stopping";
+    return `stopping ${id}`;
+  }
+  return `${id} is already ${rec.status}`;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-agents — spawn_agent / agent_status / stop_agent. Mirrors the
+// start_process/process_status/stop_process pattern: the spawning call
+// returns immediately, the sub-agent's own runTurn() loop runs in the
+// background (can be on a different provider/model entirely — that's what
+// makes it genuinely parallel instead of just competing for the same rate
+// limit), and agent_status polls for the result.
+//
+// Dynamic import of core/agent.mjs (not a static top-level import) is
+// deliberate: agent.mjs imports this file for `tools`/`runTool`, so a
+// static import here would be a circular import. Deferring it to call time
+// (well after both modules have finished loading) avoids that entirely.
+// ---------------------------------------------------------------------------
+
+function lastAssistantText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "assistant" && typeof m.content === "string" && m.content.trim()) return m.content.trim();
+  }
+  return "";
+}
+
+function spawnSubAgent({ prompt, model, name }) {
+  if (!prompt || !String(prompt).trim()) throw new Error("prompt is required");
+  const id = `A${String(nextAgentId++).padStart(3, "0")}`;
+  const rec = {
+    id,
+    name: name || String(prompt).slice(0, 60),
+    prompt,
+    model: model || "(default)",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    result: null,
+    error: null,
+    controller: new AbortController(),
+  };
+  managedAgents.set(id, rec);
+
+  (async () => {
+    try {
+      const { runTurn, systemPrompt } = await import("../core/agent.mjs");
+      const settings = await loadSettings();
+      const resolved = resolveModel(settings, model || settings.defaultModel);
+      rec.model = resolved.key;
+      const messages = [
+        { role: "system", content: systemPrompt() },
+        { role: "user", content: String(prompt) },
+      ];
+      const session = new Session();
+      await runTurn({
+        model: resolved,
+        settings,
+        messages,
+        session,
+        maxIterations: 20,
+        diffPreview: false,
+        signal: rec.controller.signal,
+      });
+      rec.status = "done";
+      rec.result = lastAssistantText(messages) || "(sub-agent finished with no final text)";
+    } catch (e) {
+      rec.status = rec.status === "stopping" ? "stopped" : "error";
+      rec.error = e?.message || String(e);
+    }
+  })();
+
+  return `spawned ${id}${name ? ` (${name})` : ""} on model ${model || "(default)"} — running in parallel, check with agent_status({id:"${id}"})`;
+}
+
+function summarizeAgent(rec) {
+  const base = [`${rec.id} [${rec.status}] ${rec.name}`, `model: ${rec.model}`, `started: ${rec.startedAt}`].join("\n");
+  if (rec.status === "done") return `${base}\nresult:\n${rec.result}`;
+  if (rec.status === "error" || rec.status === "stopped") return `${base}\nerror: ${rec.error || "(cancelled)"}`;
+  return base;
+}
+
+function subAgentStatus({ id } = {}) {
+  if (id) {
+    const rec = managedAgents.get(id);
+    if (!rec) throw new Error(`sub-agent not found: ${id}`);
+    return clip(summarizeAgent(rec));
+  }
+  if (!managedAgents.size) return "(no sub-agents spawned)";
+  return clip([...managedAgents.values()].map(summarizeAgent).join("\n\n"));
+}
+
+function stopSubAgent(id) {
+  const rec = managedAgents.get(id);
+  if (!rec) throw new Error(`sub-agent not found: ${id}`);
+  if (rec.status === "running") {
+    rec.status = "stopping";
+    rec.controller.abort();
     return `stopping ${id}`;
   }
   return `${id} is already ${rec.status}`;

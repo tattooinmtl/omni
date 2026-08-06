@@ -2,7 +2,7 @@
 // feed results back, repeat until the model answers with plain text.
 
 import { chatStream, completionStream } from "./provider.mjs";
-import { rotateAccount } from "./config.mjs";
+import { rotateAccount, activateAccount, resolveModel } from "./config.mjs";
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
@@ -150,6 +150,67 @@ const RATE_LIMITED = /429|ResourceExhausted|too many requests|rate.?limit/i;
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
 const MAX_ROTATIONS = 4;    // account hops per request before plain backoff
+const AGNES_FAILOVER_MODEL = "agnes/agnes-2.0-flash";
+const OPENROUTER_FAILOVER_MODEL = "openrouter/llama-3-8b";
+
+function applyResolvedModel(target, resolved) {
+  target.key = resolved.key;
+  target.id = resolved.id;
+  target.maxTokens = resolved.maxTokens;
+  target.contextWindow = resolved.contextWindow;
+  target.contextWindowSource = resolved.contextWindowSource;
+  target.provider = resolved.provider;
+  target.providerName = resolved.providerName;
+  target.providerLabel = resolved.providerLabel;
+  target.chatTemplate = resolved.chatTemplate;
+  target.reasoning = resolved.reasoning;
+  target.nativeTools = resolved.nativeTools;
+}
+
+function hasUsableKey(provider, accountName = null) {
+  if (!provider) return false;
+  if (accountName) {
+    return Boolean(String(provider.accounts?.[accountName] || "").trim());
+  }
+  return Boolean(String(provider.apiKey || "").trim());
+}
+
+function buildRateLimitChain(settings) {
+  if (!settings) return [];
+  const desired = [
+    { providerName: "nvidia", account: "nvidia1", modelKey: "nvidia/glm-5.2" },
+    { providerName: "agnes", account: "agnes1", modelKey: AGNES_FAILOVER_MODEL },
+    { providerName: "nvidia", account: "nvidia2", modelKey: "nvidia/glm-5.2" },
+    { providerName: "agnes", account: "agnes2", modelKey: AGNES_FAILOVER_MODEL },
+    { providerName: "openrouter", account: null, modelKey: OPENROUTER_FAILOVER_MODEL },
+  ];
+
+  return desired.filter((hop) => {
+    const provider = settings.providers?.[hop.providerName];
+    if (!provider) return false;
+    if (!settings.models?.[hop.modelKey]) return false;
+    if (!hasUsableKey(provider, hop.account)) return false;
+    return true;
+  });
+}
+
+function hopMatchesModel(hop, model) {
+  if (!hop || !model) return false;
+  if (hop.providerName !== model.providerName) return false;
+  if (hop.modelKey !== model.key) return false;
+  if (!hop.account) return true;
+  return (model.provider?.activeAccount || "") === hop.account;
+}
+
+function switchModelToHop(model, settings, hop) {
+  const provider = settings.providers?.[hop.providerName];
+  if (!provider) throw new Error(`provider "${hop.providerName}" is not configured`);
+  if (hop.account && !activateAccount(provider, hop.account)) {
+    throw new Error(`account "${hop.account}" is not configured on provider "${hop.providerName}"`);
+  }
+  const resolved = resolveModel(settings, hop.modelKey);
+  applyResolvedModel(model, resolved);
+}
 
 function isRetryable(err) {
   return RETRYABLE.test(err.message || String(err));
@@ -168,20 +229,94 @@ function abortableSleep(ms, signal) {
 // accounts (settings.providers.<name>.accounts), a rate-limit error first
 // rotates to the next account and retries almost immediately — backoff only
 // kicks in once every account has been tried.
-async function chatStreamWithRetry({ model, messages, tools, signal, onToken, _templatePrompt }) {
+async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt }) {
   let attempt = 0;
   let rotations = 0;
+  const failoverChain = buildRateLimitChain(settings);
+  let failoverIndex = failoverChain.findIndex((hop) => hopMatchesModel(hop, model));
+  const failoverActive = failoverIndex >= 0;
+  let checkpointOpened = false;
+
   while (true) {
     try {
       if (_templatePrompt != null) {
-        return await completionStream({ model, prompt: _templatePrompt, signal, onToken });
+        const out = await completionStream({ model, prompt: _templatePrompt, signal, onToken });
+        if (checkpointOpened && session) {
+          await session.append({
+            type: "interrupt_checkpoint",
+            status: "resolved",
+            reason: "429",
+            provider: model.providerName,
+            account: model.provider?.activeAccount || null,
+            modelKey: model.key,
+          });
+        }
+        return out;
       }
-      return await chatStream({ model, messages, tools, signal, onToken });
+      const out = await chatStream({ model, messages, tools, signal, onToken });
+      if (checkpointOpened && session) {
+        await session.append({
+          type: "interrupt_checkpoint",
+          status: "resolved",
+          reason: "429",
+          provider: model.providerName,
+          account: model.provider?.activeAccount || null,
+          modelKey: model.key,
+        });
+      }
+      return out;
     } catch (e) {
       // Aborted by user (Ctrl-C / Esc) — propagate immediately, no retry.
       if (e.name === "AbortError" || signal?.aborted) throw e;
       if (!isRetryable(e) || attempt >= MAX_RETRIES) throw e;
       const msg = e.message || String(e);
+
+      if (RATE_LIMITED.test(msg) && failoverActive) {
+        const nextHop = failoverChain[failoverIndex + 1] || null;
+        if (nextHop) {
+          failoverIndex++;
+          checkpointOpened = true;
+          warnLine(`rate-limited (${msg.split("\n")[0].slice(0, 60)})`);
+          warnLine(`switching to ${nextHop.providerName}${nextHop.account ? `:${nextHop.account}` : ""} (${nextHop.modelKey}) and retrying…`);
+          mascotLine("provider", false);
+          if (session) {
+            await session.append({
+              type: "interrupt_checkpoint",
+              status: "active",
+              reason: "429",
+              hop: failoverIndex + 1,
+              totalHops: failoverChain.length,
+              provider: nextHop.providerName,
+              account: nextHop.account || null,
+              modelKey: nextHop.modelKey,
+              message: msg.split("\n")[0].slice(0, 200),
+            });
+          }
+          switchModelToHop(model, settings, nextHop);
+          await abortableSleep(1200, signal);
+          continue;
+        }
+
+        const chainText = failoverChain
+          .map((hop) => `${hop.providerName}${hop.account ? `:${hop.account}` : ""}`)
+          .join(" -> ");
+        if (session) {
+          await session.append({
+            type: "interrupt_checkpoint",
+            status: "exhausted",
+            reason: "429",
+            provider: model.providerName,
+            account: model.provider?.activeAccount || null,
+            modelKey: model.key,
+            chain: chainText,
+            message: msg.split("\n")[0].slice(0, 200),
+          });
+        }
+        throw new Error(
+          `Provider 429 Too Many Requests: failover chain exhausted (${chainText}). Switch provider/account manually with /provider or /switch-provider, then retry.`
+        );
+      }
+
       if (RATE_LIMITED.test(msg) && rotations < MAX_ROTATIONS) {
         // model.provider is the live settings object, so the rotated key is
         // picked up by authHeaders on the very next request. Session-only —
@@ -230,16 +365,19 @@ export function systemPrompt() {
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
     "# Task workflow",
-    "Work through every task in these steps, in order. Skip a step only when it is clearly unnecessary (e.g. no PLAN for a one-line answer).",
-    "1. UNDERSTAND — restate the goal to yourself. If the request is ambiguous in a way that changes what you would build, ask one focused question; otherwise proceed with the reasonable interpretation and state it.",
-    "2. EXPLORE — gather context BEFORE changing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Never edit a file you have not read.",
-    "3. PLAN — for multi-step work, write the steps to project_todo (add each task, mark the active one in_progress). Decide what \"done\" means: which tests/commands must pass.",
-    "4. IMPLEMENT — make changes in small increments, one file at a time. Use apply_patch for multi-hunk/multi-file edits, edit_file for tiny exact replacements, write_file only for new files or full rewrites. Match the conventions of the surrounding code.",
-    "5. VERIFY — prove the change works: run the relevant tests, build, or linter (run_test / run_shell); check git_diff to confirm the change is exactly what you intended. If verification fails, fix and re-verify — do not report failure as success.",
+    "Work through every task in these steps, in order. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
+    "1. UNDERSTAND — read the whole prompt as one piece, then silently categorize it: what kind of task is this (question / bug fix / new feature / refactor / investigation / config change / something else), what is it actually asking for, what parts of the codebase does it touch.",
+    "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Read-only tools are always fine to use freely at this stage — this step is what makes step 3 accurate instead of a guess.",
+    "3. PRESENT THE PLAN, then STOP and wait — this is a real checkpoint, not a formality. For any task beyond a one-line trivial fix or a simple factual question, your reply must be plain text ONLY (no write/change tool calls yet: no edit_file, apply_patch, write_file, run_shell that changes anything, git_commit, etc.) laying out: (a) how you categorized the request — what you understood it to mean, (b) the concrete plan — the steps you intend to take, and (c) if there is more than one reasonable way to do it (different libraries, quick fix vs. proper refactor, anything where the right call depends on a preference you don't know), the options with their tradeoffs. Then wait for the user's next message. If they correct your understanding (by re-explaining, rephrasing, or adjusting the request), re-read it and present a revised plan the same way — do not proceed on a plan you know was corrected. Only skip this checkpoint for something so small a plan would be pure noise (fix this typo, what does this function do, run this exact command).",
+    "3b. IF BLOCKED ON MISSING INFORMATION — at any point, if something you need to proceed correctly is missing or unclear (a file that should exist doesn't, a requirement could mean two different things, you need a credential/URL/decision only the user has), STOP and ask the user directly instead of guessing on anything consequential. Only proceed on your own judgment for genuinely low-stakes, easily-reversible details.",
+    "4. IMPLEMENT — once the user has approved the plan (or the task was small enough to skip step 3), execute it start to finish without stopping to ask again — you already have what you need. Make changes in small increments, one file at a time. Use apply_patch for multi-hunk/multi-file edits, edit_file for tiny exact replacements, write_file only for new files or full rewrites. Match the conventions of the surrounding code. For multi-step work, track it in project_todo (add each task, mark the active one in_progress) as you go rather than re-asking the user anything already settled by the approved plan.",
+    "5. VERIFY — this step is not optional and is not a formality. Prove the change actually works: run the relevant tests, build, or linter (run_test / run_shell); check git_diff to confirm the change is exactly what you intended. If verification fails OR you didn't actually run it, you are NOT done — fix it and re-verify, looping back to step 4/5 as many times as it takes, on your own, without waiting for the user to tell you to. Never report a task as finished, or that something \"should work,\" without having actually run something that proves it.",
     "6. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, and anything left open.",
     "",
     "# Guidelines",
     "- Always read a file before editing it so you know the exact content.",
+    "- You have tools for a reason — use them. Don't describe a change in prose when you could make it with edit_file/apply_patch; don't guess at file contents when read_file would tell you; don't guess at project structure when project_inspect/rag_search would tell you. A turn that ends without having used any tool, on a task that needed one, is an incomplete turn.",
+    "- Check for and use relevant skills before improvising a workflow from scratch — a skill encodes a known-good procedure for exactly this kind of task.",
     "- Use rag_search to find relevant code across the workspace when you don't know where something lives; fall back to search for exact patterns.",
     "- Use git_status and git_diff before summarizing changes or committing.",
     "- Use git_commit only when the user explicitly asks you to commit.",
@@ -389,7 +527,7 @@ async function checkCreateToolRisk(name, confirmTool) {
   return { allowed: false, message: `DENIED: the user declined to install this extension.` };
 }
 
-export async function runTurn({ model, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false }) {
   // If a persona is active, swap the system message and iteration budget.
   // Falls back to the defaults above when persona is null (existing behaviour).
   if (persona) {
@@ -454,6 +592,8 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
         }
         resp = await chatStreamWithRetry({
           model,
+          settings,
+          session,
           messages: null,   // not used in template path
           tools: null,
           signal,
@@ -467,6 +607,8 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
         const providerMessages = useTextTools ? messagesWithTextTools(messages) : messages;
         resp = await chatStreamWithRetry({
           model,
+          settings,
+          session,
           messages: providerMessages,
           tools: useNativeTools ? tools : null,
           signal,
@@ -593,9 +735,16 @@ export async function runTurn({ model, messages, session, maxIterations = 30, di
         /* leave empty */
       }
       const name = call.function?.name;
-      toolLine(name, argSummary(name, args));
-      if (name === "edit_file" && diffPreview) {
-        diffPreviewLine(args.path, args.old_string, args.new_string);
+      // Preview rendering is cosmetic — a bad/incomplete tool call (missing
+      // args, an unexpected shape) must never crash the whole turn over it.
+      // Real validation of the args happens inside the tool itself.
+      try {
+        toolLine(name, argSummary(name, args));
+        if (name === "edit_file" && diffPreview) {
+          diffPreviewLine(args.path, args.old_string, args.new_string);
+        }
+      } catch (e) {
+        warnLine(`preview render failed for ${name}: ${e.message}`);
       }
       return { call, name, args };
     });

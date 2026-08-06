@@ -120,8 +120,11 @@ export function toolResultLine(text) {
 
 // Show a mini diff preview for edit_file operations
 export function diffPreviewLine(filePath, oldStr, newStr) {
-  const oldLines = oldStr.split("\n");
-  const newLines = newStr.split("\n");
+  // Best-effort preview only — a malformed/incomplete tool call (e.g. the
+  // model omitting old_string) must never crash the whole process over a
+  // rendering nicety. Missing pieces just render as an empty diff side.
+  const oldLines = String(oldStr ?? "").split("\n");
+  const newLines = String(newStr ?? "").split("\n");
   const maxShow = 5;
   console.log(`    ${c.red("─ removed")}`);
   for (let i = 0; i < Math.min(oldLines.length, maxShow); i++) {
