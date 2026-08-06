@@ -102,46 +102,33 @@ function Update-FromGitClone([string]$DefaultBranch) {
 }
 
 function Update-FromZip([string]$DefaultBranch) {
-  Write-Info "No .git folder detected, using GitHub archive update"
-
-  $zipUrl = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$DefaultBranch.zip"
-  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("omni-install-" + [guid]::NewGuid().ToString("N"))
-  $zipPath = Join-Path $tempRoot "repo.zip"
-  $extractPath = Join-Path $tempRoot "extract"
-
-  New-Item -ItemType Directory -Path $tempRoot | Out-Null
-  New-Item -ItemType Directory -Path $extractPath | Out-Null
-
-  try {
-    Write-Info "Downloading latest source from $DefaultBranch"
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -Headers @{ "User-Agent" = "omni-installer" }
-
-    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-    $repoFolder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
-    if (-not $repoFolder) {
-      throw "Failed to extract repository archive"
-    }
-
-    $source = $repoFolder.FullName
-    Write-Info "Syncing files from downloaded archive"
-
-    $excludeDirs = @(".git", "agent", "node_modules", "dist", "site/downloads")
-    $excludeFiles = @(".env", ".env.local")
-
-    robocopy $source $ProjectRoot /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP /XD $excludeDirs /XF $excludeFiles | Out-Host
-
-    # Robocopy exit codes <= 7 are successful copy variants.
-    if ($LASTEXITCODE -gt 7) {
-      throw "robocopy failed with exit code $LASTEXITCODE"
-    }
-
-    Write-Info "Zip-based update completed"
+  Write-Info "No .git folder detected — delegating to the canonical fresh-install script"
+  # website/install.ps1 is the one canonical "download zip, sync files, link"
+  # implementation (it's also the public one-liner deployed at
+  # https://omni.globalwarningnetworks.com/install.ps1) — reuse it here
+  # instead of keeping a second copy of the same robocopy logic that can
+  # (and has) drifted from it. website/ isn't shipped in a normal
+  # checkout/zip (it's dev-only, gitignored), so prefer the local copy when
+  # this IS an Omni dev checkout (faster, no extra network fetch) and fall
+  # back to the deployed URL otherwise.
+  # Note: the delegated script calls `exit` on its own failure (it has its
+  # own $ErrorActionPreference = "Stop" + try/catch), which — via the call
+  # operator below — terminates this whole process with that same failure
+  # code. There's nothing meaningful to re-check afterward: on success,
+  # $LASTEXITCODE just reflects whatever external command it last ran
+  # (e.g. robocopy's own "1-7 all mean success" convention), not overall
+  # success/failure, so re-checking it here would be unreliable, not safer.
+  $localScript = Join-Path $ProjectRoot "website\install.ps1"
+  if (Test-Path $localScript) {
+    Write-Info "Using local website/install.ps1"
+    & $localScript -InstallDir $ProjectRoot -RepoOwner $RepoOwner -RepoName $RepoName -Branch $DefaultBranch -Force
+  } else {
+    Write-Info "Fetching canonical installer from omni.globalwarningnetworks.com"
+    $scriptContent = Invoke-RestMethod -Uri "https://omni.globalwarningnetworks.com/install.ps1" -Headers @{ "User-Agent" = "omni-installer" }
+    $scriptBlock = [ScriptBlock]::Create($scriptContent)
+    & $scriptBlock -InstallDir $ProjectRoot -RepoOwner $RepoOwner -RepoName $RepoName -Branch $DefaultBranch -Force
   }
-  finally {
-    if (Test-Path $tempRoot) {
-      Remove-Item $tempRoot -Recurse -Force
-    }
-  }
+  Write-Info "Zip-based update completed"
 }
 
 function Check-RepoUpdates([string]$DefaultBranch) {

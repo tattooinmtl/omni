@@ -18,6 +18,7 @@ import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEnd
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
+import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 
 // How long a gap between consecutive plain (non-slash, non-continuation)
 // readline "line" events is still considered "the same paste" rather than
@@ -80,6 +81,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   // so the live behavior and the unit tests can never drift apart again.)
 
   banner(ctx.model.key);
+  // Cache-only, instant — never delays startup. Refreshes in the background
+  // for next time (see integrations/update-check.mjs) if the cache is stale.
+  const notice = updateNotice();
+  if (notice) warnLine(notice);
+  refreshUpdateCacheInBackground();
   if (ctx.loadedExtensions.length || ctx.skills.length || ctx.mcpInfo.servers) {
     const mcpNames = ctx.mcpInfo.names || [];
     const untrustedSet = new Set(ctx.mcpInfo.untrusted || []);
