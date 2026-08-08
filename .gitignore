@@ -34,7 +34,7 @@ docs/
 *.md
 !/README.md
 !prompts/**/*.md
-!skills/**/SKILL.md
+!skills/**/*.md
 !packages/**/SKILL.md
 !packages/**/README.md
 
