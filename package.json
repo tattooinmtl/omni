@@ -26,7 +26,7 @@
     "setup": "node ./scripts/setup.mjs",
     "setup:router": "node ./scripts/setup.mjs --with-router",
     "zip:source": "git archive --worktree-attributes --format=zip --output dist/omni-source.zip HEAD",
-    "install:check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install.ps1 -SkipRepoUpdate",
+    "install:check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install.ps1 -SkipLink",
     "install:update": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install/install.ps1 -AutoUpdate"
   }
 }

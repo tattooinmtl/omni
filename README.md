@@ -38,6 +38,19 @@ cd omni
 omni
 ```
 
+Both routes run the same script — [`install/install.ps1`](install/install.ps1) — and
+it is the only installer. The public URL serves a shim that fetches that file
+from this repo, so the installer is whatever is on `main`: push a change and the
+one-liner picks it up, with nothing to redeploy. It detects what it's pointed at
+(a git checkout updates with `git pull`, anything else resyncs from the branch
+zip), and re-running is always safe — your `.env` and `agent/settings.json` are
+never overwritten.
+
+```powershell
+.\install\install.ps1 -AutoUpdate   # update in place without prompting
+.\install\install.ps1 -Force        # resync every file from GitHub
+```
+
 Omni ships **with no API keys** — supply your own. First run writes a clean
 `settings.json` into `agent/` (git-ignored). A free NVIDIA NIM key (the default
 provider) is available at <https://build.nvidia.com>:
