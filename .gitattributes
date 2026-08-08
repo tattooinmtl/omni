@@ -1,4 +1,9 @@
-*.md export-ignore
+# NOTE: do NOT add `*.md export-ignore` here. GitHub's branch zip honours
+# export-ignore, and that one line silently stripped EVERY markdown file from
+# the archive the installer downloads — so every installed copy shipped with
+# zero skills (no SKILL.md) and no system prompt (no prompts/default.md),
+# quietly falling back to the built-in prompt. .gitignore already keeps
+# internal notes out of the repo, so anything tracked as .md is meant to ship.
 docs/ export-ignore
 site/downloads/ export-ignore
 agent/ export-ignore
