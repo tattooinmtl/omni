@@ -10,7 +10,7 @@ import path from "node:path";
 import { c, infoLine, warnLine, errorLine, costLine } from "../ui.mjs";
 import {
   saveSettings, resolveModel, SETTINGS_PATH, HOME, Session,
-  activateAccount, findAccountProvider,
+  activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
 import { compactMessages, estimateTokens, getLastThinking } from "../core/agent.mjs";
@@ -555,11 +555,7 @@ export const COMMANDS = [
       }
       if (!ctx.settings.providers[prov]) { errorLine(`unknown provider "${prov}" (try /providers, or /addprovider)`); return; }
       if (!key) { infoLine(`${prov}: ${maskKey(ctx.settings.providers[prov].apiKey)}`); return; }
-      const p = ctx.settings.providers[prov];
-      p.apiKey = key;
-      // Keep the accounts mirror coherent: setting the provider key really
-      // means "set the active account's key" when accounts exist.
-      if (p.accounts && p.activeAccount in p.accounts) p.accounts[p.activeAccount] = key;
+      setProviderKey(ctx.settings.providers[prov], key);
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`updated API key for ${prov}: ${maskKey(key)} (saved)`);

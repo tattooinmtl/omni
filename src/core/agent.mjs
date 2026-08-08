@@ -143,10 +143,11 @@ function messagesWithTextTools(messages) {
 }
 
 // Transient provider errors that are worth retrying automatically.
-const RETRYABLE = /429|50[234]|ResourceExhausted|workers are busy|Service Unavailable/i;
+const RETRYABLE = /ResourceExhausted|workers are busy|Service Unavailable|too many requests|rate.?limit/i;
 // The subset that means "this key is throttled" — worth failing over to
 // another account of the same provider before waiting it out.
-const RATE_LIMITED = /429|ResourceExhausted|too many requests|rate.?limit/i;
+const RATE_LIMITED = /ResourceExhausted|too many requests|rate.?limit/i;
+
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
 const MAX_ROTATIONS = 4;    // account hops per request before plain backoff
@@ -212,8 +213,26 @@ function switchModelToHop(model, settings, hop) {
   applyResolvedModel(model, resolved);
 }
 
+// provider.mjs formats HTTP failures as "Provider <status> <statusText>: …".
+// When that prefix is present it is authoritative: classify on the status
+// alone, so digits inside the provider's own error body (request ids like
+// …806L8J97LPL, quota numbers) can't masquerade as a 429/503 and route a hard
+// auth failure into the retry/failover machinery.
+function providerStatus(msg) {
+  const m = /^Provider (\d{3})\b/.exec(msg || "");
+  return m ? Number(m[1]) : null;
+}
+
+function isRateLimited(msg) {
+  const status = providerStatus(msg);
+  return status === null ? RATE_LIMITED.test(msg) : status === 429;
+}
+
 function isRetryable(err) {
-  return RETRYABLE.test(err.message || String(err));
+  const msg = err.message || String(err);
+  const status = providerStatus(msg);
+  if (status !== null) return status === 429 || (status >= 502 && status <= 504);
+  return RETRYABLE.test(msg);
 }
 
 function abortableSleep(ms, signal) {
@@ -271,7 +290,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
       if (!isRetryable(e) || attempt >= MAX_RETRIES) throw e;
       const msg = e.message || String(e);
 
-      if (RATE_LIMITED.test(msg) && failoverActive) {
+      if (isRateLimited(msg) && failoverActive) {
         const nextHop = failoverChain[failoverIndex + 1] || null;
         if (nextHop) {
           failoverIndex++;
@@ -317,7 +336,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
         );
       }
 
-      if (RATE_LIMITED.test(msg) && rotations < MAX_ROTATIONS) {
+      if (isRateLimited(msg) && rotations < MAX_ROTATIONS) {
         // model.provider is the live settings object, so the rotated key is
         // picked up by authHeaders on the very next request. Session-only —
         // the on-disk activeAccount changes via /switch-provider, not here.

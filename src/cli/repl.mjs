@@ -428,7 +428,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
           ctx.messages.push({ role: "user", content: result.prompt });
           await ctx.session.append({ type: "user", content: result.prompt });
         }
-        if (!activeModelBlockedByHealth(ctx)) await runAgentTurns();
+        if (!reportMissingKey(ctx.model) && !activeModelBlockedByHealth(ctx)) await runAgentTurns();
       }
       return showPrompt();
     }
@@ -440,7 +440,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       ctx.activePersona = await classifyIntent({ message: fullLine, settings: ctx.settings });
       setPersonaIndicator(ctx.activePersona);
     }
-    if (activeModelBlockedByHealth(ctx)) {
+    // A keyless provider can only answer with a 401 — say so up front instead
+    // of round-tripping to get the provider's own version of "unauthorized".
+    if (reportMissingKey(ctx.model) || activeModelBlockedByHealth(ctx)) {
       return showPrompt();
     }
     await runAgentTurns();

@@ -117,6 +117,15 @@ const DEFAULT_SETTINGS = {
       activeAccount: "agnes1",
       label: "Agnes AI",
     },
+    minimax: {
+      baseUrl: "https://api.minimax.io/v1",
+      apiKey: "",
+      label: "MiniMax",
+      // MiniMax's reasoning control is a {type:"adaptive"|"disabled"} object
+      // via a `thinking` field, not the simple reasoning_effort string this
+      // app's /effort sends — "none" skips sending a param it wouldn't understand.
+      reasoningParam: "none",
+    },
     together: {
       baseUrl: "https://api.together.xyz/v1",
       apiKey: "",
@@ -171,6 +180,7 @@ const DEFAULT_SETTINGS = {
     "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true },
     "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192 },
     "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384 },
+    "minimax/m3": { provider: "minimax", id: "MiniMax-M3", maxTokens: 16384 },
     "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096 },
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384 },
@@ -260,6 +270,18 @@ export function rotateAccount(provider) {
   if (next === provider.activeAccount) return null;
   activateAccount(provider, next);
   return next;
+}
+
+// Set a provider's key, keeping the accounts mirror coherent: for a provider
+// that has accounts, "set the provider key" means "set the active account's
+// key" — otherwise saveSettings would mirror the (still empty) active account
+// back over apiKey and silently discard the key that was just set.
+export function setProviderKey(provider, key) {
+  if (!provider) return;
+  provider.apiKey = key;
+  if (provider.accounts && provider.activeAccount && provider.activeAccount in provider.accounts) {
+    provider.accounts[provider.activeAccount] = key;
+  }
 }
 
 // Which provider owns an account name (for /switch-provider nvidia2, /apikey nvidia2).
@@ -433,9 +455,25 @@ export async function saveSettings(settings) {
   // active-account value — the runtime apiKey may hold an env-sourced key
   // that must never land in settings.json.
   for (const [name, prov] of Object.entries(clean.providers)) {
-    if (prov.accounts && prov.activeAccount && prov.activeAccount in prov.accounts) {
-      clean.providers[name] = { ...prov, apiKey: prov.accounts[prov.activeAccount] || "" };
+    if (!prov.accounts || !prov.activeAccount || !(prov.activeAccount in prov.accounts)) continue;
+    const active = prov.activeAccount;
+    if (String(prov.accounts[active] || "").trim()) {
+      clean.providers[name] = { ...prov, apiKey: prov.accounts[active] };
+      continue;
     }
+    // Active account holds no key. A provider-level key that did NOT come from
+    // the environment is a real user key (`omni --set-key`, a hand-edited
+    // settings.json) — adopt it as the active account's key rather than
+    // blanking it, which used to throw the key away without a word and left
+    // the next run sending no Authorization header at all.
+    const own = String(prov.apiKey || "").trim();
+    const fromEnv =
+      own &&
+      (own === process.env[providerKeyEnvVar(name)] ||
+        Object.values(_env?.savedAccounts?.[name] || {}).some((rec) => rec.imposed === own));
+    clean.providers[name] = own && !fromEnv
+      ? { ...prov, accounts: { ...prov.accounts, [active]: prov.apiKey } }
+      : { ...prov, apiKey: "" };
   }
   // Write-then-rename so a crash mid-write can never truncate settings.json
   // (which may hold API keys) to an empty file.

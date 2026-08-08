@@ -106,6 +106,19 @@ export async function completionStream({ model, prompt, signal, onToken }) {
 
 function formatProviderError(res, text, model) {
   const msg = extractProviderMessage(text).slice(0, 500);
+  if (res.status === 401 || res.status === 403) {
+    const prov = model.providerName || "provider";
+    const account = model.provider?.activeAccount;
+    const where = account ? `${prov}:${account}` : prov;
+    const hasKey = Boolean(String(model.provider?.apiKey || "").trim());
+    return [
+      `Provider ${res.status} ${res.statusText}: ${msg}`,
+      hasKey
+        ? `The API key Omni sent for ${where} was rejected — it is wrong, expired, or belongs to a different endpoint (${model.provider?.baseUrl}).`
+        : `No API key is configured for ${where}, so the request was sent without an Authorization header.`,
+      `Fix: /apikey ${account || prov} <your-key>  (or set OMNI_${String(account || prov).toUpperCase()}_KEY in .env), then check it with /apikey.`,
+    ].join("\n");
+  }
   if (/DEGRADED function cannot be invoked/i.test(msg)) {
     return [
       `Provider ${res.status} ${res.statusText}: ${msg}`,

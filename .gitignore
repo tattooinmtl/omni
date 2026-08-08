@@ -45,6 +45,10 @@ website/
 # This repo's own rebrand-tracking todo list — not part of the shipped app.
 omni-todos/
 
+# Downloaded source of the standalone memory-galaxy web app — a separate
+# project that happens to live in this folder, never part of the harness.
+okf-memory-galaxy-source/
+
 *.bak
 *.bak?
 *.backup

@@ -3,7 +3,7 @@
 
 import { c, infoLine, warnLine, errorLine, costLine, shutdown } from "../ui.mjs";
 import {
-  loadSettings, saveSettings, resolveModel, Session,
+  loadSettings, saveSettings, resolveModel, setProviderKey, Session,
 } from "../core/config.mjs";
 import { runTurn } from "../core/agent.mjs";
 import { registerExtensions, memoryPreamble } from "../tools/index.mjs";
@@ -103,7 +103,7 @@ export async function main(args) {
       settings.providers[prov] = { baseUrl: "", apiKey: "" };
       warnLine(`provider "${prov}" was not configured; created it (set its baseUrl in settings.json)`);
     }
-    settings.providers[prov].apiKey = key;
+    setProviderKey(settings.providers[prov], key);
     await saveSettings(settings);
     infoLine(`saved API key for ${prov}: ${maskKey(key)}`);
     process.exit(0);

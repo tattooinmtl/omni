@@ -23,6 +23,7 @@ export const PROVIDER_PRESETS = {
   xai: { baseUrl: "https://api.x.ai/v1", label: "xAI" },
   mistral: { baseUrl: "https://api.mistral.ai/v1", label: "Mistral", reasoningParam: "none" },
   agnes: { baseUrl: "https://apihub.agnes-ai.com/v1", label: "Agnes AI" },
+  minimax: { baseUrl: "https://api.minimax.io/v1", label: "MiniMax", reasoningParam: "none" },
   together: { baseUrl: "https://api.together.xyz/v1", label: "Together AI", reasoningParam: "none" },
   fireworks: { baseUrl: "https://api.fireworks.ai/inference/v1", label: "Fireworks", reasoningParam: "none" },
   ollama: { baseUrl: "http://localhost:11434/v1", label: "Ollama", apiKey: "not-needed", reasoningParam: "none" },
