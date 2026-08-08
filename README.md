@@ -80,10 +80,15 @@ with empty placeholders. `agent/`, `.env`, and `vendor/` are git-ignored.
 
 ```powershell
 omni                                   # interactive REPL
+omni --version                         # installed version + install path (also -V)
 node bin\omni.mjs "fix the bug"        # one-shot mode
 node bin\omni.mjs --model local/coder --resume
 node bin\omni.mjs install <pkg>        # package manager (install|uninstall|list|search)
 ```
+
+`omni --version` answers before any config is read, so it still works when
+`settings.json` is broken — which is usually when you need it. Inside the REPL,
+`/version` reports the same thing.
 
 ## Commands
 

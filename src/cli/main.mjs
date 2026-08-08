@@ -22,8 +22,18 @@ import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
 import { startNeuralView } from "../local/neuralview-server.mjs";
+import { currentVersion } from "../integrations/update-check.mjs";
 
 export async function main(args) {
+  // --version / -V before anything else: no settings load, no workspace
+  // prompt, no network. "What version am I on?" has to be answerable even
+  // when the install is half-broken — that's usually when you're asking.
+  if (args.includes("--version") || args.includes("-V")) {
+    console.log(`omni ${currentVersion()}`);
+    console.log(`install: ${INSTALL_ROOT}`);
+    process.exit(0);
+  }
+
   const settings = await loadSettings();
 
   // Workspace selection (core/workspace.mjs) must precede anything that reads
