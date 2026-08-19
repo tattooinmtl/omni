@@ -126,6 +126,22 @@ export async function main(args) {
     modelKey = args.splice(mi, 2)[1];
   }
 
+  // "Last good provider" reload (TODO #v2.2.3). If the user has a
+  // saved last-good model from a previous session and it still resolves
+  // in the current settings, use it as the default for THIS session.
+  // Order: explicit --model flag > last-good > settings.defaultModel.
+  // The --model flag is checked first; if not present, last-good wins.
+  if (mi === -1) {
+    const { resolveLastProvider } = await import("../core/last-provider.mjs");
+    const lastGood = resolveLastProvider(settings);
+    if (lastGood) {
+      modelKey = lastGood;
+      // Note: we don't persist this back to settings.defaultModel. The
+      // user's saved default is their preferred long-term default; the
+      // last-good is a per-launch override only.
+    }
+  }
+
   // --resume flag: continue last session
   let resumeMode = false;
   const ri = args.indexOf("--resume");
@@ -144,6 +160,17 @@ export async function main(args) {
 
   const session = new Session();
   const messages = [{ role: "system", content: buildSystemPrompt(project, skills) + memoryPreamble() }];
+
+  // Persist the current model as "last good" on every clean exit (Ctrl+C,
+  // /exit, normal completion) so the next launch reloads it. Async save —
+  // beforeExit gives us a chance to flush before the process tears down.
+  // We do NOT save on every turn (noisy, races with /model), only on exit;
+  // the in-session /model command already saves the new choice.
+  const { setLastProvider: saveLastProvider } = await import("../core/last-provider.mjs");
+  const saveOnExit = () => { try { saveLastProvider(model.key, "exit"); } catch {} };
+  process.on("beforeExit", saveOnExit);
+  process.on("SIGINT", () => { saveOnExit(); process.exit(130); });
+  process.on("SIGTERM", () => { saveOnExit(); process.exit(143); });
 
   // The mutable CLI context shared by the REPL and every command handler.
   const ctx = {

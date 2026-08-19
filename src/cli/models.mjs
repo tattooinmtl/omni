@@ -4,6 +4,7 @@
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
+import { setLastProvider } from "../core/last-provider.mjs";
 import { listProviderModels, probeModel } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
@@ -248,6 +249,9 @@ export async function switchModel(ctx, keyOrIndex) {
     }
   }
   ctx.model = resolveModel(ctx.settings, key);
+  // Persist as "last good" so a fresh launch reloads it without the
+  // user having to /model again. Best effort; safe to call repeatedly.
+  setLastProvider(ctx.model.key, "/model switch");
   if (ctx.model.providerName !== "local" && ctx.model.provider.apiKey !== "not-needed") {
     const health = await doctorModel(ctx, ctx.model.key);
     if (!health.ok) {
