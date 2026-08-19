@@ -148,6 +148,31 @@ async function main() {
     });
   }
 
+  // 6. Legacy-seed path: provider-level env var + empty accounts on a fresh
+  //    install. The seed at config.mjs:374 copies prov.apiKey into the first
+  //    account, and the if-block above it MUST record that as "imposed" in
+  //    savedAccounts so saveSettings can strip it back to "" on save. If the
+  //    recording is ever lost, this is the regression that surfaces (TODO #1).
+  reset();
+  {
+    process.env.OMNI_NVIDIA_KEY = "ENV-SECRET-legacy-seed";
+    const settings = await loadSettings();
+    // Confirm the env value actually reached the runtime + the first account
+    // (the seed fired) — otherwise the test below proves nothing.
+    ok("legacy-seed populates the first account at runtime", () => {
+      assert.equal(settings.providers.nvidia.apiKey, "ENV-SECRET-legacy-seed");
+      assert.equal(settings.providers.nvidia.accounts.nvidia1, "ENV-SECRET-legacy-seed");
+    });
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("legacy-seed env value never lands in settings.json", () => {
+      assert.ok(!raw.includes("ENV-SECRET-legacy-seed"), "settings.json contains the legacy-seed env value");
+      assert.equal(json.providers.nvidia.apiKey, "");
+      assert.equal(json.providers.nvidia.accounts.nvidia1, "");
+    });
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ }
   process.exit(fail ? 1 : 0);

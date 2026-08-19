@@ -65,6 +65,15 @@ function readJsonl(file) {
 function appendJsonl(file, record) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, JSON.stringify(record) + "\n");
+  // Invalidate the currentAtoms cache immediately. The mtime-based check
+  // would also catch this on the next read, but invalidating here means a
+  // propose() followed by a search() (without an intervening currentAtoms
+  // call) sees the new atom — the mtime path only works when something
+  // actually calls currentAtoms between the write and the read.
+  if (file === atomsFile()) {
+    currentAtomsCache = null;
+    currentAtomsCacheMtime = -1;
+  }
   return record;
 }
 
@@ -99,10 +108,25 @@ function historyFor(id) {
 
 // Current state: last event per id wins. Nothing is ever deleted or edited —
 // "current" is just "most recent".
+//
+// Cached per-process (TODO #22): previously re-read + re-parsed the entire
+// JSONL on every call — a 1000-atom session saw thousands of redundant disk
+// reads per turn (extractAtomsFromMessages, findContradictions, memory_list,
+// etc. all call currentAtoms). The cache key is the atoms file's mtime, so
+// appendJsonl updates invalidate it automatically without any explicit
+// invalidation calls scattered across the providers.
+let currentAtomsCache = null;
+let currentAtomsCacheMtime = -1;
 export function currentAtoms() {
+  const file = atomsFile();
+  let mtime = -1;
+  try { mtime = fs.statSync(file).mtimeMs; } catch { /* file not yet created */ }
+  if (currentAtomsCache && mtime === currentAtomsCacheMtime) return currentAtomsCache;
   const byId = new Map();
   for (const ev of readAtomEvents()) if (ev.id) byId.set(ev.id, ev);
-  return [...byId.values()];
+  currentAtomsCache = [...byId.values()];
+  currentAtomsCacheMtime = mtime;
+  return currentAtomsCache;
 }
 
 // Ranking used everywhere atoms are listed/retrieved: heavier weight first,
@@ -124,6 +148,21 @@ export function activeAtoms({ limit = 10 } = {}) {
 // ---- Phase 4: contradiction detection --------------------------------------
 // Heuristic: same atom type, enough shared subject (tags or topic words), but
 // not saying near-enough the same thing => plausibly a conflicting claim.
+//
+// Thresholds tightened (TODO #9). The old (tagOverlap >= 0.34 || textSim >=
+// 0.25) tripped on routine overlaps: two atoms with one shared tag out of
+// 2-3 total hit jaccard 0.33+ and got flagged, then the new atom's weight
+// auto-superseded the old one. A user saving "I prefer dark mode" and later
+// "I like the new dashboard" could watch the first get auto-superseded just
+// because they shared the `preferences` tag. Now requires ALL THREE:
+//   - very high tag overlap (>= 0.8; "they're tagged almost identically")
+//   - some shared text (>= 0.2; "they're clearly about the same subject")
+//   - not too similar (< 0.8; "they're not just duplicates")
+// Any one missing → not a contradiction. The price is missing some real
+// contradictions ("love X" vs "hate X" with shared tags hits the heuristic,
+// but "I prefer X" vs "I always use X" with shared tags also hits it and
+// isn't actually a contradiction); the benefit is that no atom gets
+// auto-superseded on tag overlap alone.
 export function findContradictions(candidate, pool = currentAtoms()) {
   const cText = tokenSet(candidate.text);
   const cTags = new Set((candidate.tags || []).map((t) => String(t).toLowerCase()));
@@ -134,7 +173,7 @@ export function findContradictions(candidate, pool = currentAtoms()) {
     const aTags = new Set((a.tags || []).map((t) => String(t).toLowerCase()));
     const tagOverlap = jaccard(cTags, aTags);
     const textSim = jaccard(cText, tokenSet(a.text));
-    return (tagOverlap >= 0.34 || textSim >= 0.25) && textSim < 0.8;
+    return tagOverlap >= 0.8 && textSim >= 0.2 && textSim < 0.8;
   });
 }
 

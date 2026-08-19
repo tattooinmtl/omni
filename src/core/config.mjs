@@ -117,13 +117,44 @@ const DEFAULT_SETTINGS = {
       activeAccount: "agnes1",
       label: "Agnes AI",
     },
-    minimax: {
+    "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
       label: "MiniMax",
       // MiniMax's reasoning control is a {type:"adaptive"|"disabled"} object
       // via a `thinking` field, not the simple reasoning_effort string this
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
+      reasoningParam: "none",
+    },
+    kimi: {
+      baseUrl: "https://api.moonshot.cn/v1",
+      apiKey: "",
+      label: "Kimi (Moonshot)",
+      reasoningParam: "none",
+    },
+    claude: {
+      // Anthropic's native API is not OpenAI-compatible. Users wanting
+      // Claude should wire it through OpenRouter (recommended) or another
+      // proxy that exposes /chat/completions. The URL is the Anthropic
+      // endpoint for reference; calls will fail until routed through a proxy.
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "",
+      label: "Claude (Anthropic — needs proxy)",
+      reasoningParam: "none",
+    },
+    cursor: {
+      // Cursor does not publish a public chat-completions endpoint. The URL
+      // below is the address the community uses; if it stops working, edit
+      // it here, or pick "Custom Provider..." from /addprovider.
+      baseUrl: "https://api.cursor.sh/v1",
+      apiKey: "",
+      label: "Cursor (community endpoint)",
+      reasoningParam: "none",
+    },
+    grok: {
+      baseUrl: "https://api.x.ai/v1",
+      apiKey: "",
+      label: "Grok (xAI)",
       reasoningParam: "none",
     },
     together: {
@@ -175,16 +206,29 @@ const DEFAULT_SETTINGS = {
   // contextWindow is the model's full context size; omit it to auto-detect
   // (provider metadata, then a known-family table). Override with /context.
   models: {
-    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384 },
-    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384 },
-    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true },
-    "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192 },
-    "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384 },
-    "minimax/m3": { provider: "minimax", id: "MiniMax-M3", maxTokens: 16384 },
-    "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
-    "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096 },
-    "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384 },
-    "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384 },
+    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576 },
+    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576 },
+    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000 },
+    "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192, contextWindow: 8192 },
+    "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768 },
+    "minimax.io/m3": {
+      provider: "minimax.io",
+      id: "MiniMax-M3",
+      // MiniMax-M3 advertises a ~1M-token conversation context. Send a
+      // matching max_tokens ceiling on every request; lower it (or override
+      // via /context maxTokens) if the API rejects a value this large.
+      maxTokens: 977000,
+      contextWindow: 1000000,
+      // MiniMax's rate-limit window is 200 calls / 5 hours — well above the
+      // 30 default most providers use. Letting the loop run that long is
+      // the difference between finishing the task and giving up mid-way
+      // on a long edit/refactor session.
+      maxToolIterations: 200,
+    },
+    "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384, contextWindow: 202752 },
+    "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096, contextWindow: 131072 },
+    "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384, contextWindow: 262144 },
+    "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384, contextWindow: 163840 },
     "local/coder": { provider: "local", id: "Qwopus3.5-9B-Coder.i1-Q6_K", maxTokens: 8192 },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
@@ -501,6 +545,12 @@ export function resolveModel(settings, modelKey) {
     chatTemplate: provider.chatTemplate || null,
     reasoning: m.reasoning === false ? "off" : (settings.reasoning || "medium"),
     nativeTools: m.nativeTools !== false && provider.nativeTools !== false,
+    // Per-model tool-call cap. Default 30 (matches the old hardcoded value
+    // for everything); specific providers/models override it via the
+    // `maxToolIterations` field on their model entry (e.g. minimax.io gets
+    // 200 because its rate-limit window is much wider than most providers).
+    // Order of precedence at the call site: model value > settings value > 30.
+    maxToolIterations: m.maxToolIterations ?? settings.maxToolIterations ?? 30,
   };
 }
 
@@ -538,7 +588,13 @@ const SECRET_PATTERNS = [
   /gh[pousr]_[A-Za-z0-9]{20,}/g,
   /AKIA[0-9A-Z]{16}/g,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g,
-  /\b(?:api[_-]?key|token|secret|password|passwd)\b\s*[:=]\s*["']?[^\s"'{}]{8,}["']?/gi,
+  // Generic "key=value" catch-all. Tightened (TODO #4) — the old regex matched
+  // ANY string after a key-word + `:`/`=`, so a sentence like "Use the API
+  // key: nvidia-glm-5.2" got partially redacted and lost from the session
+  // log. Now requires 16+ chars AND at least one digit in the value (real
+  // credentials are long and high-entropy; normal prose has neither), and
+  // drops `passwd` (rare in real configs, frequent in error messages).
+  /\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*["']?(?=[^\s"'{}]{16,})(?=[^\s"'{}]*[0-9])[^\s"'{}]+["']?/gi,
 ];
 
 function redactSecrets(text) {
@@ -603,8 +659,14 @@ export class Session {
       // "session events -> L0 immutable conversation log" (NewPlanConversion.md)
       // — every captured record pulses the L0 node in the /neuralview map.
       publishActivity({ kind: "l0_event", eventType: record.type || "event" });
-    } catch {
-      /* non-fatal */
+    } catch (e) {
+      // Was a silent no-op before (TODO #20). Atom extraction relies on this
+      // log; a dropped record means later extraction silently misses context.
+      // Surface the failure to stderr so the user has at least one signal
+      // that the L0 log is incomplete, without changing the call site's
+      // non-fatal contract (every tool result is wrapped in a try/catch
+      // already; throwing here would just swap one failure mode for another).
+      console.error(`[session.append] dropped ${record?.type || "event"}: ${e?.message || e}`);
     }
   }
 

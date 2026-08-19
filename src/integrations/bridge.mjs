@@ -84,24 +84,43 @@ function _rpc(req, pythonExe) {
 
   const id = _nextId++;
   return new Promise((resolve, reject) => {
-    _pending.set(id, { resolve, reject });
+    // Store the timeout alongside the callbacks so whichever side fires
+    // first (response or timeout) can clean up both the entry and the
+    // timer. Without this, every timeout silently leaks an entry in
+    // _pending — long-running sessions with a flaky bridge eventually OOM
+    // (TODO #7).
+    const timer = setTimeout(() => {
+      _pending.delete(id);
+      reject(new Error("NimTools bridge timeout"));
+    }, CALL_TIMEOUT);
+    timer.unref?.();
+    _pending.set(id, {
+      resolve: (msg) => { clearTimeout(timer); _pending.delete(id); resolve(msg); },
+      reject:  (err) => { clearTimeout(timer); _pending.delete(id); reject(err); },
+    });
     const line = JSON.stringify({ ...req, _id: id }) + "\n";
     try {
       _proc.stdin.write(line);
     } catch (e) {
       _pending.delete(id);
+      clearTimeout(timer);
       reject(e);
     }
   });
 }
 
 async function rpc(req, pythonExe) {
-  return Promise.race([
-    _rpc(req, pythonExe),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("NimTools bridge timeout")), CALL_TIMEOUT)
-    ),
-  ]);
+  // Timeout + cleanup now live inside _rpc (see above), so rpc just awaits
+  // the inner promise. Keeping the public surface here in case a caller
+  // wants to swap the timeout policy in the future.
+  return _rpc(req, pythonExe);
+}
+
+// Test-only: lets regression tests confirm the timeout path actually clears
+// _pending instead of leaking it. Not part of the public surface; if a
+// future test wants to swap in a shorter CALL_TIMEOUT, expose a setter here.
+export function _pendingSizeForTest() {
+  return _pending.size;
 }
 
 // ---------------------------------------------------------------------------

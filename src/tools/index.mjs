@@ -29,6 +29,58 @@ function clip(s) {
   return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n…[truncated]" : s;
 }
 
+// Write `content` to `file` atomically: write to a tmp file in the same
+// directory, then rename over the destination. A crash mid-write leaves the
+// destination untouched (its previous content is still there) instead of a
+// truncated/corrupt file. Same pattern as saveSettings in core/config.mjs.
+// The tmp name is uniquified (pid + timestamp + random) so two concurrent
+// writes to the same file don't collide on the tmp path.
+function atomicWriteFileSync(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs.writeFileSync(tmp, content);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+// Cheap ReDoS heuristic: a quantifier (?, *, +, {n,m}) immediately inside a
+// group that's itself quantified is the textbook shape for catastrophic
+// backtracking. Not exhaustive (a worker-thread timeout would be), but
+// catches the common patterns a model or pasted file is likely to supply:
+//   (a+)+   (.*)*   ([a-z]+)?   (\d+){1,3}
+// Anything more sophisticated (e.g. (a|a)+ with overlapping alternatives)
+// slips through; the per-file work the regex does is bounded by file size
+// so a slow case is annoying but not a hang.
+function hasNestedQuantifier(pattern) {
+  return /\([^)]*[+*?][^)]*\)[+*?{]/.test(pattern) || /\([^)]*\{[\d,]+\}[^)]*\)[+*?{]/.test(pattern);
+}
+
+// Build/install output directories that should never end up in git history
+// unless the user explicitly opts in (TODO #19). Mirrors inspectProject's
+// skip-list so the two tools agree on what counts as "heavy".
+const HEAVY_DIRS = new Set([
+  "node_modules", "bower_components",
+  ".next", ".nuxt", ".svelte-kit", ".output", ".cache", ".parcel-cache",
+  "dist", "build", "out", "coverage", "__pycache__",
+  ".venv", "venv", "env",                    // Python
+  "target",                                   // Rust
+  "vendor",                                   // Go (deps/, NOT vendor/ for code)
+  ".gradle", "build",                         // Gradle — duplicates build above
+  "Pods",                                     // CocoaPods
+  ".terraform",                               // TF
+  "_site",                                    // Jekyll
+]);
+
+function isInHeavyDirectory(relPath) {
+  // Normalise to forward slashes for matching (Windows backslashes).
+  const parts = String(relPath || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.some((seg) => HEAVY_DIRS.has(seg));
+}
+
 function workspaceRoot() {
   return path.resolve(process.cwd());
 }
@@ -469,6 +521,10 @@ export const tools = [
           message: { type: "string", description: "Commit message" },
           paths: { type: "array", items: { type: "string" }, description: "Paths to stage. Omit when all=true." },
           all: { type: "boolean", description: "Stage all tracked/untracked changes in the workspace" },
+          allow_unsafe: {
+            type: "boolean",
+            description: "Set true only when the user explicitly authorized staging heavy build directories (node_modules, .venv, target, …).",
+          },
         },
         required: ["message"],
       },
@@ -962,6 +1018,7 @@ export const impl = {
     const end = start + limit;
     const lines = [];
     let lineNum = 0;
+    let isFirstEmittedLine = true; // strip UTF-8 BOM from the very first emitted line only (TODO #15)
 
     const stream = createReadStream(full, { encoding: "utf8" });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -970,7 +1027,14 @@ export const impl = {
       lineNum++;
       if (lineNum >= end) break; // got all we need — stop reading
       if (lineNum >= start) {
-        lines.push(`${String(lineNum).padStart(5)}\t${line}`);
+        const cleaned = isFirstEmittedLine ? line.replace(/^\uFEFF/, "") : line;
+        isFirstEmittedLine = false;
+        lines.push(`${String(lineNum).padStart(5)}\t${cleaned}`);
+      } else {
+        // Track even pre-start lines so the BOM only survives on the first
+        // emitted line, not on the first file line. Once we've passed the
+        // start, isFirstEmittedLine is set false on the next iteration.
+        if (lineNum >= start - 1) isFirstEmittedLine = false;
       }
     }
 
@@ -1067,8 +1131,7 @@ export const impl = {
 
   write_file({ path: p, content }) {
     const full = resolveForCreate(p);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, content);
+    atomicWriteFileSync(full, content);
     const lines = content.split("\n").length;
     return `Wrote ${content.length} bytes (${lines} lines) to ${p}`;
   },
@@ -1085,7 +1148,7 @@ export const impl = {
     // Use a function replacer so `$&`, `$\``, `$'`, `$1`, `$$` in new_string are
     // inserted literally instead of being interpreted as replacement patterns.
     const newText = text.replace(old_string, () => new_string);
-    fs.writeFileSync(full, newText);
+    atomicWriteFileSync(full, newText);
     const diff = new_string.length - old_string.length;
     const sign = diff >= 0 ? "+" : "";
     return `Edited ${p} (${sign}${diff} chars)`;
@@ -1184,6 +1247,12 @@ export const impl = {
   find_replace({ pattern, replacement, path: p = ".", glob, case_insensitive = false, regex = false, dry_run = false }) {
     if (!pattern) throw new Error("pattern is required");
     if (replacement == null) throw new Error("replacement is required");
+    // ReDoS guard (TODO #17) — check BEFORE ripgrep, so a malicious regex
+    // is rejected even when no files match (otherwise we'd return
+    // "(no matches)" and let the bad pattern through).
+    if (regex && hasNestedQuantifier(pattern)) {
+      throw new Error(`pattern contains a nested quantifier (ReDoS risk) — rephrase to avoid (X+)+ / (X*)* / (X+)? shapes`);
+    }
     const root = resolve(p);
 
     // Find candidate files with ripgrep (same conventions as `search`); the
@@ -1233,7 +1302,9 @@ export const impl = {
         updated = content.replace(re, () => { count++; return replacement; });
       }
       if (!count) continue;
-      results.push({ file, rel: path.relative(process.cwd(), file).replace(/\\/g, "/"), updated, count });
+      // Keep `content` on the result so the rollback journal below can put
+      // the file back exactly as it was if a later write in the batch fails.
+      results.push({ file, rel: path.relative(process.cwd(), file).replace(/\\/g, "/"), content, updated, count });
     }
     if (!results.length) return "(no matches)";
 
@@ -1248,17 +1319,37 @@ export const impl = {
     // writing anything — same all-or-nothing discipline as rename_symbol.
     for (const r2 of results) assertInsideWorkspace(r2.file, "replace target");
 
+    // Rollback journal: for every file we touch, keep the original content so
+    // a mid-write failure can put the workspace back exactly as it was. The
+    // `original` is the text we read above to compute `updated` — already in
+    // memory, so rollback is cheap.
+    const journal = results.map((r2) => ({ path: r2.file, original: r2.content, updated: r2.updated, rel: r2.rel }));
     const written = [];
     try {
-      for (const r2 of results) {
-        fs.writeFileSync(r2.file, r2.updated);
-        written.push(r2.rel);
+      for (const r2 of journal) {
+        atomicWriteFileSync(r2.path, r2.updated);
+        written.push(r2);
       }
     } catch (e) {
+      // Restore every file we already wrote. Best-effort — if a rollback
+      // write itself fails (e.g. permission changed mid-flight), the
+      // secondary error is appended to the message so the user can
+      // identify the file that's still in the wrong state.
+      const rollbackErrors = [];
+      for (const r2 of written) {
+        try {
+          atomicWriteFileSync(r2.path, r2.original);
+        } catch (re) {
+          rollbackErrors.push(`${r2.rel}: ${re.message}`);
+        }
+      }
+      const completed = written.map((r2) => r2.rel).join(", ") || "(none)";
+      const remaining = journal.slice(written.length).map((r2) => r2.rel).join(", ");
       throw new Error(
         `replaced in ${written.length}/${results.length} file(s) before failing: ${e.message}\n` +
-        `Completed: ${written.join(", ") || "(none)"}\n` +
-        `Not written: ${results.slice(written.length).map((r2) => r2.rel).join(", ")}`
+        `Rolled back: ${completed}\n` +
+        `Not written: ${remaining}` +
+        (rollbackErrors.length ? `\nRollback errors (workspace NOT fully restored): ${rollbackErrors.join("; ")}` : "")
       );
     }
     return `Replaced ${totalCount} occurrence(s) across ${results.length} file(s):\n${summary}`;
@@ -1343,21 +1434,38 @@ export const impl = {
       return `DRY RUN — would rename across ${files.length} file(s), ${totalEdits} edit(s):\n${summary}`;
     }
 
+    // Rollback journal: read each file's current content first so a mid-write
+    // failure can put it back exactly as it was. Same discipline as
+    // find_replace — the LSP response is trusted but the disk is not.
+    const journal = [];
+    for (const f of files) {
+      let original = "";
+      try { original = fs.readFileSync(f.absPath, "utf8"); } catch { /* new file */ }
+      journal.push({ absPath: f.absPath, relPath: f.relPath, original, newContent: f.newContent });
+    }
+
     const written = [];
     try {
-      for (const f of files) {
-        fs.writeFileSync(f.absPath, f.newContent);
-        written.push(f.relPath);
+      for (const j of journal) {
+        atomicWriteFileSync(j.absPath, j.newContent);
+        written.push(j);
       }
     } catch (e) {
-      // Best-effort report of exactly where a partial failure left things —
-      // no rollback attempt (rare failure mode: e.g. permission denied
-      // partway through), but the user needs to know precisely what state
-      // the workspace is in rather than a bare error.
+      const rollbackErrors = [];
+      for (const j of written) {
+        try {
+          atomicWriteFileSync(j.absPath, j.original);
+        } catch (re) {
+          rollbackErrors.push(`${j.relPath}: ${re.message}`);
+        }
+      }
+      const completed = written.map((j) => j.relPath).join(", ") || "(none)";
+      const remaining = journal.slice(written.length).map((j) => j.relPath).join(", ");
       throw new Error(
         `renamed ${written.length}/${files.length} file(s) before failing: ${e.message}\n` +
-        `Completed: ${written.join(", ") || "(none)"}\n` +
-        `Not written: ${files.slice(written.length).map((f) => f.relPath).join(", ")}`
+        `Rolled back: ${completed}\n` +
+        `Not written: ${remaining}` +
+        (rollbackErrors.length ? `\nRollback errors (workspace NOT fully restored): ${rollbackErrors.join("; ")}` : "")
       );
     }
     return `Renamed across ${files.length} file(s), ${totalEdits} edit(s):\n${summary}`;
@@ -1452,13 +1560,19 @@ export const impl = {
     if (staged) args.push("--staged");
     if (stat) args.push("--stat");
     if (p) {
+      // Defensive filter against option-shaped paths (TODO #14). `git diff
+      // -- <path>` usually treats <path> as a literal, but git is forgiving
+      // and can interpret options like `--upload-pack=…` even after `--`.
+      // Reject any path that starts with `-`; the user can prefix with `./`
+      // if they really need a dash-prefixed filename.
+      if (String(p).startsWith("-")) throw new Error(`git_diff path "${p}" starts with '-' which git may interpret as an option; rename the file or pass "./${p}"`);
       resolve(p);
       args.push("--", p);
     }
     return runGit(args) || "(no diff)";
   },
 
-  git_commit({ message, paths = [], all = false }) {
+  git_commit({ message, paths = [], all = false, allow_unsafe = false }) {
     if (!message || !String(message).trim()) throw new Error("commit message is required");
 
     let candidates;
@@ -1471,6 +1585,28 @@ export const impl = {
       for (const p of selected) resolve(p);
       runGit(["add", "--", ...selected]);
       candidates = selected;
+    }
+
+    // Heavy-directory safety net for `all=true` (TODO #19). `git add -A`
+    // stages everything; if .gitignore is missing or wrong, the entire
+    // node_modules (or .venv / target / dist / …) gets committed. Refuse
+    // unless the user explicitly opts in via allow_unsafe — the same gate
+    // the destructive-command path uses (see checkCommandRisk). Listing
+    // here matches inspectProject's skip-list so the two tools agree on
+    // what counts as a build dir.
+    if (!allow_unsafe) {
+      const heavy = candidates.filter(isInHeavyDirectory);
+      if (heavy.length) {
+        runGit(["reset", "--", ...heavy]);
+        candidates = candidates.filter((p) => !heavy.includes(p));
+        // Surface the warning — same UX as the secret-file branch below.
+        if (!candidates.length) {
+          throw new Error(
+            `nothing to commit — only heavy-directory files (node_modules, .venv, target, dist, …) would be staged. ` +
+            `Add to .gitignore, or pass allow_unsafe=true to force.\nRefused: ${heavy.slice(0, 10).join(", ")}${heavy.length > 10 ? ` (+${heavy.length - 10} more)` : ""}`
+          );
+        }
+      }
     }
 
     // Secret-looking filenames that aren't gitignored get unstaged before the
@@ -1511,8 +1647,8 @@ export const impl = {
     return stopManagedProcess(id);
   },
 
-  spawn_agent({ prompt, model, name }) {
-    return spawnSubAgent({ prompt, model, name });
+  spawn_agent({ prompt, model, name }, context) {
+    return spawnSubAgent({ prompt, model, name, permissions: context?.permissions, confirmTool: context?.confirmTool });
   },
 
   agent_status({ id }) {
@@ -1547,9 +1683,19 @@ export const impl = {
   memory_list({ limit = 20 } = {}) {
     const provider = activeProviderFromDisk();
     const n = Math.max(1, Math.min(Number(limit) || 20, 100));
-    const recent = provider.search("", {}, { limit: n });
-    if (!recent.length) return "(no memories saved yet)";
-    const total = provider.search("", {}, { limit: 1e6 }).length;
+    // Pull the full set once and sort by createdAt desc — the previous
+    // implementation just took the top-N from `provider.search("", ...)`,
+    // which sorts by weight (layered-okf) or recency (legacy). On layered-
+    // okf a heavy old atom dominated, so the label "most recent first" lied
+    // (TODO #10). Sort ourselves so the order matches the label across
+    // both providers.
+    const all = provider.search("", {}, { limit: 1e6 });
+    const total = all.length;
+    if (!total) return "(no memories saved yet)";
+    const recent = all
+      .slice()
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .slice(0, n);
     return clip(`${total} memories total (provider: ${provider.name}), most recent first:\n` + recent.map(formatMemoryRecord).join("\n"));
   },
 
@@ -1600,8 +1746,7 @@ export const impl = {
     const markdown = `# ${title}
 
 ${content}`;
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, markdown, 'utf8');
+    atomicWriteFileSync(full, markdown);
     return `Created markdown report ${filename} with title "${title}"`;
   },
 
@@ -1665,21 +1810,18 @@ function applyUpdateChunk(text, file, body) {
   return text.replace(oldText, () => newText);
 }
 
-function applyUpdatePatch(file, body) {
-  let text = fs.readFileSync(file, "utf8");
-  for (const chunk of patchChunks(body)) {
-    text = applyUpdateChunk(text, file, chunk);
-  }
-  fs.writeFileSync(file, text);
-}
-
 function applyPatchText(patch) {
   const lines = String(patch || "").replace(/\r\n/g, "\n").split("\n");
   if (lines[0] !== "*** Begin Patch") throw new Error("Patch must start with *** Begin Patch");
   if (lines[lines.length - 1] === "") lines.pop();
   if (lines[lines.length - 1] !== "*** End Patch") throw new Error("Patch must end with *** End Patch");
 
-  const changed = [];
+  // Two passes — first parse every operation into an explicit plan, then
+  // execute. Lets us pre-resolve paths, pre-compute "did this file exist?"
+  // for rollback, and report which operations had been applied if a later
+  // one fails. Without the parse-first pass, a failure mid-patch left the
+  // workspace half-edited (TODO #5).
+  const ops = [];
   let i = 1;
   while (i < lines.length - 1) {
     const header = lines[i++];
@@ -1688,30 +1830,87 @@ function applyPatchText(patch) {
       const full = resolveForCreate(rel);
       const { body, i: next } = collectPatchBody(lines, i);
       i = next;
-      if (fs.existsSync(full)) throw new Error(`File already exists: ${rel}`);
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, body.map((line) => stripPatchLine(line, "+")).join("\n") + "\n");
-      changed.push(`added ${rel}`);
+      ops.push({ kind: "add", rel, full, body });
     } else if (header.startsWith("*** Update File: ")) {
       const rel = header.slice("*** Update File: ".length).trim();
       const full = resolve(rel);
-      if (!fs.existsSync(full)) throw new Error(`File not found: ${rel}`);
       const { body, i: next } = collectPatchBody(lines, i);
       i = next;
-      applyUpdatePatch(full, body);
-      changed.push(`updated ${rel}`);
+      ops.push({ kind: "update", rel, full, body });
     } else if (header.startsWith("*** Delete File: ")) {
       const rel = header.slice("*** Delete File: ".length).trim();
       const full = resolve(rel);
-      if (!fs.existsSync(full)) throw new Error(`File not found: ${rel}`);
-      fs.unlinkSync(full);
-      changed.push(`deleted ${rel}`);
+      ops.push({ kind: "delete", rel, full });
     } else if (!header.trim()) {
       continue;
     } else {
       throw new Error(`Unsupported patch header: ${header}`);
     }
   }
+
+  // Validate every op up front. A throw here means nothing was changed
+  // yet, so no rollback needed.
+  for (const op of ops) {
+    if (op.kind === "add" && fs.existsSync(op.full)) throw new Error(`File already exists: ${op.rel}`);
+    if (op.kind === "update" && !fs.existsSync(op.full)) throw new Error(`File not found: ${op.rel}`);
+    if (op.kind === "delete" && !fs.existsSync(op.full)) throw new Error(`File not found: ${op.rel}`);
+  }
+
+  // Rollback journal: for every applied op, record enough to undo it.
+  //   add    — file didn't exist before; rollback = unlink
+  //   update — original content; rollback = restore
+  //   delete — original content; rollback = restore
+  const journal = [];
+  const changed = [];
+  try {
+    for (const op of ops) {
+      if (op.kind === "add") {
+        fs.mkdirSync(path.dirname(op.full), { recursive: true });
+        const content = op.body.map((line) => stripPatchLine(line, "+")).join("\n") + "\n";
+        atomicWriteFileSync(op.full, content);
+        journal.push({ kind: "add", full: op.full, rel: op.rel });
+        changed.push(`added ${op.rel}`);
+      } else if (op.kind === "update") {
+        const original = fs.readFileSync(op.full, "utf8");
+        let text = original;
+        for (const chunk of patchChunks(op.body)) {
+          text = applyUpdateChunk(text, op.full, chunk);
+        }
+        atomicWriteFileSync(op.full, text);
+        journal.push({ kind: "update", full: op.full, rel: op.rel, original });
+        changed.push(`updated ${op.rel}`);
+      } else if (op.kind === "delete") {
+        const original = fs.readFileSync(op.full, "utf8");
+        fs.unlinkSync(op.full);
+        journal.push({ kind: "delete", full: op.full, rel: op.rel, original });
+        changed.push(`deleted ${op.rel}`);
+      }
+    }
+  } catch (e) {
+    // Undo everything we already did, in reverse order.
+    const rollbackErrors = [];
+    for (let k = journal.length - 1; k >= 0; k--) {
+      const j = journal[k];
+      try {
+        if (j.kind === "add") {
+          fs.unlinkSync(j.full);
+        } else {
+          atomicWriteFileSync(j.full, j.original);
+        }
+      } catch (re) {
+        rollbackErrors.push(`${j.rel}: ${re.message}`);
+      }
+    }
+    const completed = journal.map((j) => j.rel).join(", ") || "(none)";
+    const remaining = ops.slice(journal.length).map((o) => o.rel).join(", ") || "(none)";
+    throw new Error(
+      `applied ${journal.length}/${ops.length} operation(s) before failing: ${e.message}\n` +
+      `Rolled back: ${completed}\n` +
+      `Not applied: ${remaining}` +
+      (rollbackErrors.length ? `\nRollback errors (workspace NOT fully restored): ${rollbackErrors.join("; ")}` : "")
+    );
+  }
+
   return changed.length ? `Patch applied: ${changed.join(", ")}` : "Patch had no changes";
 }
 
@@ -1720,14 +1919,21 @@ function applyPatchText(patch) {
 // explicitly after reading why; a false negative means a live secret
 // preserved in git history forever.
 const SECRET_FILE_PATTERNS = [
-  /^\.env(\..+)?$/i,
+  /^\.env(\..+)?$/i,           // .env, .env.local, .env.production, …
+  /^\.envrc$/i,                // direnv
   /\.pem$/i,
   /\.key$/i,
   /\.pfx$/i,
   /\.p12$/i,
   /^id_(rsa|dsa|ecdsa|ed25519)$/i,
   /^credentials\.json$/i,
+  /^secrets?\.json$/i,         // secrets.json / secret.json
   /^service[-_]?account.*\.json$/i,
+  /^apikeys?.*\.txt$/i,        // apikey.txt / apikeys.txt
+  /^aws[-_]?credentials$/i,    // ~/.aws/credentials conventions
+  /^\.npmrc$/i,                // often contains npm tokens
+  /^\.netrc$/i,                // contains plaintext login credentials
+  /^.*[-_.]secret.*\.(json|ya?ml|txt|env|ini)$/i,  // any *-secret*.{json,yaml,…}
 ];
 const SECRET_FILE_ALLOWLIST_RE = /\.(example|sample|template)$/i;
 
@@ -1940,7 +2146,7 @@ function lastAssistantText(messages) {
   return "";
 }
 
-function spawnSubAgent({ prompt, model, name }) {
+function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = null }) {
   if (!prompt || !String(prompt).trim()) throw new Error("prompt is required");
   const id = `A${String(nextAgentId++).padStart(3, "0")}`;
   const rec = {
@@ -1967,6 +2173,11 @@ function spawnSubAgent({ prompt, model, name }) {
         { role: "user", content: String(prompt) },
       ];
       const session = new Session();
+      // Forward the parent's permission gate to the sub-agent's runTurn.
+      // Without this, runTurn defaults permissions=null → checkPermission
+      // defaults to "allow" for every tool, and run_shell/start_process skip
+      // every "ask" check. confirmTool falls back to null too, so a non-
+      // interactive parent correctly produces a non-interactive sub-agent.
       await runTurn({
         model: resolved,
         settings,
@@ -1975,6 +2186,8 @@ function spawnSubAgent({ prompt, model, name }) {
         maxIterations: 20,
         diffPreview: false,
         signal: rec.controller.signal,
+        permissions,
+        confirmTool,
       });
       rec.status = "done";
       rec.result = lastAssistantText(messages) || "(sub-agent finished with no final text)";
@@ -2022,16 +2235,19 @@ function todoPath() {
 function readTodos() {
   try {
     const data = JSON.parse(fs.readFileSync(todoPath(), "utf8"));
-    return Array.isArray(data.todos) ? data.todos : [];
+    const todos = Array.isArray(data.todos) ? data.todos : [];
+    const nextSeq = Number.isFinite(data.nextSeq) ? data.nextSeq : null;
+    return { todos, nextSeq };
   } catch {
-    return [];
+    return { todos: [], nextSeq: null };
   }
 }
 
-function writeTodos(todos) {
+function writeTodos(todos, nextSeq = null) {
   const file = todoPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ todos }, null, 2) + "\n");
+  const payload = { todos };
+  if (nextSeq != null) payload.nextSeq = nextSeq;
+  atomicWriteFileSync(file, JSON.stringify(payload, null, 2) + "\n");
 }
 
 function formatTodos(todos) {
@@ -2040,16 +2256,26 @@ function formatTodos(todos) {
 }
 
 function projectTodo({ action, id, title, status, notes } = {}) {
-  const todos = readTodos();
+  const { todos, nextSeq: persistedSeq } = readTodos();
   const now = new Date().toISOString();
   const act = String(action || "").toLowerCase();
   if (act === "list") return formatTodos(todos);
   if (act === "add") {
     if (!title) throw new Error("title is required for add");
-    const nextId = `T${String(todos.length + 1).padStart(3, "0")}`;
+    // Pick the next id from MAX(existing, persistedSeq) + 1 (TODO #12).
+    // The old formula reused T001 after `clear`, so a /todo done T001 was
+    // ambiguous between the pre-clear and post-clear tasks. We track the
+    // next sequence number in the file itself so it survives `clear` —
+    // re-using IDs across clear-and-re-add is the foot-gun the TODO flags.
+    const maxFromTodos = todos.reduce((m, t) => {
+      const n = parseInt(String(t.id || "").replace(/^T/, ""), 10);
+      return Number.isFinite(n) ? Math.max(m, n) : m;
+    }, 0);
+    const maxN = Math.max(maxFromTodos, persistedSeq || 0);
+    const nextId = `T${String(maxN + 1).padStart(3, "0")}`;
     const todo = { id: nextId, title, status: status || "pending", notes: notes || "", createdAt: now, updatedAt: now };
     todos.push(todo);
-    writeTodos(todos);
+    writeTodos(todos, maxN + 1);
     return `Added ${nextId}: ${title}`;
   }
   if (act === "update" || act === "done" || act === "remove") {
@@ -2057,29 +2283,37 @@ function projectTodo({ action, id, title, status, notes } = {}) {
     if (idx === -1) throw new Error(`todo not found: ${id}`);
     if (act === "remove") {
       const [removed] = todos.splice(idx, 1);
-      writeTodos(todos);
+      writeTodos(todos, persistedSeq);
       return `Removed ${removed.id}: ${removed.title}`;
     }
     if (title) todos[idx].title = title;
     if (notes !== undefined) todos[idx].notes = notes;
     todos[idx].status = act === "done" ? "done" : status || todos[idx].status;
     todos[idx].updatedAt = now;
-    writeTodos(todos);
+    writeTodos(todos, persistedSeq);
     return `Updated ${todos[idx].id}: ${todos[idx].status} ${todos[idx].title}`;
   }
   if (act === "clear") {
-    writeTodos([]);
+    // Preserve the sequence counter so a post-clear add doesn't reuse T001.
+    // (TODO #12.) The persistedSeq value survives the empty write below
+    // because writeTodos only writes nextSeq when it's not null.
+    writeTodos([], persistedSeq);
     return "Cleared project todos";
   }
   throw new Error("action must be list, add, update, done, remove, or clear");
 }
 
-export async function runTool(name, args) {
+export async function runTool(name, args, context = null) {
   const fn = impl[name];
   if (!fn) {
     throw new Error(`Unknown tool: ${name}. Valid tools: ${Object.keys(impl).sort().join(", ")}`);
   }
-  return await fn(args || {});
+  // Tools that need to spawn further turns (currently just spawn_agent) read
+  // context.permissions / context.confirmTool and forward them to runTurn, so
+  // a sub-agent inherits the parent's permission gate instead of running with
+  // permissions=null (which would default to "allow" for everything and skip
+  // every "ask"/"deny" check — see checkPermission in core/agent.mjs).
+  return await fn(args || {}, context);
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,7 +2654,7 @@ function addExtensionToConfig(rel) {
     /* start fresh if missing/unparseable */
   }
   const extensions = [...new Set([...(cfg.extensions || []), rel])];
-  fs.writeFileSync(omniConfigPath(), JSON.stringify({ ...cfg, extensions }, null, 2) + "\n", "utf8");
+  atomicWriteFileSync(omniConfigPath(), JSON.stringify({ ...cfg, extensions }, null, 2) + "\n");
 }
 
 // Backing implementation for the create_tool tool: write an extension's
@@ -2434,8 +2668,7 @@ async function createTool(name, code) {
 
   const rel = `extensions/${name}.js`;
   const full = path.join(INSTALL_ROOT, rel);
-  fs.mkdirSync(path.dirname(full), { recursive: true });
-  fs.writeFileSync(full, code, "utf8");
+  atomicWriteFileSync(full, code);
 
   let registeredName;
   try {

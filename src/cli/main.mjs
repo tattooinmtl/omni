@@ -157,7 +157,7 @@ export async function main(args) {
     model,
     messages,
     session,
-    maxIterations: settings.maxToolIterations || 30,
+    maxIterations: model.maxToolIterations ?? settings.maxToolIterations ?? 30,
     diffPreview: settings.diffPreview ?? true,
     activePersona: null,
     routeMode: routerCfg.mode || "auto",

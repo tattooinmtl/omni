@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTMX Hypermedia Production Starter</title>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+    .card { background: #1e293b; padding: 2rem; border-radius: 12px; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    .input-field { padding: 0.75rem; width: 70%; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; }
+    .btn { padding: 0.75rem 1.25rem; background: #6366f1; border: none; color: #fff; border-radius: 6px; cursor: pointer; }
+    .spinner { display: none; margin-left: 10px; color: #6366f1; }
+    .htmx-request .spinner { display: inline; }
+    .item-list { margin-top: 1.5rem; list-style: none; padding: 0; }
+    .item-list li { background: #334155; padding: 0.75rem 1rem; margin-bottom: 0.5rem; border-radius: 6px; display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>HTMX Hypermedia Reactive Panel</h2>
+    <p>Zero JavaScript framework bundle — pure server-driven hypermedia state.</p>
+
+    <!-- Search Input with Debounced Trigger -->
+    <div style="margin-bottom: 1.5rem;">
+      <input type="text" class="input-field" 
+             name="query" 
+             placeholder="Search items live..."
+             hx-post="/api/search" 
+             hx-trigger="keyup changed delay:300ms" 
+             hx-target="#search-results"
+             hx-indicator="#search-loading">
+      <span id="search-loading" class="spinner">Searching...</span>
+    </div>
+
+    <div id="search-results">
+      <!-- Hypermedia partial loaded here -->
+    </div>
+
+    <!-- Interactive Form -->
+    <form hx-post="/api/items" hx-target="#item-list" hx-swap="beforeend" hx-indicator="#add-loading">
+      <input type="text" name="item" class="input-field" placeholder="New Item Name" required>
+      <button type="submit" class="btn">Add Item</button>
+      <span id="add-loading" class="spinner">Saving...</span>
+    </form>
+
+    <ul id="item-list" class="item-list">
+      <li><span>Initial Partial Record</span> <button class="btn" style="background:#ef4444" hx-delete="/api/items/1" hx-target="closest li" hx-swap="outerHTML">Delete</button></li>
+    </ul>
+  </div>
+</body>
+</html>

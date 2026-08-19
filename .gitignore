@@ -52,3 +52,12 @@ okf-memory-galaxy-source/
 *.bak
 *.bak?
 *.backup
+
+# Test artifacts (e.g. browser_screenshot output during regression runs)
+*.png
+evil.com.png
+# User's live installation state (real settings, sessions, memory, atom log,
+# update-check cache) — never committed. See src/core/config.mjs HOME = OMNI_HOME.
+agent/
+# Same for the legacy per-user install location.
+omni-home/

@@ -25,6 +25,27 @@ function routeForTool(name) {
   if (name === "find_symbol" || name === "rag_search" || name === "deps") return CODEGRAPH_ID;
   return null;
 }
+
+// Lock key for serializing tool calls that touch the same file (TODO #18).
+// Returns a workspace-resolved absolute path for the file-touching tools,
+// or null for tools that don't share a single file (and therefore need no
+// per-file lock). apply_patch and find_replace touch multiple files inside
+// a single call but don't typically duplicate in the same batch; grouping
+// them by patch text / pattern keeps any pathological same-batch case safe
+// without slowing normal use.
+function fileLockKey(name, args) {
+  if (!args || typeof args !== "object") return null;
+  if (name === "read_file" || name === "edit_file" || name === "write_file") {
+    return String(args.path || "").trim() || null;
+  }
+  if (name === "apply_patch") return `patch:${String(args.patch || "")}`;
+  if (name === "find_replace") return `fr:${String(args.pattern || "")}|${String(args.replacement || "")}|${String(args.path || ".")}|${String(args.glob || "")}`;
+  return null;
+}
+
+// Exported for testing — TODO #18 regression. The real call site uses this
+// inside the Promise.all in runTurn to build the per-path lock queue.
+export { fileLockKey };
 import {
   c, assistantPrefix, toolLine, toolResultLine, errorLine, warnLine,
   startStatus, stopStatus, startGenerationStatus, diffPreviewLine,
@@ -204,14 +225,33 @@ function hopMatchesModel(hop, model) {
 }
 
 function switchModelToHop(model, settings, hop) {
-  const provider = settings.providers?.[hop.providerName];
-  if (!provider) throw new Error(`provider "${hop.providerName}" is not configured`);
+  const sharedProvider = settings.providers?.[hop.providerName];
+  if (!sharedProvider) throw new Error(`provider "${hop.providerName}" is not configured`);
+  // Clone the provider config before activating the account (TODO #16).
+  // activateAccount writes activeAccount + apiKey; doing it on the live
+  // settings.providers[name] object would leak the rotated account into the
+  // next /apikey save (saveSettings reads back from the same object graph).
+  // The clone is shallow — enough to break identity for activateAccount's
+  // writes — and accounts are spread so the active-account write doesn't
+  // touch the shared accounts map either.
+  const provider = {
+    ...sharedProvider,
+    accounts: { ...(sharedProvider.accounts || {}) },
+  };
   if (hop.account && !activateAccount(provider, hop.account)) {
     throw new Error(`account "${hop.account}" is not configured on provider "${hop.providerName}"`);
   }
-  const resolved = resolveModel(settings, hop.modelKey);
+  // resolveModel needs to see the activated account; substitute the clone
+  // into a temp settings for that one call. The model ends up pointing at
+  // the clone, not at settings.providers[name].
+  const tempSettings = { ...settings, providers: { ...settings.providers, [hop.providerName]: provider } };
+  const resolved = resolveModel(tempSettings, hop.modelKey);
   applyResolvedModel(model, resolved);
 }
+
+// Exported for testing — TODO #16 regression. Real call sites are
+// internal (the chatStreamWithRetry failover path).
+export { switchModelToHop };
 
 // provider.mjs formats HTTP failures as "Provider <status> <statusText>: …".
 // When that prefix is present it is authoritative: classify on the status
@@ -409,6 +449,9 @@ export function systemPrompt() {
     "- When a problem could be environmental (missing runtime, wrong version, PATH issue), diagnose with system_info, dev_env_report, and where_is before guessing.",
     "- Never end your reply right after requesting a tool — the tool result always comes back to you; keep working until the task is done, then summarize.",
     "- Keep prose concise. After finishing, briefly summarize what you did.",
+    "",
+    "# Skill invocation",
+    "Before improvising, scan `# Skills` below for a matching category and invoke `/<cmd>` (its body loads into context). Process skills (superpowers-style) come first — they set the approach; implementation skills carry it out. Don't know which skill fits? `/find-skills`. Full enforcement lives in `/using-superpowers`; the rules above are the always-on summary.",
   ].join("\n");
 }
 
@@ -787,6 +830,13 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
 
     const toolCategory = statusForTools(calls);
     startStatus(toolCategory);
+    // Per-path lock queue (TODO #18). Without this, a batch like
+    // [edit_file A, edit_file A] runs both reads in parallel and the
+    // second write clobbers the first. Calls targeting different files
+    // still run in parallel — only same-path calls serialize. The key is
+    // the absolute, resolved path; relative inputs resolve the same way
+    // resolve() does in the tools themselves.
+    const fileLocks = new Map(); // key -> Promise<unknown> tail
     const toolResults = await Promise.all(
       parsed.map(async ({ call, name, args, permission }) => {
         let result;
@@ -796,7 +846,27 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         } else {
           publishActivity({ kind: "tool_call", tool: name, phase: "start", route });
           try {
-            result = await runTool(name, args);
+            // Forward the parent's permission gate so spawn_agent's sub-agent
+            // inherits the same "ask"/"deny" rules instead of running with
+            // permissions=null (which defaults to "allow" — see
+            // checkPermission and TODO #2).
+            const lockKey = fileLockKey(name, args);
+            const run = () => runTool(name, args, { permissions, confirmTool });
+            if (lockKey) {
+              const prev = fileLocks.get(lockKey) || Promise.resolve();
+              let release;
+              const next = new Promise((r) => { release = r; });
+              fileLocks.set(lockKey, prev.then(() => next));
+              try {
+                await prev;
+                result = await run();
+              } finally {
+                if (fileLocks.get(lockKey) === next.then(() => next)) fileLocks.delete(lockKey);
+                release();
+              }
+            } else {
+              result = await run();
+            }
           } catch (e) {
             result = "ERROR: " + e.message;
           }

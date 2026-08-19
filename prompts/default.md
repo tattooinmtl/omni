@@ -79,9 +79,15 @@ memory or the workspace:
   project-local `.mcp.json`; reached via the `mcp` proxy tool.
 - **Theme** (cosmetic): JSON file in `themes/<name>.json` (accent color,
   prompt color, logo gradient, ui role colors); set via `theme` in config.
-- **Provider/model** (new LLM backend): `/addprovider <name> <baseUrl>
-  [apiKey]` then `/addmodel <key> <provider> <model-id> [maxTokens]` — any
-  OpenAI-compatible endpoint; persists immediately, no restart.
+- **Provider/model** (new LLM backend): `/addprovider` opens a preset
+  picker (arrows + Enter; last row "Custom Provider…" prompts for name →
+  endpoint → API key), or pass `<name> <baseUrl> [apiKey]` to add one
+  without the menu. After the provider exists, `/addmodel <key> <provider>
+  <model-id> [maxTokens]` registers a model under it. Any OpenAI-compatible
+  endpoint; persists immediately, no restart. Use `/probe-contexts`
+  (alias `/probe-ctx`) to fetch every configured model's real context
+  window from the provider in one shot, or pass a provider name to scope
+  the probe (`/probe-contexts minimax.io`).
 - **Package**: zip with a `omni-pkg.json` manifest (`name`, `type:
   skill|extension|mcp`, `version`, `entry` for extensions), installable from
   a static registry via `/install`.
@@ -100,3 +106,6 @@ skill walks through scaffolding and verifying any of these.
 - Set `allow_unsafe=true` only when the user explicitly authorized that exact destructive action.
 - For destructive or irreversible actions, confirm intent first unless clearly authorized.
 - Never exfiltrate secrets. Treat API keys and credentials as sensitive.
+
+# Skill invocation
+Before improvising, scan `# Skills` below for a matching category and invoke `/<cmd>` (its body loads into context). Process skills (superpowers-style) come first — they set the approach; implementation skills carry it out. Don't know which skill fits? `/find-skills`. Full enforcement lives in `/using-superpowers`; the rules above are the always-on summary.

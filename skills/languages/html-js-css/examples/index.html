@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Production Vanilla Web Frontend Application">
+  <title>Modern Web App - Vanilla Stack</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-badge">⚡</span>
+        <h1>Antigravity Web Engine</h1>
+      </div>
+      <button id="theme-toggle" class="btn btn-secondary" aria-label="Toggle Theme">
+        Toggle Theme
+      </button>
+    </header>
+
+    <main class="app-content">
+      <section class="hero-card">
+        <h2>Rich Aesthetic Modern Web Stack</h2>
+        <p>Vanilla HTML5, Glassmorphism CSS3, and ES Modules JS with zero framework bloat.</p>
+        
+        <div class="interactive-panel">
+          <form id="action-form">
+            <div class="input-group">
+              <label for="task-input">New Pipeline Item:</label>
+              <input type="text" id="task-input" name="taskInput" placeholder="Enter task name..." required>
+            </div>
+            <button type="submit" class="btn btn-primary">Add Item</button>
+          </form>
+
+          <ul id="item-list" class="item-list" aria-live="polite">
+            <!-- Dynamic items rendered via JS -->
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>&copy; 2026 Antigravity Multi-Agent Systems. Built for high performance.</p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -4,7 +4,8 @@
   "theme": "themes/forge-yellow.json",
   "extensions": [
     "extensions/file-tools.js",
-    "extensions/web-search.js"
+    "extensions/web-search.js",
+    "extensions/browser-use.js"
   ],
   "skills": [
     "skills/code-review",

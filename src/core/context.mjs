@@ -16,26 +16,58 @@ import { saveSettings } from "./config.mjs";
 export const DEFAULT_CONTEXT_WINDOW = 32768;
 
 // Known context windows by model family. Checked top-to-bottom; first match
-// wins, so keep more specific patterns above generic ones.
+// wins, so keep more specific patterns above generic ones. Values are based
+// on the provider's published spec at the time the model was added; if a
+// provider's /v1/models returns a `context_length` (or one of the other
+// candidate fields above), that overrides whatever the family table says.
 const FAMILY_WINDOWS = [
-  [/glm-?5/i, 202752],          // GLM 5.x — 200k class
+  // MiniMax (minimax.io)
+  [/minimax-m[23]/i, 1000000],
+  // Moonshot Kimi — different model variants encode their context in the
+  // name; keep the specific ones above the generic fallback.
+  [/kimi-k2|kimi-thinking/i, 262144],
+  [/moonshot-v1-128k/i, 131072],
+  [/moonshot-v1-32k/i, 32768],
+  [/moonshot-v1-8k/i, 8192],
+  [/kimi-/i, 131072],
+  [/moonshot/i, 8192],
+  // GLM (Z.AI on NIM)
+  [/glm-?5/i, 202752],
   [/glm-?4\.6/i, 202752],
   [/glm/i, 131072],
+  // Cursor / Anthropic Claude
+  [/cursor-/i, 200000],
+  [/claude-3-7|claude-4|claude-opus|claude-sonnet/i, 200000],
+  [/claude/i, 200000],
+  // Llama
   [/llama-?4/i, 1048576],
   [/llama-?3\.[123]/i, 131072],
+  [/llama-3\.3-70b/i, 131072],
+  // Qwen
   [/qwen3\.5/i, 262144],
+  [/qwen[\/_-]?3/i, 131072],
   [/qwen/i, 131072],
+  // DeepSeek
+  [/deepseek-r1|deepseek-v3|deepseek-v4/i, 163840],
   [/deepseek/i, 163840],
-  [/kimi/i, 262144],
+  // GPT family
   [/gpt-4\.1/i, 1047576],
   [/gpt-4o/i, 128000],
   [/\bo[134](-mini|-pro)?\b/i, 200000],
   [/gpt-5/i, 400000],
-  [/claude/i, 200000],
+  // Mistral family
+  [/mistral-large|mistral-?2|codestral|magistral|mixtral/i, 131072],
+  [/mistral/i, 131072],
+  // Gemini (1.5 = 1M; 2.5 bumped to 2M)
+  [/gemini-2\.5/i, 2000000],
   [/gemini/i, 1048576],
-  [/mistral|mixtral|codestral|magistral/i, 131072],
+  // xAI Grok — Grok-3 / Grok-4 class is 1M, Grok-2 is 131k
+  [/grok-3|grok-4/i, 1000000],
   [/grok/i, 131072],
+  // Nemotron (NVIDIA family)
   [/nemotron/i, 131072],
+  // Agnes AI
+  [/agnes-2\.5/i, 131072],
   [/agnes/i, 32768],
 ];
 
@@ -154,4 +186,77 @@ export function formatContextSize(n) {
   if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(n % (1024 * 1024) === 0 ? 0 : 1) + "M";
   if (n >= 1000) return Math.round(n / 1024) + "k";
   return String(n);
+}
+
+// Probe the context window for every configured model in parallel, with a
+// bounded concurrency so a slow provider can't serialize the run. Each
+// successful probe writes `contextWindowDetected` (the cache slot used by
+// `detectContextWindow`) on the model entry — the user's explicit
+// `contextWindow` override is left alone.
+//
+// Filters:
+//   - providers: optional list of provider keys to include (default: all)
+//   - concurrency: max in-flight probes (default 4)
+//   - timeoutMs: per-probe timeout (default 6000, same as detectContextWindow)
+//   - onProgress: optional fn({ done, total, result }) called after each probe
+//
+// Returns the result rows in the same order the work list was built:
+//   { key, provider, id, ok, size, source, error }
+//
+// Settings mutation: every row that produced a fresh detected value is
+// mutated in place. The caller is responsible for saveSettings() — we don't
+// persist here so a partially-failed run can be inspected / retried without
+// rolling back.
+export async function probeAllContextWindows(settings, opts = {}) {
+  const concurrency = Math.max(1, opts.concurrency || 4);
+  const timeoutMs = opts.timeoutMs || 6000;
+  const wantProviders = opts.providers ? new Set(opts.providers) : null;
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+
+  const work = [];
+  for (const [key, entry] of Object.entries(settings?.models || {})) {
+    const providerName = String(entry?.provider || "");
+    if (wantProviders && !wantProviders.has(providerName)) continue;
+    const providerDef = settings?.providers?.[providerName];
+    if (!providerDef) continue;
+    work.push({
+      key,
+      provider: providerName,
+      id: entry.id,
+      providerDef,
+      label: providerDef.label || providerName,
+    });
+  }
+
+  const results = new Array(work.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= work.length) return;
+      const row = work[idx];
+      const model = {
+        id: row.id,
+        provider: { baseUrl: row.providerDef.baseUrl, apiKey: row.providerDef.apiKey },
+      };
+      let result;
+      try {
+        const size = await fetchProviderContextWindow(model, { timeoutMs });
+        if (size && Number.isFinite(size) && size >= 1024) {
+          settings.models[row.key].contextWindowDetected = size;
+          result = { key: row.key, provider: row.provider, id: row.id, ok: true, size, source: "provider" };
+        } else {
+          result = { key: row.key, provider: row.provider, id: row.id, ok: false, size: null, source: null, error: "no context_length in /v1/models" };
+        }
+      } catch (e) {
+        result = { key: row.key, provider: row.provider, id: row.id, ok: false, size: null, source: null, error: e.message || String(e) };
+      }
+      results[idx] = result;
+      if (onProgress) onProgress({ done: cursor, total: work.length, result });
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, work.length) }, worker));
+  return results;
 }

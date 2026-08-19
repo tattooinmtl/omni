@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { c, infoLine, warnLine, errorLine, costLine } from "../ui.mjs";
 import {
   saveSettings, resolveModel, SETTINGS_PATH, HOME, Session,
@@ -19,7 +20,7 @@ import {
   extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
 } from "../core/memory-provider.mjs";
 import { neuralViewCommand } from "./neuralview.mjs";
-import { detectContextWindow, parseContextSize, formatContextSize } from "../core/context.mjs";
+import { detectContextWindow, parseContextSize, formatContextSize, probeAllContextWindows } from "../core/context.mjs";
 import { buildIndex, searchIndex, indexStatus, clearIndex } from "../integrations/rag.mjs";
 import { INSTALL_ROOT } from "../integrations/extras.mjs";
 import { installPackage, uninstallPackage, listInstalled, DEFAULT_REGISTRY } from "../integrations/registry.mjs";
@@ -30,11 +31,13 @@ import { maskKey, normalizeProviderKey, restoreSessionMessages } from "./helpers
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
+  addProviderInteractive,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
 } from "../core/workspace.mjs";
 import { llamaCommand } from "./llama-cmd.mjs";
+import { runBrowserCommand } from "./browser-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
 
@@ -438,6 +441,58 @@ export const COMMANDS = [
     },
   },
   {
+    name: "probe-contexts", aliases: ["probe-ctx"], usage: "/probe-contexts [provider] [--json]", category: "Models & Providers",
+    summary: "probe every configured model's context window from its provider and persist the result",
+    handler: async (ctx, arg) => {
+      const tokens = String(arg || "").trim().split(/\s+/).filter(Boolean);
+      const providers = [];
+      let json = false;
+      for (const t of tokens) {
+        if (t === "--json") json = true;
+        else if (t.startsWith("--")) { errorLine(`unknown flag: ${t}`); return; }
+        else providers.push(t);
+      }
+      const opts = {};
+      if (providers.length) opts.providers = providers;
+      let last = 0;
+      const total = Object.keys(ctx.settings.models || {}).length;
+      infoLine(json ? "probing…" : `probing ${total} configured model(s)…`);
+      const results = await probeAllContextWindows(ctx.settings, {
+        ...opts,
+        onProgress: json ? null : ({ done, result }) => {
+          // Re-print progress on a single line so providers don't pile up.
+          const line = `${result.provider}/${result.id.padEnd(28)} ${result.ok ? c.green("✓ " + result.size.toLocaleString().padStart(10)) : c.red("✗ " + (result.error || "no data"))}`;
+          readline.cursorTo(process.stdout, 0);
+          readline.clearLine(process.stdout, 0);
+          process.stdout.write(`[${done}/${total}] ${line}`);
+          last = done;
+        },
+      });
+      if (!json) readline.cursorTo(process.stdout, 0), readline.clearLine(process.stdout, 0);
+
+      const ok = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok).length;
+      await saveSettings(ctx.settings);
+
+      if (json) {
+        console.log(JSON.stringify({ ok, failed, total: results.length, results }, null, 2));
+        return;
+      }
+      infoLine(`probed ${results.length} model(s): ${c.green(ok + " ok")} / ${c.red(failed + " failed")}`);
+      for (const r of results) {
+        const key = `${r.provider}/${r.id}`;
+        if (r.ok) console.log(`    ${c.green("✓")} ${key.padEnd(36)} ${r.size.toLocaleString().padStart(10)}  ${c.dim("provider")}`);
+        else console.log(`    ${c.red("✗")} ${key.padEnd(36)} ${c.dim("—")}  ${c.red(r.error || "no data")}`);
+      }
+      // Refresh the active model's window so /status reflects the new value.
+      try {
+        if (ctx.settings.models[ctx.model.key]?.contextWindowDetected) {
+          ctx.model = resolveModel(ctx.settings, ctx.model.key);
+        }
+      } catch { /* keep current */ }
+    },
+  },
+  {
     name: "default", aliases: [], usage: "/default [key]", category: "Models & Providers",
     summary: "set the default model (persisted)",
     handler: async (ctx, arg) => {
@@ -562,20 +617,19 @@ export const COMMANDS = [
     },
   },
   {
-    name: "addprovider", aliases: [], usage: "/addprovider <name> <baseUrl> [apiKey]", category: "Models & Providers",
-    summary: "add a custom provider (persisted)",
-    handler: async (ctx, arg) => {
-      const [name, baseUrl, ...keyParts] = arg.split(/\s+/);
-      if (!name || !baseUrl) { errorLine("usage: /addprovider <name> <baseUrl> [apiKey]"); return; }
-      ctx.settings.providers[name] = { baseUrl, apiKey: keyParts.join(" ").trim() || "not-needed" };
-      await saveSettings(ctx.settings);
-      infoLine(`added provider ${name} -> ${baseUrl} (saved)`);
-    },
+    name: "addprovider", aliases: [], usage: "/addprovider [name baseUrl [apiKey]]", category: "Models & Providers",
+    summary: "pick a provider preset (arrow-key menu) or supply <name> <baseUrl> [apiKey] directly",
+    handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
   },
   {
     name: "llama", aliases: [], usage: "/llama [list|start <n>|default <n>|stop|status]", category: "Models & Providers",
     summary: "manage the bundled local llama.cpp server",
     handler: (ctx, arg, parts) => llamaCommand(ctx, parts[1] || "", parts.slice(2).join(" ").trim()),
+  },
+  {
+    name: "browser", aliases: [], usage: "/browser [status|close|navigate <url>|screenshot]", category: "Tools",
+    summary: "inspect or control the headless browser session (browser_* tools)",
+    handler: (ctx, arg) => runBrowserCommand(ctx, arg),
   },
 
   // ── Packages & Integrations ───────────────────────────────────────────

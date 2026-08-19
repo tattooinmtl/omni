@@ -126,6 +126,33 @@ function substituteInstallRoot(s) {
   return typeof s === "string" ? s.split("{{INSTALL_ROOT}}").join(INSTALL_ROOT) : s;
 }
 
+// cmd.exe argument quoting. The shell parses its argument even inside double
+// quotes for several metacharacters — `& | < >` are still command
+// separators, `%` is still expanded from environment, and `^` is the
+// escape character itself. Naively wrapping an arg in `"..."` (the old
+// behaviour) lets a malicious MCP config inject `foo & calc.exe` and have
+// the shell run a second command. We escape those metacharacters with `^`
+// (cmd.exe's standard escape), then wrap in double quotes with internal
+// quotes doubled per cmd.exe convention.
+function quoteForCmdExe(arg) {
+  let s = String(arg);
+  // Escape characters that keep their meaning inside double quotes. Order
+  // matters: `^` first so the metacharacter we use as escape is itself
+  // escaped, then the metacharacters themselves (cmd.exe command
+  // separators/redirection; `;` is included for defense in depth — it isn't
+  // strictly a separator in cmd.exe but the TODO lists it as a concern),
+  // then `%` (env expansion).
+  s = s.replace(/\^/g, "^^");
+  s = s.replace(/[&|<>;]/g, "^$&");
+  s = s.replace(/%/g, "^%");
+  // Internal double quotes are doubled so cmd.exe sees a literal quote.
+  s = s.replace(/"/g, '""');
+  return `"${s}"`;
+}
+
+// Exported for testing — call `quoteForCmdExe("foo & calc.exe")` directly.
+export { quoteForCmdExe };
+
 function connectStdio(name, def) {
   const env = { ...(def.inheritEnv ? process.env : baseEnv()), ...(def.env || {}) };
   const opts = { env, cwd: def.cwd || process.cwd(), stdio: ["pipe", "pipe", "pipe"] };
@@ -133,12 +160,15 @@ function connectStdio(name, def) {
   // On Windows, npx/uvx/etc. are .cmd shims that bare spawn() can't resolve
   // (ENOENT). We run through the shell so PATHEXT finds them — but as a single
   // quoted command STRING (no args array) to avoid the DEP0190 warning that
-  // fires when args are passed under shell:true.
+  // fires when args are passed under shell:true. The string itself must be
+  // properly escaped for cmd.exe, otherwise an arg like `foo & calc.exe` is
+  // parsed as a second command (TODO #6 — the old code only quoted args with
+  // whitespace, leaving `& | < > ;` as command separators).
   let command = substituteInstallRoot(def.command);
   let args = (def.args || []).map(substituteInstallRoot);
   if (process.platform === "win32") {
-    const quoted = args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
-    command = quoted ? `${def.command} ${quoted}` : def.command;
+    const escapedArgs = args.map(quoteForCmdExe);
+    command = escapedArgs.length ? `${def.command} ${escapedArgs.join(" ")}` : def.command;
     args = [];
     opts.shell = true;
   }

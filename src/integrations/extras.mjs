@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fdPath, INSTALL_ROOT } from "../paths.mjs";
 import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
@@ -125,27 +126,68 @@ function discoverSkills() {
   return out;
 }
 
-// Very small frontmatter parser: leading `---` ... `---` block of key: value.
+// Frontmatter parser for the leading `---` ... `---` block. Handles
+// `key: value` lines plus YAML block scalars (`|`, `|-`, `>`, `>-`):
+// indented lines that follow are folded into a single value. The same form
+// is used by every supported skill format, so all known frontmatter keys
+// (name, command, description, license, maintainer, user-invocable, …) work
+// uniformly — extras we don't consume are simply ignored.
 function parseFrontmatter(text) {
   const m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: text };
   const meta = {};
-  for (const line of m[1].split("\n")) {
+  const raw = m[1].split("\n");
+  let i = 0;
+  while (i < raw.length) {
+    const line = raw[i];
     const kv = line.match(/^([\w-]+):\s*(.*)$/);
-    if (kv) meta[kv[1]] = kv[2].trim();
+    if (!kv) { i++; continue; }
+    const key = kv[1];
+    let val = kv[2];
+    // Block scalars (`|`, `|-`, `>`, `>-`) and a common author mistake —
+    // a bare `description:` (empty value) followed by indented continuation
+    // lines. Both fold the next run of indented/blank lines into a single
+    // value.
+    const isBlockScalar = val === "|" || val === "|-" || val === ">" || val === ">-";
+    const isContinuationStart = val === "" && /^\s+\S/.test(raw[i + 1] || "");
+    if (isBlockScalar || isContinuationStart) {
+      const block = [];
+      i++;
+      while (i < raw.length) {
+        const next = raw[i];
+        if (next === "" || /^\s/.test(next)) {
+          block.push(next.replace(/^\s+/, ""));
+          i++;
+        } else break;
+      }
+      val = block.join(" ").replace(/\s+/g, " ").trim();
+    } else {
+      i++;
+    }
+    meta[key] = val;
   }
   return { meta, body: m[2].trim() };
 }
 
+// Skills come from one place only: <INSTALL_ROOT>/skills/. Per-user skill
+// dirs under the home directory (e.g. ~/.kimi-code/skills, ~/.agents/skills)
+// are NOT consulted — keeping Omni's skill library entirely under version
+// control means a clone is fully functional out of the box and a user
+// can't accidentally shadow a built-in with a personal copy that
+// drifts out of sync. If a user wants a custom skill, they add it
+// to skills/ directly or via `omni install <skill-package>`.
 export function loadSkills(config) {
   const configured = Array.isArray(config.skills) ? config.skills : [];
   const discovered = config.autoDiscoverSkills ? discoverSkills() : [];
-  const relSkills = [...new Set([...configured, ...discovered])];
+  // Order matters: configured → discovered. Later entries shadow earlier
+  // ones by command, so a configured `omni.config.json` entry overrides
+  // an auto-discovered built-in with the same command.
+  const entries = [...configured, ...discovered];
   const skills = [];
-  for (const rel of relSkills) {
-    const file = rel.endsWith("SKILL.md")
-      ? path.join(INSTALL_ROOT, rel)
-      : path.join(INSTALL_ROOT, rel, "SKILL.md");
+  for (const entry of entries) {
+    const isAbs = path.isAbsolute(entry);
+    const base = isAbs ? entry : path.join(INSTALL_ROOT, entry);
+    const file = entry.endsWith("SKILL.md") ? base : path.join(base, "SKILL.md");
     try {
       const raw = fs.readFileSync(file, "utf8");
       const { meta, body } = parseFrontmatter(raw);
@@ -157,12 +199,47 @@ export function loadSkills(config) {
         description: meta.description || "",
         body,
         dir,
+        // Derive a category from the directory so the system prompt can group
+        // skills rather than dumping one flat 200-line list (TODO #1). For
+        // built-ins the category is the first path segment under skills/
+        // (e.g. skills/agent-orchestration/cmux → "agent-orchestration"); a
+        // top-level skill where the category equals the skill name falls
+        // into its own group. User-scope skills (under ~/.agents/skills or
+        // ~/.kimi-code/skills) collapse to "Process skills" so the
+        // superpowers-style process skills don't get lost in a wall of
+        // built-ins.
+        category: categoryForSkillDir(dir),
       });
     } catch {
       /* skip missing skill */
     }
   }
-  return skills;
+  // Dedupe by command — last one wins (user skill overrides built-in).
+  const byCommand = new Map();
+  for (const s of skills) byCommand.set(s.command, s);
+  return [...byCommand.values()];
+}
+
+// First path segment under skills/ is the category, or "Process skills"
+// for user-scope (per-user) installs. Returns null for a built-in skill
+// whose directory IS the category (single-skill categories like
+// skills/code-review/SKILL.md where dir ends in `skills/<category>`).
+function categoryForSkillDir(dir) {
+  const rel = path.relative(INSTALL_ROOT, dir).replace(/\\/g, "/");
+  if (rel.startsWith("skills/")) {
+    const segs = rel.split("/").slice(1); // drop "skills/"
+    if (segs.length === 1) return titleCase(segs[0]); // skills/<category>/SKILL.md — category IS the skill
+    return titleCase(segs[0]); // skills/<category>/<skill>/SKILL.md — first segment is the category
+  }
+  // User-scope install (per-user skill dir like ~/.agents/skills/...).
+  return "Process skills";
+}
+
+// Hyphen-to-space, capitalize every word. Keeps the names short — the
+// section headers in the system prompt render as "## Agent Orchestration",
+// "## Process Skills", etc.
+function titleCase(slug) {
+  return String(slug || "").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Build the full system prompt: prompt file (or fallback) + runtime context + skills.
@@ -177,9 +254,42 @@ export function buildSystemPrompt(config, skills) {
   ].join("\n");
   let sk = "";
   if (skills && skills.length) {
-    sk =
-      "\n\n# Skills\nThe user can invoke these with slash commands. When invoked, you'll be given the skill's instructions:\n" +
-      skills.map((s) => `- ${s.command} — ${s.description}`).join("\n");
+    sk = "\n\n" + renderSkillsSection(skills);
   }
   return base + "\n" + ctx + sk;
+}
+
+// Group skills by category (TODO #1 — was a flat one-line-per-skill list
+// that ran ~150 chars per skill for every turn). The list still shows the
+// command + a one-line description so the model can pick a slash command,
+// but it's now organised into sections the model can scan top-down rather
+// than linearly. Skill bodies are NOT included — those load only when the
+// user (or the dispatcher blurb in the prompt) invokes the skill.
+function renderSkillsSection(skills) {
+  const byCategory = new Map();
+  for (const s of skills) {
+    const cat = s.category || "Other";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat).push(s);
+  }
+  const sortedCats = [...byCategory.keys()].sort((a, b) => {
+    // "Process skills" first (the superpowers-style workflow skills live
+    // there; they're the most relevant to every task), then everything else
+    // alphabetically. "Other" last.
+    if (a === "Process skills") return -1;
+    if (b === "Process skills") return 1;
+    if (a === "Other") return 1;
+    if (b === "Other") return -1;
+    return a.localeCompare(b);
+  });
+  const lines = [
+    "# Skills",
+    "The user can invoke these with slash commands. When invoked, you'll be given the skill's full instructions. Pick the category that matches the task and scan its section before improvising.",
+  ];
+  for (const cat of sortedCats) {
+    const items = byCategory.get(cat).sort((a, b) => a.command.localeCompare(b.command));
+    lines.push("", `## ${cat}`);
+    for (const s of items) lines.push(`- ${s.command} — ${s.description}`);
+  }
+  return lines.join("\n");
 }

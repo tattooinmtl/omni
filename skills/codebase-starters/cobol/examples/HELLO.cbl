@@ -1,0 +1,41 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. HELLO-STARTER.
+       AUTHOR. ANTIGRAVITY-AGENT.
+       DATE-WRITTEN. 2026-08-09.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-USER-RECORD.
+          05 WS-USER-ID        PIC X(10) VALUE 'USR-9901'.
+          05 WS-USER-EMAIL     PIC X(30) VALUE 'cobol.dev@example.com'.
+          05 WS-USER-SCORE     PIC 9(05)V99 VALUE 00120.50.
+          05 WS-USER-STATUS    PIC X(10) VALUE 'ACTIVE'.
+
+       01 WS-CALCULATED-SCORE  PIC 9(05)V99 VALUE ZERO.
+       01 WS-DISPLAY-SCORE     PIC ZZZ99.99.
+
+       PROCEDURE DIVISION.
+       000-MAIN-PARAGRAPH.
+           DISPLAY "============================================".
+           DISPLAY "  ENTERPRISE GNUCOBOL PRODUCTION STARTER".
+           DISPLAY "============================================".
+           
+           PERFORM 100-PROCESS-USER.
+           PERFORM 200-DISPLAY-RESULTS.
+           
+           MOVE 0 TO RETURN-CODE.
+           STOP RUN.
+
+       100-PROCESS-USER.
+           COMPUTE WS-CALCULATED-SCORE = WS-USER-SCORE * 1.15.
+           MOVE WS-CALCULATED-SCORE TO WS-DISPLAY-SCORE.
+
+       200-DISPLAY-RESULTS.
+           DISPLAY "USER ID       : " WS-USER-ID.
+           DISPLAY "USER EMAIL    : " WS-USER-EMAIL.
+           DISPLAY "INITIAL SCORE : " WS-USER-SCORE.
+           DISPLAY "FINAL SCORE   : " WS-DISPLAY-SCORE.
+           DISPLAY "STATUS        : " WS-USER-STATUS.
