@@ -76,5 +76,52 @@ ok("settings.maxToolIterations beats the global default but loses to model", () 
   assert.equal(resolveModel(s, "openai/gpt-4.1").maxToolIterations, 50, "settings should beat default");
 });
 
+// The user's actual settings have a provider called `minimax` (not
+// `minimax.io`) and a model called `minimax/m3` (not `minimax.io/m3`).
+// Their saved settings don't include the maxToolIterations field. The
+// name-based fallback has to fire on the provider name string so the
+// cap reaches them without them having to edit settings.json.
+ok("a user-saved 'minimax' provider (no maxToolIterations field) still gets 200 via the name-based fallback", () => {
+  const s = {
+    defaultModel: "minimax/m3",
+    reasoning: "medium",
+    maxToolIterations: 30, // user's saved top-level value
+    providers: {
+      minimax: { baseUrl: "https://api.minimax.io/v1", apiKey: "k", label: "minimax" },
+    },
+    models: {
+      "minimax/m3": { provider: "minimax", id: "MiniMax-M3", maxTokens: 16384 },
+    },
+  };
+  const m = resolveModel(s, "minimax/m3");
+  assert.equal(m.maxToolIterations, 200, `expected 200 from name-based fallback, got ${m.maxToolIterations}`);
+});
+
+ok("the name-based fallback also matches 'minimax.io' (canonical provider name)", () => {
+  const s = {
+    defaultModel: "minimax.io/m3",
+    reasoning: "medium",
+    providers: {
+      "minimax.io": { baseUrl: "https://api.minimax.io/v1", apiKey: "k", label: "minimax.io" },
+    },
+    models: {
+      "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxTokens: 977000 },
+    },
+  };
+  const m = resolveModel(s, "minimax.io/m3");
+  assert.equal(m.maxToolIterations, 200);
+});
+
+ok("non-minimax providers get the 30 default via the name-based fallback", () => {
+  const s = {
+    defaultModel: "nvidia/glm-5.2",
+    reasoning: "medium",
+    providers: { nvidia: { baseUrl: "https://x", apiKey: "k" } },
+    models: { "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2" } },
+  };
+  const m = resolveModel(s, "nvidia/glm-5.2");
+  assert.equal(m.maxToolIterations, 30);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

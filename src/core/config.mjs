@@ -125,6 +125,11 @@ const DEFAULT_SETTINGS = {
       // via a `thinking` field, not the simple reasoning_effort string this
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
       reasoningParam: "none",
+      // MiniMax allows 200 calls per 5 hours — 6-7x the 30 most providers
+      // get. Setting this on the PROVIDER means every minimax model
+      // automatically gets the higher cap; the user doesn't have to
+      // remember to set it per-model.
+      maxToolIterations: 200,
     },
     kimi: {
       baseUrl: "https://api.moonshot.cn/v1",
@@ -550,9 +555,42 @@ export function resolveModel(settings, modelKey) {
     // `maxToolIterations` field on their model entry (e.g. minimax.io gets
     // 200 because its rate-limit window is much wider than most providers).
     // Order of precedence at the call site: model value > settings value > 30.
-    maxToolIterations: m.maxToolIterations ?? settings.maxToolIterations ?? 30,
+    // Precedence: model > provider > known-provider-name > settings > 30.
+    // The known-provider check sits ABOVE the settings-level value because
+    // a user's saved settings.json typically has `maxToolIterations: 30`
+    // seeded by loadSettings from DEFAULT_SETTINGS — that's a default, not
+    // a deliberate override, so the name-based cap (200 for minimax) has
+    // to take precedence. A user who actually wants a different cap for
+    // a specific model sets it on that model's entry (top of the chain).
+    maxToolIterations: m.maxToolIterations
+      ?? provider.maxToolIterations
+      ?? knownProviderMaxIterations(m.provider)
+      ?? settings.maxToolIterations
+      ?? 30,
   };
 }
+
+// Provider-name → max-tool-iterations override. Used as a last-resort
+// fallback so the cap works for users who never added the field to their
+// settings (the field is what their loadSettings merges from the default,
+// but a user who picked minimax via /addprovider without that field in
+// DEFAULT_SETTINGS still needs the higher cap).
+//
+// MiniMax's free tier is 200 calls / 5 hours, ~6-7x the 30 most providers
+// get. Recognise the name (case-insensitive) regardless of whether the
+// user typed "minimax", "minimax.io", or a custom alias — anything with
+// "minimax" in the provider name gets the higher cap.
+function knownProviderMaxIterations(providerName) {
+  if (!providerName) return null;
+  if (/minimax/i.test(String(providerName))) return 200;
+  return null;
+}
+
+// Exported for testing — TODO #minimax regression. Real call site is
+// resolveModel above; this lets the test verify the name-based fallback
+// works for the user's specific provider name without going through
+// the full loadSettings pipeline.
+export { knownProviderMaxIterations };
 
 // Whether the active model's provider still needs an API key. The "not-needed"
 // sentinel (used by the local llama provider) counts as configured.
