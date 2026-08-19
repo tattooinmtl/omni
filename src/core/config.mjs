@@ -125,10 +125,10 @@ const DEFAULT_SETTINGS = {
       // via a `thinking` field, not the simple reasoning_effort string this
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
       reasoningParam: "none",
-      // MiniMax allows 200 calls per 5 hours — 6-7x the 30 most providers
-      // get. Setting this on the PROVIDER means every minimax model
-      // automatically gets the higher cap; the user doesn't have to
-      // remember to set it per-model.
+      // MiniMax allows 200 calls per 5 hours. Setting it on the provider
+      // means every minimax.io model gets the cap automatically; the
+      // name-based fallback (knownProviderMaxIterations) covers the user's
+      // saved "minimax" provider name which isn't this canonical key.
       maxToolIterations: 200,
     },
     kimi: {
@@ -573,16 +573,24 @@ export function resolveModel(settings, modelKey) {
 // Provider-name → max-tool-iterations override. Used as a last-resort
 // fallback so the cap works for users who never added the field to their
 // settings (the field is what their loadSettings merges from the default,
-// but a user who picked minimax via /addprovider without that field in
-// DEFAULT_SETTINGS still needs the higher cap).
+// but a user who picked a provider via /addprovider without that field in
+// DEFAULT_SETTINGS still needs the right cap).
 //
-// MiniMax's free tier is 200 calls / 5 hours, ~6-7x the 30 most providers
-// get. Recognise the name (case-insensitive) regardless of whether the
-// user typed "minimax", "minimax.io", or a custom alias — anything with
-// "minimax" in the provider name gets the higher cap.
+// Per-provider rate limits (as confirmed against the live APIs):
+//   minimax      200 calls / 5 hours
+//   nvidia        40 calls / hour (well below 200/5hr ≈ 40/hr scaled)
+//   agnes         30 calls / hour
+//   openrouter    30 calls / hour
+//   everything else 30
+// Order: most specific first (minimax before nvidia, so a hypothetical
+// "minimax-via-nvidia" still gets 200).
 function knownProviderMaxIterations(providerName) {
   if (!providerName) return null;
-  if (/minimax/i.test(String(providerName))) return 200;
+  const n = String(providerName).toLowerCase();
+  if (n.includes("minimax")) return 200;
+  if (n.includes("nvidia")) return 40;
+  if (n.includes("agnes")) return 30;
+  if (n.includes("openrouter")) return 30;
   return null;
 }
 

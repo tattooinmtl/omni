@@ -39,26 +39,29 @@ function makeSettings(overrides = {}) {
       "minimax.io": { baseUrl: "https://example.invalid/v1", apiKey: "" },
     },
     models: {
+      // minimax.io/m3 has the model-level 200 (the canonical fix).
       "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxToolIterations: 200, maxTokens: 16384 },
-      "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxToolIterations: 30, maxTokens: 16384 },
-      "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxToolIterations: 30, maxTokens: 16384 },
+      // Other models deliberately have NO maxToolIterations — the name-based
+      // fallback is what the test is verifying.
+      "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
+      "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384 },
       "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384 },
     },
     ...overrides,
   };
 }
 
-ok("minimax model carries 200 (its rate-limit window allows it)", () => {
+ok("minimax model carries 200 (model-level override wins)", () => {
   const m = resolveModel(makeSettings(), "minimax.io/m3");
   assert.equal(m.maxToolIterations, 200);
 });
 
-ok("nvidia model carries 30 (its tighter rate-limit window)", () => {
+ok("nvidia model carries 40 (its 40-calls/hr rate-limit window, via name-based fallback)", () => {
   const m = resolveModel(makeSettings(), "nvidia/glm-5.2");
-  assert.equal(m.maxToolIterations, 30);
+  assert.equal(m.maxToolIterations, 40);
 });
 
-ok("agnes model carries 30 (its tighter rate-limit window)", () => {
+ok("agnes model carries 30 (its tighter rate-limit window, via name-based fallback)", () => {
   const m = resolveModel(makeSettings(), "agnes/agnes-2.0-flash");
   assert.equal(m.maxToolIterations, 30);
 });
@@ -112,15 +115,44 @@ ok("the name-based fallback also matches 'minimax.io' (canonical provider name)"
   assert.equal(m.maxToolIterations, 200);
 });
 
-ok("non-minimax providers get the 30 default via the name-based fallback", () => {
-  const s = {
-    defaultModel: "nvidia/glm-5.2",
-    reasoning: "medium",
+ok("non-minimax providers without any field get the right cap via the name-based fallback", () => {
+  // nvidia → 40 calls/hr
+  const nvidia = resolveModel({
+    defaultModel: "nvidia/glm-5.2", reasoning: "medium",
     providers: { nvidia: { baseUrl: "https://x", apiKey: "k" } },
     models: { "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2" } },
-  };
-  const m = resolveModel(s, "nvidia/glm-5.2");
-  assert.equal(m.maxToolIterations, 30);
+  }, "nvidia/glm-5.2");
+  assert.equal(nvidia.maxToolIterations, 40, `nvidia should be 40, got ${nvidia.maxToolIterations}`);
+
+  // agnes → 30
+  const agnes = resolveModel({
+    defaultModel: "agnes/agnes-2.0-flash", reasoning: "medium",
+    providers: { agnes: { baseUrl: "https://x", apiKey: "k" } },
+    models: { "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash" } },
+  }, "agnes/agnes-2.0-flash");
+  assert.equal(agnes.maxToolIterations, 30);
+
+  // openrouter → 30
+  const or_ = resolveModel({
+    defaultModel: "openrouter/llama-3-8b", reasoning: "medium",
+    providers: { openrouter: { baseUrl: "https://x", apiKey: "k" } },
+    models: { "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct" } },
+  }, "openrouter/llama-3-8b");
+  assert.equal(or_.maxToolIterations, 30);
+});
+
+ok("user-saved provider names reach the right cap via the name-based fallback", () => {
+  // The real test of the fix: a user whose settings.json has a provider
+  // called just "nvidia" / "agnes" / "openrouter" (NOT the canonical
+  // "nvidia" or whatever the defaults use) still gets the right cap.
+  for (const [providerName, expected] of [["nvidia", 40], ["agnes", 30], ["openrouter", 30]]) {
+    const m = resolveModel({
+      defaultModel: `${providerName}/some-model`, reasoning: "medium", maxToolIterations: 30,
+      providers: { [providerName]: { baseUrl: "https://x", apiKey: "k" } },
+      models: { [`${providerName}/some-model`]: { provider: providerName, id: "x" } },
+    }, `${providerName}/some-model`);
+    assert.equal(m.maxToolIterations, expected, `${providerName} should be ${expected}, got ${m.maxToolIterations}`);
+  }
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
