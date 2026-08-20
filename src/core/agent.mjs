@@ -12,8 +12,16 @@ import {
 } from "./toolcalls.mjs";
 import { syncOkfNavGuidance } from "./okfnav.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
-import { CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID } from "../local/graph-ids.mjs";
+import {
+  CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID,
+  TOOLS_HUB_ID, FILES_HUB_ID, SESSIONS_HUB_ID, COORDINATOR_ID,
+} from "../local/graph-ids.mjs";
+import crypto from "node:crypto";
 import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider.mjs";
+import {
+  appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
+} from "./context-mode.mjs";
+import fs from "node:fs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -23,7 +31,56 @@ function routeForTool(name) {
   if (name.startsWith("memory_")) return CHAT_MEMORY_ID;
   if (name.startsWith("okf_")) return OKF_ROOT_ID;
   if (name === "find_symbol" || name === "rag_search" || name === "deps") return CODEGRAPH_ID;
-  return null;
+  // File-touching tools fan out under the Files hub so each file becomes its
+  // own visible child; the file node is added by publishLiveFileNode below.
+  if (name === "read_file" || name === "write_file" || name === "edit_file" || name === "apply_patch" || name === "find_replace") return FILES_HUB_ID;
+  // Everything else lands under the generic Tools hub so it visibly pulses
+  // instead of silently flashing the coordinator (the old fallback that made
+  // /neuralview look dead during real tool-heavy turns).
+  return TOOLS_HUB_ID;
+}
+
+// Classify a tool's *direction of information flow* so /neuralview can
+// color the pulse: orange when the agent is pulling info OUT of a node
+// (a read/search/list/grep), green when it's pushing info INTO a node
+// (a write/edit/memory_save), blue for anything execution-shaped where
+// data flow isn't the point (run_command, run_test, run_agent). This is
+// entirely a visualization aid — the tool executes the same either way.
+function intentForTool(name) {
+  if (
+    name === "write_file" || name === "edit_file" || name === "apply_patch" ||
+    name === "find_replace" || name === "memory_save" ||
+    name.startsWith("okf_add") || name.startsWith("okf_write") || name.startsWith("okf_link")
+  ) return "store";
+  if (
+    name === "read_file" || name === "list_dir" || name === "grep" ||
+    name === "find_symbol" || name === "rag_search" || name === "project_inspect" ||
+    name === "deps" || name === "memory_search" || name === "memory_list" ||
+    name.startsWith("okf_get") || name.startsWith("okf_search") || name.startsWith("okf_list")
+  ) return "fetch";
+  return "scan";
+}
+
+// Short stable id for a filesystem path so the same file re-touched during a
+// session reuses one node instead of piling up duplicates.
+function fileNodeId(p) {
+  return "file-" + crypto.createHash("sha1").update(String(p || "")).digest("hex").slice(0, 10);
+}
+function toolCallNodeId(callId) {
+  return "tc-" + String(callId || crypto.randomBytes(4).toString("hex"));
+}
+
+// Live-layer nodes that already exist this session — kept in-process so
+// repeated events don't republish "add" for the same node. Cleared on
+// process exit (nothing to clean up — the client rebuilds on refresh).
+const liveNodesSeen = new Set();
+function publishLiveNode({ id, parent, label, detail, kind, meta }) {
+  if (!id || liveNodesSeen.has(id)) return;
+  liveNodesSeen.add(id);
+  publishActivity({ kind: "live_node", op: "add", nodeId: id, parent, label, detail, nodeKind: kind, meta: meta || {} });
+}
+function publishLiveEdge(source, target, edgeKind) {
+  publishActivity({ kind: "live_edge", source, target, edgeKind: edgeKind || "live" });
 }
 
 // Lock key for serializing tool calls that touch the same file (TODO #18).
@@ -476,7 +533,7 @@ export function estimateTokens(messages) {
 // Collapse everything between the system prompt and the last `keepTail`
 // messages into one digest message. Mutates `messages` in place. Returns
 // true when something was actually compacted.
-export function compactMessages(messages, { keepTail = 8 } = {}) {
+export function compactMessages(messages, { keepTail = 8, sessionGoal = null } = {}) {
   if (!Array.isArray(messages) || messages.length < keepTail + 4) return false;
   const hasSystem = messages[0]?.role === "system";
   const first = hasSystem ? 1 : 0;
@@ -489,6 +546,16 @@ export function compactMessages(messages, { keepTail = 8 } = {}) {
 
   const dropped = messages.slice(first, cut);
   const firstUser = dropped.find((m) => m.role === "user" && typeof m.content === "string");
+  // Map tool_call_id -> first-line-of-result, so the digest can pair each
+  // tool call with a summary of what it actually returned (not just the
+  // tool name). Lean-mode goal-tracking runs on top of this.
+  const resultById = new Map();
+  for (const m of dropped) {
+    if (m.role === "tool" && m.tool_call_id) {
+      const firstLine = String(m.content || "").split(/\r?\n/)[0] || "";
+      resultById.set(m.tool_call_id, firstLine.slice(0, 80));
+    }
+  }
   const toolTrail = [];
   for (const m of dropped) {
     for (const call of m.tool_calls || []) {
@@ -498,28 +565,88 @@ export function compactMessages(messages, { keepTail = 8 } = {}) {
         const args = JSON.parse(fn.arguments || "{}");
         hint = args.path || args.pattern || args.command || args.query || (Array.isArray(args.paths) ? args.paths.join(", ") : "");
       } catch { /* args stay opaque */ }
-      toolTrail.push(`${fn.name || "?"}${hint ? ` (${String(hint).slice(0, 80)})` : ""}`);
+      const summary = resultById.get(call.id);
+      toolTrail.push(
+        `${fn.name || "?"}${hint ? ` (${String(hint).slice(0, 80)})` : ""}` +
+        (summary ? ` -> ${summary}` : "")
+      );
     }
   }
   const digest = [
     "[CONTEXT COMPACTED] Earlier conversation was condensed to fit the model's context window. Continue the task from the recent messages below.",
+    sessionGoal ? `Session goal: ${String(sessionGoal).slice(0, 400)}` : "",
     firstUser ? `Original request: ${firstUser.content.slice(0, 600)}` : "",
-    toolTrail.length ? `Tools already used (${toolTrail.length}): ${toolTrail.slice(-40).join("; ")}` : "",
+    toolTrail.length ? `Tools already used (${toolTrail.length}):\n  - ${toolTrail.slice(-40).join("\n  - ")}` : "",
   ].filter(Boolean).join("\n");
 
   messages.splice(first, cut - first, { role: "user", content: digest });
   return true;
 }
 
+// Count "completed turns" — an assistant message with no pending tool calls,
+// or a fully-answered tool-call batch (assistant + matching tool messages).
+// Used by lean-mode rolling compaction (every 6 turns) instead of the 85%
+// context-window trigger classic mode still relies on.
+function countCompletedTurns(messages) {
+  let n = 0;
+  for (const m of messages || []) if (m.role === "assistant") n++;
+  return n;
+}
+
+// Return the first user message text (the "goal" for state.json and the
+// compaction digest). Skips synthesized system-note prompts.
+function firstUserGoal(messages) {
+  for (const m of messages || []) {
+    if (m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[system note]")) {
+      return m.content.slice(0, 400);
+    }
+  }
+  return null;
+}
+
+// Lean-mode outbound-payload rewrite. Walks the messages array and, for any
+// role:"tool" message older than `keepRecentToolTurns` from the tail,
+// swaps the sent content for a one-line stub while the full body is written
+// to agent/sessions/<sessionId>/tool-<hash>.txt. `/expand <hash>` reads that
+// file back into the conversation as a new user message. The original in-
+// memory messages array is left ALONE — this only shapes what the provider
+// sees on the next request. Classic mode never calls this.
+function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
+  if (!session?.file) return messages;
+  // Walk backwards, counting assistant turns; anything before the Nth
+  // most-recent assistant is considered "old" and eligible for shrinking.
+  let assistantSeen = 0;
+  const shrinkBefore = new Set(); // message indexes to shrink
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") assistantSeen++;
+    if (assistantSeen > keepRecentToolTurns) shrinkBefore.add(i);
+  }
+  const out = messages.map((m, i) => {
+    if (m.role !== "tool" || !shrinkBefore.has(i)) return m;
+    const raw = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    if (!raw || raw.length < 400) return m; // too small to bother
+    const hash = hashToolBody(raw);
+    const p = toolBodyPath(session, hash);
+    try {
+      if (p && !fs.existsSync(p)) fs.writeFileSync(p, raw, "utf8");
+    } catch { /* best-effort — fall through to unshrunk */ }
+    const lines = raw.split(/\r?\n/).length;
+    const bytes = Buffer.byteLength(raw, "utf8");
+    const stub = `[${m.name || "tool"} -> ${lines} lines / ${bytes} bytes, hash=${hash}. Use /expand ${hash} to reload.]`;
+    return { ...m, content: stub };
+  });
+  return out;
+}
+
 // Auto-compact when the live conversation nears the context window. The
 // budget leaves room for the response (maxTokens) plus a safety margin.
-function maybeAutoCompact({ model, messages, session }) {
+function maybeAutoCompact({ model, messages, session, sessionGoal = null }) {
   const window = model.contextWindow;
   if (!window) return false;
   const budget = Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5));
   const used = session.contextTokens || estimateTokens(messages);
   if (used < budget * 0.85) return false;
-  const did = compactMessages(messages);
+  const did = compactMessages(messages, { sessionGoal });
   if (did) {
     session.setContextTokens(estimateTokens(messages));
     warnLine(`context ${used} tokens near the ${window}-token window — auto-compacted older messages`);
@@ -589,7 +716,24 @@ async function checkCreateToolRisk(name, confirmTool) {
   return { allowed: false, message: `DENIED: the user declined to install this extension.` };
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic" }) {
+  // Lean-mode bookkeeping — the goal is the first non-synthesized user turn
+  // this session, and the tool trail feeds state.json + the compaction
+  // digest. Both live inside runTurn's closure so nothing leaks between
+  // turns and classic mode pays zero cost.
+  const isLean = contextMode === "lean";
+  const sessionGoal = firstUserGoal(messages);
+  const toolTrailForState = [];      // { tool, argsSummary, resultFirstLine }
+  const lastSkills = [];
+  for (const m of messages) {
+    if (m.role === "system" && typeof m.content === "string") {
+      const skm = /^# Skill: (\S+)/m.exec(m.content);
+      if (skm && !lastSkills.includes(skm[1])) lastSkills.push(skm[1]);
+    }
+  }
+  let compactionsRun = 0;
+  const initialAssistantCount = countCompletedTurns(messages);
+
   // If a persona is active, swap the system message and iteration budget.
   // Falls back to the defaults above when persona is null (existing behaviour).
   if (persona) {
@@ -615,8 +759,21 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   let wrapUpNudged = false;
 
   for (let i = 0; i < maxIterations; i++) {
-    // Keep the conversation inside the model's context window.
-    maybeAutoCompact({ model, messages, session });
+    // Keep the conversation inside the model's context window. Classic mode
+    // uses the 85%-of-window threshold; lean mode ALSO runs a rolling
+    // compaction every 6 completed turns (keep last 4 raw), because the
+    // point of lean is to send fewer tokens PER hop — waiting for 85% of
+    // context defeats that purpose on long tool-heavy sessions.
+    if (maybeAutoCompact({ model, messages, session, sessionGoal })) compactionsRun++;
+    if (isLean) {
+      const turnsSince = countCompletedTurns(messages) - initialAssistantCount;
+      if (turnsSince > 0 && turnsSince % 6 === 0) {
+        if (compactMessages(messages, { keepTail: 4, sessionGoal })) {
+          compactionsRun++;
+          session.setContextTokens(estimateTokens(messages));
+        }
+      }
+    }
 
     // Near the iteration budget, tell the model to land the work instead of
     // getting cut off mid-task.
@@ -640,6 +797,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       // meter (the yellow-bounded bottom panel). As soon as text arrives we
       // tear the panel down and stream the answer inline, token by token.
       startGenerationStatus(() => tokenCount, { contextWindow: model.contextWindow });
+      // "Thinking" pulse — a repeating glow on the coordinator until the
+      // provider response settles, so /neuralview shows the agent is alive
+      // between tool calls (previously the graph looked frozen during long
+      // generations because no discrete event fired mid-stream).
+      publishActivity({ kind: "thinking", phase: "start" });
 
       if (useTemplate) {
         // Render the full message history through the provider's Jinja2 template,
@@ -666,7 +828,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           },
         });
       } else {
-        const providerMessages = useTextTools ? messagesWithTextTools(messages) : messages;
+        // Lean mode: rewrite old tool results into hash-stubs before the
+        // provider sees them (in-memory `messages` is untouched — the full
+        // body is still on disk for /expand). Classic mode is a no-op.
+        const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
+        const providerMessages = useTextTools ? messagesWithTextTools(shaped) : shaped;
         resp = await chatStreamWithRetry({
           model,
           settings,
@@ -689,11 +855,13 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       streamedContent = routerResult.answerStarted;
       if (!streamedContent) stopStatus();
       else streamNewline();
+      publishActivity({ kind: "thinking", phase: "stop" });
     } catch (e) {
       routerResult = router.finish();
       streamedContent = routerResult.answerStarted;
       if (!streamedContent) stopStatus();
       else streamNewline();
+      publishActivity({ kind: "thinking", phase: "stop" });
       if (e.name === "AbortError" || signal?.aborted) {
         warnLine("interrupted");
         return;
@@ -753,6 +921,22 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     if (resp.usage) session.addCost(resp.usage);
 
     const calls = msg.tool_calls || [];
+
+    // Per-response metrics — one JSON line for every provider round-trip,
+    // regardless of mode, so /compare-personality has data for both sides.
+    // When the provider didn't surface usage (some proxies drop it), fall
+    // back to the char/4 estimator so the file is never empty.
+    const usage = resp.usage || {};
+    const pt = usage.prompt_tokens ?? estimateTokens(messages.slice(0, -1));
+    const ct = usage.completion_tokens ?? Math.ceil((msg.content?.length || 0) / 4);
+    appendMetrics(session, {
+      mode: contextMode,
+      promptTokens: pt,
+      completionTokens: ct,
+      totalTokens: usage.total_tokens ?? (pt + ct),
+      toolCallCount: calls.length,
+      compactionsRun,
+    });
 
     // Content already streamed above; only print here if nothing was streamed
     // (e.g. a tool-only response that carried no content tokens).
@@ -844,7 +1028,37 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         if (!permission.allowed) {
           result = permission.message;
         } else {
-          publishActivity({ kind: "tool_call", tool: name, phase: "start", route });
+          const intent = intentForTool(name);
+          publishActivity({ kind: "tool_call", tool: name, phase: "start", route, intent });
+          // Live tool-call node — one per invocation, hangs off the routed
+          // subsystem (Files, Tools, ChatMem, …) so the graph literally
+          // grows as the agent works. Same call id feeds the "done" event
+          // below so the color can flip green/red.
+          const tcId = toolCallNodeId(call.id);
+          const argHint = String(args?.path || args?.pattern || args?.command || args?.query || "").slice(0, 60);
+          publishLiveNode({
+            id: tcId,
+            parent: route,
+            label: name + (argHint ? " " + argHint : ""),
+            detail: JSON.stringify(args || {}).slice(0, 300),
+            kind: "tool-call",
+            meta: { tool: name, callId: call.id },
+          });
+          // If this is a file-touching tool, also spawn (or reuse) a file
+          // node under FILES_HUB_ID and link it to the tool-call node.
+          const fpath = args?.path;
+          if (fpath && typeof fpath === "string") {
+            const fid = fileNodeId(fpath);
+            publishLiveNode({
+              id: fid,
+              parent: FILES_HUB_ID,
+              label: fpath.split(/[\\/]/).pop() || fpath,
+              detail: fpath,
+              kind: "file",
+              meta: { path: fpath },
+            });
+            publishLiveEdge(tcId, fid, "touched");
+          }
           try {
             // Forward the parent's permission gate so spawn_agent's sub-agent
             // inherits the same "ask"/"deny" rules instead of running with
@@ -871,7 +1085,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             result = "ERROR: " + e.message;
           }
         }
-        publishActivity({ kind: "tool_call", tool: name, phase: "done", route, ok: typeof result !== "string" || !result.startsWith("ERROR:") });
+        publishActivity({ kind: "tool_call", tool: name, phase: "done", route, callId: call.id, intent: intentForTool(name), ok: typeof result !== "string" || !result.startsWith("ERROR:") });
         // Zero-effort capture: a failed tool call or a test run is durable
         // signal worth remembering on its own, no cue phrase or okf_add
         // needed — see memory-provider.mjs's captureToolActivity.
@@ -891,7 +1105,25 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         tool_call_id: call.id,
         content: typeof result === "string" ? result : JSON.stringify(result),
       });
+      // Roll into the state trail (bounded to 40) so a resumed session has
+      // a compact "what happened here recently" view without re-parsing
+      // the full jsonl log.
+      const resultText = typeof result === "string" ? result : JSON.stringify(result);
+      toolTrailForState.push({
+        tool: name,
+        argsSummary: argSummary(name, args || {}),
+        resultFirstLine: (resultText.split(/\r?\n/)[0] || "").slice(0, 120),
+      });
+      if (toolTrailForState.length > 40) toolTrailForState.splice(0, toolTrailForState.length - 40);
     }
+    // Refresh per-turn state — cheap, one small JSON write. Cross-session
+    // resume + /compare-personality both read this instead of the jsonl.
+    writeState(session, {
+      goals: sessionGoal ? [sessionGoal] : [],
+      lastSkills,
+      toolTrail: toolTrailForState,
+      contextMode,
+    });
     // Omi reacts to what it just did — cheer if every call in the batch
     // succeeded, grumble if any of them blew up.
     const anyFailed = toolResults.some(

@@ -55,6 +55,13 @@ const DEFAULT_SETTINGS = {
   // atoms that are auto-placed (active->superseded/deprecated) by the
   // indexer — no manual add/approve step. Switch with /memory provider <legacy-jsonl|layered-okf>.
   memory: { provider: "legacy-jsonl" },
+  // contextMode gates the token-reduction rework (skill distillation, rolling
+  // compaction, tool-result shrinking). "classic" is the unchanged historical
+  // behaviour (default, safe rollback path); "lean" opts into the whole
+  // reduction pipeline. Read from the project's omni.config.json first so a
+  // per-project override wins over the global setting — see readContextMode
+  // in core/context-mode.mjs.
+  contextMode: "classic",
   providers: {
     openai: {
       baseUrl: "https://api.openai.com/v1",
@@ -677,6 +684,29 @@ export class Session {
     this._cost = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this._contextTokens = 0; // tokens in the CURRENT conversation (last request)
     this.append({ type: "session_start", cwd: process.cwd(), time: new Date().toISOString() });
+    // Live-layer session + project nodes for /neuralview — one per launch
+    // and one per cwd, so the graph gains a visible root the moment omni
+    // starts and every tool call / file touch this turn produces later can
+    // chain back to it. Best-effort: a failed publish must never take down
+    // the CLI, so wrap and swallow.
+    try {
+      const sessionId = "session-" + path.basename(this.file, ".jsonl");
+      const projectId = "project-" + cwdSlug();
+      publishActivity({
+        kind: "live_node", op: "add", nodeId: projectId, parent: "sys-sessions",
+        label: path.basename(process.cwd()) || process.cwd(),
+        detail: "Project — " + process.cwd(), nodeKind: "project",
+        meta: { cwd: process.cwd() },
+      });
+      publishActivity({
+        kind: "live_node", op: "add", nodeId: sessionId, parent: projectId,
+        label: "session " + new Date().toLocaleTimeString(),
+        detail: this.file, nodeKind: "session",
+        meta: { file: this.file },
+      });
+      this._liveSessionId = sessionId;
+      this._liveProjectId = projectId;
+    } catch { /* live-graph publish is decorative — never block startup */ }
   }
 
   get totalTokens() {

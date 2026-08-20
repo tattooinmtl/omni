@@ -21,6 +21,7 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
+import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView } from "../local/neuralview-server.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 
@@ -195,6 +196,10 @@ export async function main(args) {
     rl: null,
     canRaw: false,
     confirmToolUse: null,
+    // Resolved once here and re-read by /personality so the user can flip
+    // mode live without restarting. Every code path that gates on lean
+    // behaviour reads ctx.contextMode — never settings.contextMode direct.
+    contextMode: readContextMode(settings),
   };
   registerGoalTool(ctx);
 
@@ -209,7 +214,7 @@ export async function main(args) {
     const firstWord = promptArg.split(/\s+/)[0];
     const skill = skillByCommand.get(firstWord);
     if (skill) {
-      await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session);
+      await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session, { contextMode: ctx.contextMode });
     } else {
       messages.push({ role: "user", content: promptArg });
       await session.append({ type: "user", content: promptArg });
@@ -232,6 +237,7 @@ export async function main(args) {
       signal: ctx.currentAbort.signal,
       permissions: settings.permissions,
       showThinking: settings.showThinking,
+      contextMode: ctx.contextMode,
     });
     ctx.currentAbort = null;
     costLine(session);

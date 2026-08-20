@@ -27,7 +27,8 @@ import { installPackage, uninstallPackage, listInstalled, DEFAULT_REGISTRY } fro
 import { mcpStatus, reconnectServer } from "../integrations/mcp.mjs";
 import { bridgeStatus } from "../integrations/bridge.mjs";
 import { PERSONAS } from "../integrations/router.mjs";
-import { maskKey, normalizeProviderKey, restoreSessionMessages } from "./helpers.mjs";
+import { maskKey, normalizeProviderKey, restoreSessionMessages, getFullSkillBody } from "./helpers.mjs";
+import { writeProjectContextMode, readMetrics, toolBodyPath } from "../core/context-mode.mjs";
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
@@ -148,6 +149,84 @@ export const COMMANDS = [
       console.log(c.dim("\n  bye 👋"));
       ctx.rl.close();
       return { closed: true };
+    },
+  },
+
+  // ── Context mode (A/B token reduction) ────────────────────────────────
+  {
+    name: "personality", aliases: [], usage: "/personality [classic|lean]", category: "Session",
+    summary: "show or flip contextMode (lean = distilled skills + rolling compaction + tool-result shrinking)",
+    handler: async (ctx, arg) => {
+      const sub = String(arg || "").trim().toLowerCase();
+      if (!sub) {
+        infoLine(`contextMode: ${ctx.contextMode}`);
+        const metrics = readMetrics(ctx.session);
+        const tail = metrics.slice(-5);
+        if (!tail.length) { infoLine("no metrics recorded yet this session — take a turn first."); return; }
+        infoLine("last turns (mode / prompt / completion / total / tools / compactions):");
+        for (const m of tail) {
+          infoLine(`  ${m.mode.padEnd(7)} ${String(m.promptTokens).padStart(7)} ${String(m.completionTokens).padStart(6)} ${String(m.totalTokens).padStart(7)} ${String(m.toolCallCount).padStart(3)} ${String(m.compactionsRun).padStart(3)}`);
+        }
+        return;
+      }
+      if (sub !== "classic" && sub !== "lean") { warnLine("usage: /personality [classic|lean]"); return; }
+      try {
+        writeProjectContextMode(sub);
+        ctx.contextMode = sub;
+        infoLine(`contextMode: ${sub} (persisted to project omni.config.json in this cwd)`);
+      } catch (e) {
+        errorLine(`could not write project config: ${e.message}`);
+      }
+    },
+  },
+  {
+    name: "compare-personality", aliases: [], usage: "/compare-personality", category: "Session",
+    summary: "avg prompt/completion tokens per mode for this session (reads metrics.jsonl)",
+    handler: (ctx) => {
+      const metrics = readMetrics(ctx.session);
+      if (!metrics.length) { infoLine("no metrics recorded yet — take a few turns in each mode."); return; }
+      const byMode = new Map();
+      for (const m of metrics) {
+        const bucket = byMode.get(m.mode) || { n: 0, pt: 0, ct: 0, tt: 0, tools: 0, comp: 0 };
+        bucket.n++; bucket.pt += m.promptTokens || 0; bucket.ct += m.completionTokens || 0;
+        bucket.tt += m.totalTokens || 0; bucket.tools += m.toolCallCount || 0; bucket.comp += m.compactionsRun || 0;
+        byMode.set(m.mode, bucket);
+      }
+      infoLine("mode      turns  avg-prompt  avg-completion  avg-total  avg-tools  compactions");
+      for (const [mode, b] of byMode) {
+        infoLine(`  ${mode.padEnd(7)} ${String(b.n).padStart(5)} ${String(Math.round(b.pt / b.n)).padStart(11)} ${String(Math.round(b.ct / b.n)).padStart(15)} ${String(Math.round(b.tt / b.n)).padStart(10)} ${String(Math.round(b.tools / b.n)).padStart(10)} ${String(b.comp).padStart(12)}`);
+      }
+    },
+  },
+  {
+    name: "expand-skill", aliases: [], usage: "/expand-skill <name>", category: "Session",
+    summary: "re-inject the full body of a lean-distilled skill",
+    handler: (ctx, arg) => {
+      const name = String(arg || "").trim();
+      if (!name) { warnLine("usage: /expand-skill <name>"); return; }
+      const body = getFullSkillBody(name);
+      if (!body) {
+        const skill = ctx.skillByCommand.get(name.startsWith("/") ? name : ("/" + name)) || ctx.skills?.find((s) => s.name === name);
+        if (!skill) { warnLine(`no skill "${name}" was invoked yet this session — run it first (/${name}) or check /help.`); return; }
+        ctx.messages.push({ role: "system", content: `# Skill: ${skill.name} (fully expanded on request)\n${skill.body}` });
+      } else {
+        ctx.messages.push({ role: "system", content: `# Skill: ${name} (fully expanded on request)\n${body}` });
+      }
+      infoLine(`expanded skill "${name}" — full body is now in the system context for the next turn.`);
+    },
+  },
+  {
+    name: "expand", aliases: [], usage: "/expand <hash>", category: "Session",
+    summary: "re-inject a lean-shrunk tool result (agent/sessions/<sess>/tool-<hash>.txt)",
+    handler: (ctx, arg) => {
+      const hash = String(arg || "").trim();
+      if (!hash) { warnLine("usage: /expand <hash>"); return; }
+      const p = toolBodyPath(ctx.session, hash);
+      if (!p || !fs.existsSync(p)) { warnLine(`no tool body found for hash ${hash}.`); return; }
+      let raw = "";
+      try { raw = fs.readFileSync(p, "utf8"); } catch (e) { errorLine(e.message); return; }
+      ctx.messages.push({ role: "user", content: `[expanded tool body, hash=${hash}]\n${raw}` });
+      infoLine(`expanded tool body (${raw.length} bytes) into the conversation as a new user message.`);
     },
   },
 

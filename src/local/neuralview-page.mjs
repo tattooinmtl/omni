@@ -91,6 +91,9 @@ export const PAGE = `<!doctype html>
   var CODEGRAPH_ID = "sys-codegraph";
   var FEEDBACK_ID = "sys-feedback";
   var OKF_ROOT_ID = "okf-root";
+  var SESSIONS_HUB_ID = "sys-sessions";
+  var TOOLS_HUB_ID = "sys-tools";
+  var FILES_HUB_ID = "sys-files";
 
   var canvas = document.getElementById("c");
   var ctx = canvas.getContext("2d");
@@ -254,9 +257,22 @@ export const PAGE = `<!doctype html>
   // ---- live activity: traveling pulses + node flashes ------------------------
   var pulses = [];
   var flashes = new Map(); // nodeId -> { start, dur, color }
-  function pulse(fromId, toId, color, dur, delay) {
-    pulses.push({ fromId: fromId, toId: toId, start: performance.now() + (delay || 0), dur: dur || 800, color: color || "#eaf2ff" });
+  function pulse(fromId, toId, color, dur, delay, style) {
+    pulses.push({
+      fromId: fromId, toId: toId,
+      start: performance.now() + (delay || 0),
+      dur: dur || 800,
+      color: color || "#eaf2ff",
+      // "dotted" renders a staccato trail (fetch — info flowing back out
+      // of a node in discrete packets); "solid" renders a single bright
+      // head with a smooth halo (store — a continuous push into a node).
+      style: style || "solid",
+    });
   }
+
+  // Intent → color map matches agent.mjs intentForTool(): orange for a
+  // read/fetch, green for a write/store, blue for anything execution-shaped.
+  var INTENT_COLOR = { fetch: "#f59e0b", store: "#34d399", scan: "#60a5fa" };
   function flashNode(id, color, dur) {
     flashes.set(id, { start: performance.now(), dur: dur || 800, color: color || "#eaf2ff" });
   }
@@ -273,6 +289,23 @@ export const PAGE = `<!doctype html>
     }
     var hub = byId.get(COORDINATOR_ID);
     if (hub) { hub.x = 0; hub.y = 0; hub.z = 0; hub.fx = 0; hub.fy = 0; hub.fz = 0; }
+    // Pin the architecture system nodes on a fixed sphere around the
+    // coordinator so their children (atoms, files, tool-calls) can't
+    // drag the hub itself out of position. Fibonacci lattice for even
+    // distribution regardless of how many system nodes exist.
+    var RING_R = 220;
+    var systemIds = [L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID, SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID];
+    for (var si = 0; si < systemIds.length; si++) {
+      var sn = byId.get(systemIds[si]);
+      if (!sn) continue;
+      var phi = Math.acos(1 - 2 * (si + 0.5) / systemIds.length);
+      var theta = Math.PI * (1 + Math.sqrt(5)) * si;
+      var px = RING_R * Math.sin(phi) * Math.cos(theta);
+      var py = RING_R * Math.sin(phi) * Math.sin(theta);
+      var pz = RING_R * Math.cos(phi);
+      sn.x = px; sn.y = py; sn.z = pz;
+      sn.fx = px; sn.fy = py; sn.fz = pz;
+    }
   }
 
   function buildAdjacency() {
@@ -305,7 +338,7 @@ export const PAGE = `<!doctype html>
         var f = REPULSE / d2;
         fx += (dx / d) * f; fy += (dy / d) * f; fz += (dz / d) * f;
       }
-      fx += -n.x * 0.002; fy += -n.y * 0.002; fz += -n.z * 0.002; // weak center gravity
+      fx += -n.x * 0.006; fy += -n.y * 0.006; fz += -n.z * 0.006;
       n.vx = (n.vx + fx * alpha) * 0.86;
       n.vy = (n.vy + fy * alpha) * 0.86;
       n.vz = (n.vz + fz * alpha) * 0.86;
@@ -314,8 +347,22 @@ export const PAGE = `<!doctype html>
       var e = edges[k];
       var a = byId.get(e.source), b = byId.get(e.target);
       if (!a || !b) continue;
-      var target = e.kind === "system" ? 150 : e.kind === "hierarchy" ? 90 : e.kind === "link" ? 70 : e.kind === "tag" ? 150 : 100;
-      var strength = e.kind === "tag" ? 0.02 : e.kind === "system" ? 0.04 : 0.05;
+      // Atom/legacy-memory edges from CHAT_MEMORY_ID were "system" (target
+      // 150, strength 0.04) — same treatment as core architecture edges.
+      // With many atoms that spring is too loose and too far, so the cluster
+      // drifts out of the frame under its own repulsion. Detect that case
+      // and use a shorter, stiffer spring instead so the atoms hug the hub.
+      var isAtomEdge = e.kind === "system" && (
+        (e.source === CHAT_MEMORY_ID && (byId.get(e.target) || {}).kind === "atom") ||
+        (e.target === CHAT_MEMORY_ID && (byId.get(e.source) || {}).kind === "atom") ||
+        (e.source === CHAT_MEMORY_ID && (byId.get(e.target) || {}).kind === "memory") ||
+        (e.target === CHAT_MEMORY_ID && (byId.get(e.source) || {}).kind === "memory")
+      );
+      // Live edges also need a tighter binding — file/tool-call nodes fly
+      // off otherwise for the same reason.
+      var isLiveEdge = e.kind === "live";
+      var target = isAtomEdge ? 80 : isLiveEdge ? 70 : (e.kind === "system" ? 150 : e.kind === "hierarchy" ? 90 : e.kind === "link" ? 70 : e.kind === "tag" ? 150 : 100);
+      var strength = isAtomEdge ? 0.12 : isLiveEdge ? 0.12 : (e.kind === "tag" ? 0.02 : e.kind === "system" ? 0.04 : 0.05);
       var dx2 = b.x - a.x, dy2 = b.y - a.y, dz2 = b.z - a.z;
       var d3 = Math.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2) || 1;
       var diff = (d3 - target) * strength * alpha;
@@ -323,10 +370,29 @@ export const PAGE = `<!doctype html>
       if (a.fx == null) { a.vx += ux * diff; a.vy += uy * diff; a.vz += uz * diff; }
       if (b.fx == null) { b.vx -= ux * diff; b.vy -= uy * diff; b.vz -= uz * diff; }
     }
+    // Hard position clamp. A force-based boundary can explode numerically
+    // (previous try was a pull-back proportional to how far past MAX_R — a
+    // single stray value creates astronomical velocities and the graph
+    // fills the screen with infinite-length edges). A hard clamp cannot
+    // explode: worst case a node sits stuck on the boundary sphere.
+    var MAX_R = 900;
     for (var m = 0; m < nodes.length; m++) {
       var nd = nodes[m];
       if (nd.fx != null) { nd.x = nd.fx; nd.y = nd.fy; nd.z = nd.fz; continue; }
       nd.x += nd.vx; nd.y += nd.vy; nd.z += nd.vz;
+      // Guard against NaN/Infinity slipping in from a prior tick's blow-up
+      // — snap them home before they poison subsequent frames.
+      if (!isFinite(nd.x) || !isFinite(nd.y) || !isFinite(nd.z)) {
+        nd.x = (Math.random() - 0.5) * 100; nd.y = (Math.random() - 0.5) * 100; nd.z = (Math.random() - 0.5) * 100;
+        nd.vx = 0; nd.vy = 0; nd.vz = 0;
+      }
+      var r2 = nd.x * nd.x + nd.y * nd.y + nd.z * nd.z;
+      if (r2 > MAX_R * MAX_R) {
+        var r = Math.sqrt(r2);
+        var scale = MAX_R / r;
+        nd.x *= scale; nd.y *= scale; nd.z *= scale;
+        nd.vx *= 0.3; nd.vy *= 0.3; nd.vz *= 0.3;
+      }
     }
     alpha *= ALPHA_DECAY;
   }
@@ -436,19 +502,31 @@ export const PAGE = `<!doctype html>
       if (t >= 1) { pulses.splice(pi, 1); continue; }
       var from = byId.get(pu.fromId), to = byId.get(pu.toId);
       if (!from || !to) { pulses.splice(pi, 1); continue; }
-      var wx = from.x + (to.x - from.x) * t, wy = from.y + (to.y - from.y) * t, wz = from.z + (to.z - from.z) * t;
-      var pp = project(wx, wy, wz);
-      if (!pp) continue;
-      var fade = Math.sin(Math.PI * Math.min(1, t * 1.15));
-      ctx.globalAlpha = fade;
-      var rad = 9 * Math.max(0.4, pp.scale);
-      var pg = ctx.createRadialGradient(pp.sx, pp.sy, 0, pp.sx, pp.sy, rad);
-      pg.addColorStop(0, pu.color);
-      pg.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = pg;
-      ctx.beginPath(); ctx.arc(pp.sx, pp.sy, rad, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = pu.color;
-      ctx.beginPath(); ctx.arc(pp.sx, pp.sy, Math.max(1.2, 2.2 * pp.scale), 0, Math.PI * 2); ctx.fill();
+      // Dotted style renders three staggered dots trailing behind the head
+      // — visually reads as info flowing back out of a node in discrete
+      // packets. Solid style renders one bright head with a halo — a
+      // continuous push into a node. Both use the same easing so the head
+      // fades at the endpoint whether dotted or solid.
+      var trailOffsets = pu.style === "dotted" ? [0, -0.12, -0.24] : [0];
+      for (var to_i = 0; to_i < trailOffsets.length; to_i++) {
+        var tt = t + trailOffsets[to_i];
+        if (tt <= 0 || tt >= 1) continue;
+        var wx = from.x + (to.x - from.x) * tt, wy = from.y + (to.y - from.y) * tt, wz = from.z + (to.z - from.z) * tt;
+        var pp = project(wx, wy, wz);
+        if (!pp) continue;
+        var fade = Math.sin(Math.PI * Math.min(1, tt * 1.15));
+        // Trail dots dim progressively so the head reads as "leading edge".
+        var dimFactor = 1 - to_i * 0.35;
+        ctx.globalAlpha = fade * dimFactor;
+        var rad = 9 * Math.max(0.4, pp.scale) * dimFactor;
+        var pg = ctx.createRadialGradient(pp.sx, pp.sy, 0, pp.sx, pp.sy, rad);
+        pg.addColorStop(0, pu.color);
+        pg.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = pg;
+        ctx.beginPath(); ctx.arc(pp.sx, pp.sy, rad, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = pu.color;
+        ctx.beginPath(); ctx.arc(pp.sx, pp.sy, Math.max(1.2, 2.2 * pp.scale * dimFactor), 0, Math.PI * 2); ctx.fill();
+      }
       ctx.globalAlpha = 1;
     }
   }
@@ -666,15 +744,16 @@ export const PAGE = `<!doctype html>
     // log so the session doesn't look empty, but not worth animating a
     // burst of pulses for things that already happened.
     if (data.replay) {
-      if (data.kind === "memory_atom" || data.kind === "legacy_memory") logActivity((data.action || "updated") + ": " + (data.text || data.id || "").slice(0, 46));
+      if (data.kind === "memory_atom" || data.kind === "legacy_memory") logActivity((data.action || "updated") + " atom " + (data.id || "?") + (data.atomType ? " (" + data.atomType + ")" : "") + ": " + (data.text || "").slice(0, 46));
       else if (data.kind === "tool_call" && data.phase === "start") logActivity("→ " + data.tool, "tool");
       else if (data.kind === "l0_event") logActivity("· " + (L0_LABEL[data.eventType] || data.eventType), "l0");
+      else if (data.kind === "live_node" && data.op === "add") logActivity("+ " + (data.nodeKind || "node") + " " + String(data.label || data.nodeId).slice(0, 40), data.nodeKind);
       return;
     }
 
     if (data.kind === "memory_atom" || data.kind === "legacy_memory") {
-      var short = (data.text || data.id || "").slice(0, 46);
-      logActivity((data.action || "updated") + ": " + short);
+      var short = (data.text || "").slice(0, 46);
+      logActivity((data.action || "updated") + " atom " + (data.id || "?") + (data.atomType ? " (" + data.atomType + ")" : "") + ": " + short);
       var color = data.action === "superseded" ? "#c084fc" : data.action === "deprecated" ? "#f87171" : "#6ee7b7";
       pulse(COORDINATOR_ID, CHAT_MEMORY_ID, color, 500);
       refreshGraph().then(function () {
@@ -689,13 +768,94 @@ export const PAGE = `<!doctype html>
       flashNode(L0_ID, "#7dd3fc", 500);
     } else if (data.kind === "tool_call") {
       if (data.phase === "start") {
-        logActivity("→ " + data.tool, "tool");
-        if (data.route) { pulse(COORDINATOR_ID, data.route, "#6ea8ff", 550); flashNode(data.route, "#6ea8ff", 750); }
-        else flashNode(COORDINATOR_ID, "#6ea8ff", 500);
+        var intent = data.intent || "scan";
+        var col = INTENT_COLOR[intent] || "#6ea8ff";
+        // Fetch pulses are dotted trails, store/scan are solid heads.
+        var style = intent === "fetch" ? "dotted" : "solid";
+        logActivity((intent === "fetch" ? "← " : intent === "store" ? "→ " : "· ") + data.tool, "tool");
+        var route = data.route || TOOLS_HUB_ID;
+        // Direction of the packet encodes the direction of information
+        // flow: fetch = data coming OUT of the node back to the coordinator
+        // (tool → core), store/scan = data going INTO the node (core → tool).
+        var pulseFrom = intent === "fetch" ? route : COORDINATOR_ID;
+        var pulseTo = intent === "fetch" ? COORDINATOR_ID : route;
+        pulse(pulseFrom, pulseTo, col, 550, 0, style);
+        flashNode(route, col, 750);
+        flashNode(COORDINATOR_ID, col, 400);
+        var tcId = "tc-" + data.callId;
+        // Chain a second pulse hub → per-call node once it exists so the
+        // eye follows the packet all the way to what actually happened.
+        setTimeout(function () {
+          if (byId.has(tcId)) {
+            var chainFrom = intent === "fetch" ? tcId : route;
+            var chainTo = intent === "fetch" ? route : tcId;
+            pulse(chainFrom, chainTo, col, 500, 0, style);
+            flashNode(tcId, col, 700);
+          }
+        }, 200);
       } else {
         logActivity((data.ok === false ? "✗ " : "✓ ") + data.tool, "tool");
+        var doneId = "tc-" + data.callId;
+        if (byId.has(doneId)) flashNode(doneId, data.ok === false ? "#f87171" : "#6ee7b7", 900);
       }
+    } else if (data.kind === "live_node" && data.op === "add") {
+      if (byId.has(data.nodeId)) return; // already added
+      // Anchor the new node near its parent so it enters the field visibly
+      // and physics settles it in a sensible neighborhood instead of a
+      // random point on the sphere.
+      var parent = byId.get(data.parent) || byId.get(COORDINATOR_ID);
+      var jitter = 40;
+      var newNode = {
+        id: data.nodeId, kind: data.nodeKind || "live", label: data.label || data.nodeId,
+        detail: data.detail || "", tags: [], degree: 0,
+        x: (parent ? parent.x : 0) + (Math.random() - 0.5) * jitter,
+        y: (parent ? parent.y : 0) + (Math.random() - 0.5) * jitter,
+        z: (parent ? parent.z : 0) + (Math.random() - 0.5) * jitter,
+        vx: 0, vy: 0, vz: 0, fx: null, fy: null, fz: null,
+        meta: data.meta || {},
+      };
+      nodes.push(newNode);
+      byId.set(newNode.id, newNode);
+      if (data.parent) {
+        edges.push({ source: data.parent, target: newNode.id, kind: "live" });
+      }
+      buildAdjacency();
+      alpha = Math.max(alpha, 0.4); // kick physics so the new node visibly settles
+      var kindColor = newNode.kind === "session" ? "#fbbf24" : newNode.kind === "project" ? "#fbbf24"
+        : newNode.kind === "file" ? "#a5f3fc" : newNode.kind === "tool-call" ? "#6ea8ff" : "#eaf2ff";
+      if (data.parent) pulse(data.parent, newNode.id, kindColor, 550);
+      flashNode(newNode.id, kindColor, 900);
+      // Extra celebratory burst when a session or project node is born —
+      // pulse out from the coordinator to make the birth visually loud
+      // (a new session is a rare, important event; a tool call is not).
+      if (newNode.kind === "session" || newNode.kind === "project") {
+        flashNode(COORDINATOR_ID, kindColor, 1200);
+        pulse(COORDINATOR_ID, newNode.id, kindColor, 700, 60);
+        pulse(COORDINATOR_ID, newNode.id, kindColor, 900, 240);
+      }
+      logActivity("+ " + (newNode.kind || "node") + " " + newNode.label.slice(0, 40), newNode.kind);
+    } else if (data.kind === "live_edge") {
+      if (!byId.has(data.source) || !byId.has(data.target)) return;
+      edges.push({ source: data.source, target: data.target, kind: data.edgeKind || "live" });
+      buildAdjacency();
+      pulse(data.source, data.target, "#a5f3fc", 500);
+    } else if (data.kind === "thinking") {
+      // Repeating soft glow on the coordinator between "start" and "stop"
+      // so the graph doesn't look frozen while the model streams tokens.
+      if (data.phase === "start") { startThinking(); }
+      else { stopThinking(); }
     }
+  }
+
+  // ---- thinking glow: repeating flash on the coordinator until stop -----
+  var thinkingTimer = null;
+  function startThinking() {
+    if (thinkingTimer) return;
+    flashNode(COORDINATOR_ID, "#fbbf24", 900);
+    thinkingTimer = setInterval(function () { flashNode(COORDINATOR_ID, "#fbbf24", 900); }, 950);
+  }
+  function stopThinking() {
+    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
   }
 
   // ---- load data ------------------------------------------------------------

@@ -34,6 +34,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME, SETTINGS_PATH } from "./config.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
+import { projectSlug } from "./context-mode.mjs";
+
+// Project scope for atoms. Atoms created after this rollout tag themselves
+// with { project: <slug> }; older atoms have no scope and remain visible
+// from every project (legacy fallback). Filter helpers below narrow reads
+// to the current project when a slug is available, so per-project memory
+// is the default without breaking the shared global pool.
+function currentProjectScope() {
+  const p = projectSlug();
+  return p ? { project: p } : {};
+}
+function atomMatchesCurrentProject(a) {
+  const p = a?.scope?.project;
+  if (!p) return true; // legacy atoms — visible everywhere
+  const cur = projectSlug();
+  if (!cur) return true; // no project context (tests, non-cwd use)
+  return p === cur;
+}
 
 export const ATOM_TYPES = [
   "preference", "fact", "constraint", "decision", "event",
@@ -141,6 +159,7 @@ function byWeightThenRecency(a, b) {
 export function activeAtoms({ limit = 10 } = {}) {
   return currentAtoms()
     .filter((a) => a.status === "active")
+    .filter(atomMatchesCurrentProject)
     .sort(byWeightThenRecency)
     .slice(0, limit);
 }
@@ -166,7 +185,9 @@ export function activeAtoms({ limit = 10 } = {}) {
 export function findContradictions(candidate, pool = currentAtoms()) {
   const cText = tokenSet(candidate.text);
   const cTags = new Set((candidate.tags || []).map((t) => String(t).toLowerCase()));
-  return pool.filter((a) => {
+  // Only look for contradictions inside the same project — a preference set
+  // in project A must never auto-supersede a preference in project B.
+  return pool.filter(atomMatchesCurrentProject).filter((a) => {
     if (a.id === candidate.id) return false;
     if (a.type !== candidate.type) return false;
     if (a.status !== "active") return false;
@@ -220,6 +241,10 @@ export const layeredProvider = {
     if (!ATOM_TYPES.includes(type)) throw new Error(`type must be one of: ${ATOM_TYPES.join(", ")}`);
     const now = new Date().toISOString();
     const weight = Math.max(0, Math.min(1, Number(confidence) || 0));
+    // Default scope pulls in the current project slug so per-project
+    // filtering works without every caller having to remember to pass it.
+    // Callers who explicitly set scope.project win.
+    const effectiveScope = { ...currentProjectScope(), ...scope };
     const atom = {
       id: newId("a"),
       type,
@@ -227,7 +252,7 @@ export const layeredProvider = {
       tags: [...new Set(tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean))],
       confidence: weight,
       sources,
-      scope,
+      scope: effectiveScope,
       status: "active",
       contradicts: [],
       supersedes: [],
@@ -274,7 +299,9 @@ export const layeredProvider = {
 
   search(query, context = {}, budget = {}) {
     const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
-    const pool = currentAtoms().filter((a) => budget.includeInactive || a.status === "active");
+    const pool = currentAtoms()
+      .filter((a) => budget.includeInactive || a.status === "active")
+      .filter(atomMatchesCurrentProject);
     if (!terms.length) {
       return pool.sort(byWeightThenRecency).slice(0, budget.limit || 10);
     }
@@ -382,7 +409,11 @@ export const providers = {
 
 export function resolveProviderName(settings) {
   const name = settings?.memory?.provider;
-  return providers[name] ? name : "legacy-jsonl";
+  // Default flipped to layered-okf (from legacy-jsonl) so per-project atoms,
+  // contradiction handling, and the neuralview activity feed all work out of
+  // the box. Users can still opt back to the flat store by setting
+  // memory.provider = "legacy-jsonl" in settings.json.
+  return providers[name] ? name : "layered-okf";
 }
 
 export function activeProvider(settings) {

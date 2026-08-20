@@ -352,6 +352,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         permissions: ctx.settings.permissions,
         confirmTool: ctx.confirmToolUse,
         showThinking: ctx.settings.showThinking,
+        contextMode: ctx.contextMode,
       });
       const aborted = ctx.currentAbort.signal.aborted;
       ctx.currentAbort = null;
@@ -416,7 +417,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
 
       // Skill commands (from skills/*/SKILL.md) run a turn with skill instructions.
       if (ctx.skillByCommand.has(parts[0])) {
-        await applySkill(ctx.skillByCommand.get(parts[0]), arg, ctx.messages, ctx.session);
+        await applySkill(ctx.skillByCommand.get(parts[0]), arg, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
         await runAgentTurns();
         return showPrompt();
       }

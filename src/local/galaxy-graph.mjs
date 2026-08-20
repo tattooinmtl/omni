@@ -24,8 +24,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME } from "../core/config.mjs";
 import { currentAtoms, providers as memoryProviders } from "../core/memory-provider.mjs";
+import { liveGraph } from "./activity-bus.mjs";
 import {
   COORDINATOR_ID, L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID, OKF_ROOT_ID,
+  SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID,
 } from "./graph-ids.mjs";
 
 const OKF_DIR = process.env.OKF_DIR || path.join(HOME, "knowledge");
@@ -109,7 +111,10 @@ export function buildGraph() {
   addNode({ id: WIKI_ID, kind: "system", label: "Wiki", detail: "OKF reference/decision/snippet/gotcha cards — documentary knowledge.", tags: [], degree: 0 });
   addNode({ id: CODEGRAPH_ID, kind: "system-inactive", label: "CodeGraph", detail: "Not built yet (NewPlanConversion.md Phase 7) — would index files, symbols, and callers as a derived, discardable cache.", tags: [], degree: 0 });
   addNode({ id: FEEDBACK_ID, kind: "system", label: "Feedback · Confidence & Outcomes", detail: "Where weight comparisons and contradiction resolution happen — a supersede or deprecate is this loop acting.", tags: [], degree: 0 });
-  for (const id of [L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID]) addEdge(COORDINATOR_ID, id, "system");
+  addNode({ id: SESSIONS_HUB_ID, kind: "system", label: "Sessions", detail: "One live child per omni launch. Each session node fans out to the tool calls, skills, and files it touched — trace a session end-to-end.", tags: [], degree: 0 });
+  addNode({ id: TOOLS_HUB_ID, kind: "system", label: "Tools", detail: "Live parent of every tool call the agent makes this session (list_dir, read_file, run_command…). Every invocation appears as a transient child node.", tags: [], degree: 0 });
+  addNode({ id: FILES_HUB_ID, kind: "system", label: "Files", detail: "Live parent of every file the agent touches (read, wrote, edited) this session. New file → new node here, linked back to the tool call that created it.", tags: [], degree: 0 });
+  for (const id of [L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID, SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID]) addEdge(COORDINATOR_ID, id, "system");
 
   // ---- OKF taxonomy skeleton: root -> categories -> subcategories ----------
   const folderMeta = new Map(); // relPath -> { parent, label }
@@ -264,6 +269,26 @@ export function buildGraph() {
   const seen = new Set();
   addTagEdges(cardTagIndex, edges, seen);
   addTagEdges(atomTagIndex, edges, seen);
+
+  // Live-layer nodes/edges published by agent.mjs and Session ctor at runtime
+  // (session, project, tool-call, file). Merged here so /api/graph responses
+  // — and therefore a fresh browser refresh — include everything the session
+  // has spawned, instead of the client losing them on reload.
+  const live = liveGraph();
+  for (const ln of live.nodes) {
+    if (nodes.length >= MAX_NODES) break;
+    if (knownIds.has(ln.id)) continue;
+    addNode({
+      id: ln.id, kind: ln.nodeKind || "live",
+      label: truncate(ln.label || ln.id, 80),
+      detail: truncate(ln.detail || "", 600),
+      tags: [], degree: 0, meta: ln.meta || {},
+    });
+    if (ln.parent && knownIds.has(ln.parent)) addEdge(ln.parent, ln.id, "live");
+  }
+  for (const le of live.edges) {
+    if (knownIds.has(le.source) && knownIds.has(le.target)) addEdge(le.source, le.target, le.kind || "live");
+  }
 
   const degree = new Map();
   for (const e of edges) {
