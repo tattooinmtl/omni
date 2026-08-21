@@ -237,6 +237,9 @@ const DEFAULT_SETTINGS = {
       // on a long edit/refactor session.
       maxToolIterations: 200,
     },
+    "kimi/moonshot-v1-8k":   { provider: "kimi", id: "moonshot-v1-8k",   maxTokens: 8192,  contextWindow: 8192 },
+    "kimi/moonshot-v1-32k":  { provider: "kimi", id: "moonshot-v1-32k",  maxTokens: 32768, contextWindow: 32768 },
+    "kimi/moonshot-v1-128k": { provider: "kimi", id: "moonshot-v1-128k", maxTokens: 32768, contextWindow: 131072 },
     "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384, contextWindow: 202752 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096, contextWindow: 131072 },
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384, contextWindow: 262144 },

@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
-import { HOME, loadSettings, resolveModel, Session } from "../core/config.mjs";
+import { HOME, loadSettings, saveSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
 import {
   activeProviderFromDisk, layeredProvider, currentAtoms, formatMemoryRecord, explainAtomText,
@@ -23,6 +23,12 @@ const managedProcesses = new Map();
 let nextProcessId = 1;
 const managedAgents = new Map();
 let nextAgentId = 1;
+
+// Live session context — set by main.mjs via setSessionCtx() after ctx is
+// created. Lets settings-management tools update both disk and in-memory state
+// so Omni can add models/providers without requiring a restart.
+let _sessionCtx = null;
+export function setSessionCtx(ctx) { _sessionCtx = ctx; }
 
 function clip(s) {
   s = String(s);
@@ -976,6 +982,45 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "settings_add_model",
+      description:
+        "Add (or update) a model in the active session and persist it to settings.json. " +
+        "The model is available immediately — no restart needed. " +
+        "Use this instead of editing settings.json directly, which only changes disk and leaves the running session stale. " +
+        "The provider must already exist (check with the provider field of existing models, or see settings.json).",
+      parameters: {
+        type: "object",
+        properties: {
+          key:      { type: "string",  description: "Model key used in /model commands, e.g. 'groq/llama-3.3-70b'" },
+          provider: { type: "string",  description: "Provider name, e.g. 'groq', 'nvidia', 'openrouter'" },
+          model_id: { type: "string",  description: "The provider's own model ID, e.g. 'llama-3.3-70b-versatile'" },
+          max_tokens: { type: "integer", description: "Max output tokens (default 8192)" },
+        },
+        required: ["key", "provider", "model_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "settings_set_apikey",
+      description:
+        "Set or update an API key for an existing provider in the active session and persist it to settings.json. " +
+        "Takes effect immediately — no restart needed. " +
+        "Use this instead of editing settings.json directly.",
+      parameters: {
+        type: "object",
+        properties: {
+          provider: { type: "string", description: "Provider name, e.g. 'groq', 'openrouter'" },
+          api_key:  { type: "string", description: "The API key to set" },
+        },
+        required: ["provider", "api_key"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_tool",
       description:
         "Create a brand-new tool for yourself, right now — no restart needed. Write the " +
@@ -1748,6 +1793,25 @@ export const impl = {
 ${content}`;
     atomicWriteFileSync(full, markdown);
     return `Created markdown report ${filename} with title "${title}"`;
+  },
+
+  async settings_add_model({ key, provider, model_id, max_tokens }) {
+    if (!_sessionCtx) throw new Error("No active session context — this tool is only usable inside an interactive session.");
+    const prov = _sessionCtx.settings.providers[provider];
+    if (!prov) throw new Error(`Unknown provider "${provider}". Known providers: ${Object.keys(_sessionCtx.settings.providers).join(", ")}`);
+    _sessionCtx.settings.models[key] = { provider, id: model_id, maxTokens: max_tokens || 8192 };
+    await saveSettings(_sessionCtx.settings);
+    return `Added model ${key} (provider: ${provider}, id: ${model_id}, maxTokens: ${max_tokens || 8192}). Switch with /model ${key}`;
+  },
+
+  async settings_set_apikey({ provider, api_key }) {
+    if (!_sessionCtx) throw new Error("No active session context — this tool is only usable inside an interactive session.");
+    const prov = _sessionCtx.settings.providers[provider];
+    if (!prov) throw new Error(`Unknown provider "${provider}". Known providers: ${Object.keys(_sessionCtx.settings.providers).join(", ")}`);
+    const { setProviderKey } = await import("../core/config.mjs");
+    setProviderKey(prov, api_key);
+    await saveSettings(_sessionCtx.settings);
+    return `API key set for provider "${provider}" and saved. Key: ${api_key.slice(0, 6)}…`;
   },
 
   create_tool({ name, code }) {

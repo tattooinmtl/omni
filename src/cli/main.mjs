@@ -6,7 +6,7 @@ import {
   loadSettings, saveSettings, resolveModel, setProviderKey, Session,
 } from "../core/config.mjs";
 import { runTurn } from "../core/agent.mjs";
-import { registerExtensions, memoryPreamble } from "../tools/index.mjs";
+import { registerExtensions, memoryPreamble, setSessionCtx } from "../tools/index.mjs";
 import {
   loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT, loadMcpConfig,
 } from "../integrations/extras.mjs";
@@ -201,6 +201,7 @@ export async function main(args) {
     // behaviour reads ctx.contextMode — never settings.contextMode direct.
     contextMode: readContextMode(settings),
   };
+  setSessionCtx(ctx);
   registerGoalTool(ctx);
 
   // One-shot mode: `omni "do this"` or `omni /skill args` runs once and exits.
