@@ -168,7 +168,7 @@ function connectStdio(name, def) {
   let args = (def.args || []).map(substituteInstallRoot);
   if (process.platform === "win32") {
     const escapedArgs = args.map(quoteForCmdExe);
-    command = escapedArgs.length ? `${def.command} ${escapedArgs.join(" ")}` : def.command;
+    command = escapedArgs.length ? `${command} ${escapedArgs.join(" ")}` : command;
     args = [];
     opts.shell = true;
   }

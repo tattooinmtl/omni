@@ -1,7 +1,7 @@
 ---
 name: skill-hook-creator
 description: >-
-  Scaffold, construct, validate, and register new skills and lifecycle hooks for AI agents and harnesses (.omni, DariusAI-Harness, Thoth, Antigravity, Claude, Codex, Cursor). Use when creating new skills, adding hooks, or validating skill repositories.
+  Scaffold, construct, validate, and register new skills and lifecycle hooks for Omni agents. Use when creating new skills, adding hooks, or validating the skill repository under `skills/`.
 ---
 
 # Skill & Lifecycle Hook Creator Guide

@@ -6,7 +6,8 @@
     "extensions/file-tools.js",
     "extensions/web-search.js",
     "extensions/browser-use.js",
-    "extensions/vision-tools.js"
+    "extensions/vision-tools.js",
+    "extensions/git-ops.js"
   ],
   "skills": [
     "skills/code-review",

@@ -49,14 +49,10 @@ These thoughts mean STOP—you're rationalizing:
 | "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
 | "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
 
-## Platform Adaptation
+## Omni Tool Reference
 
-If your harness appears here, read its reference file for special instructions:
-
-- Codex: `references/codex-tools.md`
-- Pi: `references/pi-tools.md`
-- Antigravity: `references/antigravity-tools.md`
+Read `references/omni-tools.md` for the complete mapping of skill actions to Omni tool names (`write_file`, `edit_file`, `apply_patch`, `project_todo`, `spawn_agent`, `git_push`, etc.). Always consult it when a skill refers to an action you're not sure how to execute.
 
 ## User Instructions
 
-User instructions (CLAUDE.md, AGENTS.md, GEMINI.md, etc, direct requests) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.
+User instructions (direct requests, OMNI.md, project README, memory) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.

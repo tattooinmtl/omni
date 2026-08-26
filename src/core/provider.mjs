@@ -299,7 +299,7 @@ async function consumeStream(res, onToken) {
           const entry = toolCallsMap.get(idx);
           if (tc.id) entry.id = tc.id;
           if (tc.function) {
-            if (tc.function.name) entry.function.name += tc.function.name;
+            if (tc.function.name && !entry.function.name) entry.function.name = tc.function.name;
             if (tc.function.arguments) entry.function.arguments += tc.function.arguments;
           }
         }

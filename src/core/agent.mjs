@@ -1123,7 +1123,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
                 await prev;
                 result = await run();
               } finally {
-                if (fileLocks.get(lockKey) === next.then(() => next)) fileLocks.delete(lockKey);
+                if (fileLocks.get(lockKey) === next) fileLocks.delete(lockKey);
                 release();
               }
             } else {

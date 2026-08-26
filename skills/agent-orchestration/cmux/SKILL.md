@@ -190,11 +190,11 @@ The user keeps BOTH off (set 18-07-2026) — don't re-enable. `sidebar.hideAllDe
 brew tap manaflow-ai/cmux && brew install --cask cmux
 sudo ln -sf /Applications/cmux.app/Contents/Resources/bin/cmux /usr/local/bin/cmux
 cmux hooks setup                                             # all detected agents
-cmux hooks setup codex|grok|antigravity|opencode             # specific agent
+cmux hooks setup codex|grok|opencode|omni             # specific agent
 npx skills add manaflow-ai/cmux -g -y                        # install cmux skills for agents
 ```
 
-Native session-resume supported for: Claude Code, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Antigravity, Rovo Dev, Hermes, Copilot, CodeBuddy, Factory, Qoder.
+Native session-resume supported for: Claude Code, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Omni, Rovo Dev, Hermes, Copilot, CodeBuddy, Factory, Qoder.
 
 ## Socket API (advanced)
 

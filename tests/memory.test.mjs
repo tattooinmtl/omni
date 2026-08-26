@@ -40,8 +40,8 @@ const { loadSettings, saveSettings } = await import(u("core/config.mjs"));
 
 // ---- Phase 1: provider interface + default/rollback path -------------------
 
-assert("default provider is legacy-jsonl",
-  resolveProviderName({}), (v) => v === "legacy-jsonl");
+assert("default provider is layered-okf",
+  resolveProviderName({}), (v) => v === "layered-okf");
 
 assert("legacy-jsonl is the loadSettings() default for a fresh home",
   (await loadSettings()).memory, (v) => v.provider === "legacy-jsonl");
