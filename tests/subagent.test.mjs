@@ -102,10 +102,10 @@ try {
   settings.providers.nvidia = settings.providers.nvidia || { baseUrl, apiKey: "k-nvidia-test", label: "NVIDIA", api: "openai-completions", nativeTools: false };
   settings.providers.nvidia.baseUrl = baseUrl;
   settings.providers.nvidia.apiKey = "k-nvidia-test";
-  settings.models["nvidia/glm-5.2"] = settings.models["nvidia/glm-5.2"] || { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 512 };
+  settings.models["nvidia/nemotron-3-ultra-550b-a55b"] = settings.models["nvidia/nemotron-3-ultra-550b-a55b"] || { provider: "nvidia", id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 512 };
   await saveSettings(settings);
 
-  const secondStart = await runTool("spawn_agent", { prompt: "Check for lint errors.", model: "nvidia/glm-5.2" });
+  const secondStart = await runTool("spawn_agent", { prompt: "Check for lint errors.", model: "nvidia/nemotron-3-ultra-550b-a55b" });
   const id2 = /spawned (A\d+)/.exec(secondStart)[1];
   await assert("a second sub-agent gets its own distinct id", id2, (v) => v !== id);
 
@@ -115,7 +115,7 @@ try {
     if (!secondStatus.includes("[running]")) break;
     await sleep(50);
   }
-  await assert("the two sub-agents ran on their own distinct models independently", secondStatus, (m) => /model: nvidia\/glm-5\.2/.test(m) && /sub-agent done via z-ai\/glm-5\.2/.test(m));
+  await assert("the two sub-agents ran on their own distinct models independently", secondStatus, (m) => /model: nvidia\/nemotron-3-ultra-550b-a55b/.test(m) && /sub-agent done via nvidia\/nemotron-3-ultra-550b-a55b/.test(m));
   await assert("the first sub-agent's result is unaffected by the second one running", await runTool("agent_status", { id }), (m) => /model: agnes\/agnes-2\.0-flash/.test(m));
 
   // ---- stop_agent on an already-finished sub-agent is a clean no-op, not a crash ----

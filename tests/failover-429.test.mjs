@@ -65,9 +65,9 @@ function makeSettings(baseUrl) {
       },
     },
     models: {
-      "nvidia/glm-5.2": {
+      "nvidia/nemotron-3-ultra-550b-a55b": {
         provider: "nvidia",
-        id: "z-ai/glm-5.2",
+        id: "nvidia/nemotron-3-ultra-550b-a55b",
         maxTokens: 512,
       },
       "agnes/agnes-2.0-flash": {
@@ -100,7 +100,7 @@ async function main() {
     activateAccount(settings.providers.nvidia, "nvidia1");
     activateAccount(settings.providers.agnes, "agnes1");
 
-    const model = resolveModel(settings, "nvidia/glm-5.2");
+    const model = resolveModel(settings, "nvidia/nemotron-3-ultra-550b-a55b");
     const session = new MockSession();
 
     await runTurn({
@@ -146,7 +146,7 @@ async function main() {
           totalHops: 5,
           provider: "nvidia",
           account: "nvidia2",
-          modelKey: "nvidia/glm-5.2",
+          modelKey: "nvidia/nemotron-3-ultra-550b-a55b",
         },
         {
           hop: 4,

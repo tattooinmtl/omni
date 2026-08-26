@@ -115,8 +115,8 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
   }
   let ids = await listProviderModels(provider);
   if (provKey === "nvidia") {
-    ids = ids.filter((id) => id !== "z-ai/glm-5.1");
-    if (!ids.includes("z-ai/glm-5.2")) ids.push("z-ai/glm-5.2");
+    ids = ids.filter((id) => id !== "z-ai/glm-5.1" && id !== "z-ai/glm-5.2");
+    if (!ids.includes("nvidia/nemotron-3-ultra-550b-a55b")) ids.push("nvidia/nemotron-3-ultra-550b-a55b");
     ids.sort((a, b) => a.localeCompare(b));
   }
   const q = String(filter || "").toLowerCase();

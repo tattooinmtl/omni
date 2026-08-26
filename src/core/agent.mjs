@@ -284,9 +284,9 @@ function hasUsableKey(provider, accountName = null) {
 function buildRateLimitChain(settings) {
   if (!settings) return [];
   const desired = [
-    { providerName: "nvidia", account: "nvidia1", modelKey: "nvidia/glm-5.2" },
+    { providerName: "nvidia", account: "nvidia1", modelKey: "nvidia/nemotron-3-ultra-550b-a55b" },
     { providerName: "agnes", account: "agnes1", modelKey: AGNES_FAILOVER_MODEL },
-    { providerName: "nvidia", account: "nvidia2", modelKey: "nvidia/glm-5.2" },
+    { providerName: "nvidia", account: "nvidia2", modelKey: "nvidia/nemotron-3-ultra-550b-a55b" },
     { providerName: "agnes", account: "agnes2", modelKey: AGNES_FAILOVER_MODEL },
     { providerName: "openrouter", account: null, modelKey: OPENROUTER_FAILOVER_MODEL },
   ];

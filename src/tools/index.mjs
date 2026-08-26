@@ -661,7 +661,7 @@ export const tools = [
         type: "object",
         properties: {
           prompt: { type: "string", description: "Full, self-contained task description for the sub-agent — it has no memory of this conversation." },
-          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.0-flash' or 'nvidia/glm-5.2'. Defaults to the default model if omitted." },
+          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.0-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the default model if omitted." },
           name: { type: "string", description: "Optional short label shown in agent_status." },
         },
         required: ["prompt"],

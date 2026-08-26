@@ -31,7 +31,7 @@ export const SESSIONS_DIR = path.join(HOME, "sessions");
 // See settings.example.json for a fully-commented template.
 const DEFAULT_SETTINGS = {
   defaultProvider: "nvidia",
-  defaultModel: "nvidia/glm-5.2",
+  defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
   reasoning: "medium",
   maxToolIterations: 30,
   diffPreview: true,
@@ -240,6 +240,8 @@ const DEFAULT_SETTINGS = {
     "kimi/moonshot-v1-8k":   { provider: "kimi", id: "moonshot-v1-8k",   maxTokens: 8192,  contextWindow: 8192 },
     "kimi/moonshot-v1-32k":  { provider: "kimi", id: "moonshot-v1-32k",  maxTokens: 32768, contextWindow: 32768 },
     "kimi/moonshot-v1-128k": { provider: "kimi", id: "moonshot-v1-128k", maxTokens: 32768, contextWindow: 131072 },
+    "nvidia/nemotron-3-ultra-550b-a55b": { provider: "nvidia", id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 16384, contextWindow: 131072 },
+    "nvidia/nvidia-nemotron-3-ultra-550b-a55b": { provider: "nvidia", id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 16384, contextWindow: 131072 },
     "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384, contextWindow: 202752 },
     "nvidia/llama-3.3-70b": { provider: "nvidia", id: "meta/llama-3.3-70b-instruct", maxTokens: 4096, contextWindow: 131072 },
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384, contextWindow: 262144 },
@@ -400,11 +402,20 @@ function applyEnvKeyOverrides(settings) {
 }
 
 function migrateSettings(settings) {
-  if (settings.defaultModel === "nvidia/glm-5.1") {
-    settings.defaultModel = "nvidia/glm-5.2";
+  if (settings.defaultModel === "nvidia/glm-5.1" || settings.defaultModel === "nvidia/glm-5.2") {
+    settings.defaultModel = "nvidia/nemotron-3-ultra-550b-a55b";
   }
   if (settings.models?.["nvidia/glm-5.1"]?.id === "z-ai/glm-5.1") {
     delete settings.models["nvidia/glm-5.1"];
+  }
+  if (!settings.models?.["nvidia/nemotron-3-ultra-550b-a55b"]) {
+    settings.models = settings.models || {};
+    settings.models["nvidia/nemotron-3-ultra-550b-a55b"] = {
+      provider: "nvidia",
+      id: "nvidia/nemotron-3-ultra-550b-a55b",
+      maxTokens: 16384,
+      contextWindow: 131072,
+    };
   }
   if (settings.providers?.nvidia) {
     settings.providers.nvidia.nativeTools = false;

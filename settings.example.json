@@ -10,7 +10,7 @@
 // environment variables (OMNI_<PROVIDER>_KEY), which override the file.
 {
   "defaultProvider": "nvidia",
-  "defaultModel": "nvidia/glm-5.2",
+  "defaultModel": "nvidia/nemotron-3-ultra-550b-a55b",
   "reasoning": "medium",
   "maxToolIterations": 30,
   "diffPreview": true,
@@ -79,6 +79,7 @@
   // The context window is auto-detected (provider metadata, then a known-family
   // table); pin it explicitly with "contextWindow": 202752 or the /context command.
   "models": {
+    "nvidia/nemotron-3-ultra-550b-a55b": { "provider": "nvidia", "id": "nvidia/nemotron-3-ultra-550b-a55b", "maxTokens": 16384 },
     "nvidia/glm-5.2":       { "provider": "nvidia",     "id": "z-ai/glm-5.2",                "maxTokens": 16384 },
     "nvidia/llama-3.3-70b": { "provider": "nvidia",     "id": "meta/llama-3.3-70b-instruct", "maxTokens": 4096 },
     "openai/gpt-4.1":       { "provider": "openai",     "id": "gpt-4.1",                     "maxTokens": 16384 },

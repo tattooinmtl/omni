@@ -238,19 +238,19 @@ await assert("resolveModel carries configured reasoning tier",
 );
 
 const loadedSettings = await loadSettings();
-await assert("NVIDIA GLM 5.2 is the built-in default model",
-  resolveModel(loadedSettings, "nvidia/glm-5.2"),
-  r => r.id === "z-ai/glm-5.2" && loadedSettings.defaultModel === "nvidia/glm-5.2"
+await assert("NVIDIA Nemotron Ultra 3 550B is the built-in default model",
+  resolveModel(loadedSettings, "nvidia/nemotron-3-ultra-550b-a55b"),
+  r => r.id === "nvidia/nemotron-3-ultra-550b-a55b" && loadedSettings.defaultModel === "nvidia/nemotron-3-ultra-550b-a55b"
 );
 
 await assert("NVIDIA uses Pi-style text tools, not native provider functions",
-  resolveModel(loadedSettings, "nvidia/glm-5.2"),
+  resolveModel(loadedSettings, "nvidia/nemotron-3-ultra-550b-a55b"),
   r => r.nativeTools === false && r.provider.api === "openai-completions"
 );
 
 await assert("NVIDIA request body never sends native tool payloads",
   buildChatBody({
-    model: resolveModel(loadedSettings, "nvidia/glm-5.2"),
+    model: resolveModel(loadedSettings, "nvidia/nemotron-3-ultra-550b-a55b"),
     messages: [
       { role: "user", content: "hello" },
       { role: "assistant", content: "", tool_calls: [{ id: "x", type: "function", function: { name: "read_file", arguments: "{\"path\":\"README.md\"}" } }] },
