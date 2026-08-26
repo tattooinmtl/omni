@@ -1,4 +1,4 @@
-# OMNI-AGENT
+# OMNI-AGENT V 2.5
 
 Omni-present harness for agents
 
