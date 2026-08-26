@@ -427,6 +427,16 @@ function migrateSettings(settings) {
     orFallback.id = "meta-llama/llama-3-8b-instruct";
   }
 
+  // Purge legacy hardcoded GWN VPS raw IP endpoint if present from older installs.
+  if (settings.providers?.gwn?.baseUrl?.includes("173.212.202.219")) {
+    delete settings.providers.gwn;
+    if (settings.defaultProvider === "gwn") settings.defaultProvider = "nvidia";
+  }
+  if (settings.models?.["gwn/mythos"]) {
+    delete settings.models["gwn/mythos"];
+    if (settings.defaultModel === "gwn/mythos") settings.defaultModel = "nvidia/glm-5.2";
+  }
+
   return settings;
 }
 
