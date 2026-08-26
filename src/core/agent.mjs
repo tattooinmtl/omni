@@ -220,6 +220,33 @@ function messagesWithTextTools(messages) {
   ];
 }
 
+// Text-only paths (nativeTools=false providers, local Jinja2 chat templates)
+// can't consume image_url content parts — some 400 outright, others render
+// "[object Object]". Swap each image part for a one-line text note so calling
+// read_media_file on a non-vision model degrades gracefully instead of
+// breaking the request. Vision-capable native-tool providers keep the pixels.
+function stripImageParts(messages) {
+  let touched = false;
+  const out = messages.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    const hasImage = m.content.some((p) => p && typeof p === "object" && p.type === "image_url");
+    if (!hasImage) return m;
+    touched = true;
+    return {
+      ...m,
+      content: m.content
+        .map((p) => {
+          if (typeof p === "string") return p;
+          if (p?.type === "image_url") return { type: "text", text: "[image omitted — the active model cannot see images]" };
+          return p;
+        })
+        .filter((p) => typeof p === "string" ? p.trim().length > 0 : (p?.text || "").length > 0),
+    };
+  });
+  if (touched) warnLine("image part(s) dropped — the active model has no vision support");
+  return out;
+}
+
 // Transient provider errors that are worth retrying automatically.
 const RETRYABLE = /ResourceExhausted|workers are busy|Service Unavailable|too many requests|rate.?limit/i;
 // The subset that means "this key is throttled" — worth failing over to
@@ -522,7 +549,17 @@ export function systemPrompt() {
 export function estimateTokens(messages) {
   let chars = 0;
   for (const m of messages || []) {
-    chars += (typeof m.content === "string" ? m.content.length : 0) + 20;
+    // Multipart content (vision images): count text parts only — base64
+    // pixel data is NOT tokens, it rides outside the text budget.
+    let contentChars = 0;
+    if (typeof m.content === "string") contentChars = m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (typeof part === "string") contentChars += part.length;
+        else if (part?.type === "text") contentChars += (part.text || "").length;
+      }
+    }
+    chars += contentChars + 20;
     for (const call of m.tool_calls || []) {
       chars += (call.function?.arguments?.length || 0) + (call.function?.name?.length || 0) + 30;
     }
@@ -552,7 +589,12 @@ export function compactMessages(messages, { keepTail = 8, sessionGoal = null } =
   const resultById = new Map();
   for (const m of dropped) {
     if (m.role === "tool" && m.tool_call_id) {
-      const firstLine = String(m.content || "").split(/\r?\n/)[0] || "";
+      const raw = typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((p) => (typeof p === "string" ? p : p?.type === "text" ? p.text : "")).join(" ")
+          : "";
+      const firstLine = raw.split(/\r?\n/)[0] || "";
       resultById.set(m.tool_call_id, firstLine.slice(0, 80));
     }
   }
@@ -623,6 +665,10 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
   }
   const out = messages.map((m, i) => {
     if (m.role !== "tool" || !shrinkBefore.has(i)) return m;
+    // Multipart content (vision image parts) can't be losslessly offloaded to
+    // a .txt body — leave it untouched rather than JSON-stringifying
+    // megabytes of base64 into the stub file.
+    if (typeof m.content !== "string") return m;
     const raw = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
     if (!raw || raw.length < 400) return m; // too small to bother
     const hash = hashToolBody(raw);
@@ -832,7 +878,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // provider sees them (in-memory `messages` is untouched — the full
         // body is still on disk for /expand). Classic mode is a no-op.
         const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
-        const providerMessages = useTextTools ? messagesWithTextTools(shaped) : shaped;
+        const providerMessages = useTextTools
+          ? messagesWithTextTools(stripImageParts(shaped))
+          : useTemplate ? stripImageParts(shaped) : shaped;
         resp = await chatStreamWithRetry({
           model,
           settings,
@@ -1105,6 +1153,23 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         tool_call_id: call.id,
         content: typeof result === "string" ? result : JSON.stringify(result),
       });
+      // Vision results: a tool returned {_omni_image, mime, base64, detail,
+      // text}. OpenAI-compatible APIs reject image parts inside role:"tool"
+      // messages, so the pixels ride along as a follow-up user message —
+      // text part first (what happened), then the actual image_url part.
+      if (result && typeof result === "object" && result._omni_image && result.base64 && result.mime) {
+        const imagePart = { type: "image_url", image_url: { url: `data:${result.mime};base64,${result.base64}` } };
+        if (result.detail && result.detail !== "auto") imagePart.image_url.detail = result.detail;
+        const visionMsg = {
+          role: "user",
+          content: [
+            { type: "text", text: `[image attached from ${name} — look at it and answer from what you see]` },
+            imagePart,
+          ],
+        };
+        messages.push(visionMsg);
+        session.append({ type: "user", content: visionMsg.content });
+      }
       // Roll into the state trail (bounded to 40) so a resumed session has
       // a compact "what happened here recently" view without re-parsing
       // the full jsonl log.

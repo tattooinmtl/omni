@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { spawnSync } from "node:child_process";
 import { c, infoLine, warnLine, errorLine, costLine } from "../ui.mjs";
 import {
   saveSettings, resolveModel, SETTINGS_PATH, HOME, Session,
@@ -56,6 +57,62 @@ export const COMMANDS = [
     name: "help", aliases: ["", "-", "---"], usage: "/help", category: "Session",
     summary: "show this command menu",
     handler: (ctx) => { printHelp(ctx); },
+  },
+  {
+    name: "image", aliases: ["img"], usage: "/image [file]", category: "Session",
+    summary: "share an image with the agent — a file path, or the clipboard when omitted",
+    handler: async (ctx, arg) => {
+      const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+      const wanted = arg.trim().replaceAll('"', "");
+
+      // Claude Code-style cache: ~/.omni/image-cache/<session>/image-N.png so
+      // every shared image survives with its session and never collides.
+      const dir = path.join(HOME, "image-cache", path.basename(ctx.session?.file || "adhoc", ".jsonl"));
+      fs.mkdirSync(dir, { recursive: true });
+      const n = fs.readdirSync(dir).filter((f) => /^image-\d+\.png$/i.test(f)).length + 1;
+      const dest = path.join(dir, `image-${n}.png`);
+
+      try {
+        if (wanted) {
+          const full = path.resolve(process.cwd(), wanted);
+          if (!fs.existsSync(full)) { warnLine(`not found: ${wanted}`); return {}; }
+          if (!IMAGE_EXTS.has(path.extname(full).toLowerCase())) {
+            warnLine("not a supported image type (png/jpg/jpeg/gif/webp/bmp)");
+            return {};
+          }
+          fs.copyFileSync(full, dest);
+        } else {
+          // Clipboard grab via PowerShell (console host is STA, which the
+          // WinForms clipboard API requires). Prints OK / EMPTY / error text.
+          const psDest = dest.replaceAll("'", "''");
+          const script =
+            "Add-Type -AssemblyName System.Windows.Forms;" +
+            "Add-Type -AssemblyName System.Drawing;" +
+            "$img=[System.Windows.Forms.Clipboard]::GetImage();" +
+            `if($img -eq $null){'EMPTY'}else{$img.Save('${psDest}',[System.Drawing.Imaging.ImageFormat]::Png);'OK'}`;
+          const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-Command", script], {
+            encoding: "utf8", timeout: 15000, windowsHide: true,
+          });
+          const out = String(r.stdout || "").trim();
+          if (out !== "OK") {
+            warnLine(out === "EMPTY" ? "clipboard has no image" : `could not grab clipboard image${out ? ` (${out.split("\n")[0].slice(0, 80)})` : ""}`);
+            return {};
+          }
+        }
+      } catch (e) {
+        warnLine(e.message);
+        return {};
+      }
+
+      infoLine(`image ready: ${dest}`);
+      return {
+        startTurn: true,
+        prompt:
+          `[system note] The user shared an image for this conversation. It is saved at: ${dest}\n` +
+          `Call read_media_file with path "${dest}" right now to load it, then work with what you see. ` +
+          `If the user's surrounding request says what to do with the image, do that after viewing it.`,
+      };
+    },
   },
   {
     name: "status", aliases: [], usage: "/status", category: "Session",

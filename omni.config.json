@@ -5,7 +5,8 @@
   "extensions": [
     "extensions/file-tools.js",
     "extensions/web-search.js",
-    "extensions/browser-use.js"
+    "extensions/browser-use.js",
+    "extensions/vision-tools.js"
   ],
   "skills": [
     "skills/code-review",
@@ -19,7 +20,9 @@
   "mcpServers": {
     "okf": {
       "command": "node",
-      "args": ["{{INSTALL_ROOT}}/packages/okf/server.mjs"],
+      "args": [
+        "{{INSTALL_ROOT}}/packages/okf/server.mjs"
+      ],
       "directTools": true
     }
   },
