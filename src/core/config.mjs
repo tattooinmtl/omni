@@ -222,7 +222,9 @@ const DEFAULT_SETTINGS = {
     "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576 },
     "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000 },
     "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192, contextWindow: 8192 },
-    "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768 },
+    "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
+    "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
+    "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768, free: true },
     "minimax.io/m3": {
       provider: "minimax.io",
       id: "MiniMax-M3",
@@ -413,6 +415,25 @@ function migrateSettings(settings) {
     settings.models["nvidia/nemotron-3-ultra-550b-a55b"] = {
       provider: "nvidia",
       id: "nvidia/nemotron-3-ultra-550b-a55b",
+      maxTokens: 16384,
+      contextWindow: 131072,
+    };
+  }
+  if (!settings.models?.["agnes/agnes-2.5-flash"]) {
+    settings.models = settings.models || {};
+    settings.models["agnes/agnes-2.5-flash"] = {
+      provider: "agnes",
+      id: "agnes-2.5-flash",
+      maxTokens: 16384,
+      contextWindow: 131072,
+      free: true,
+    };
+  }
+  if (!settings.models?.["agnes/agnes-2.5-pro-alpha"]) {
+    settings.models = settings.models || {};
+    settings.models["agnes/agnes-2.5-pro-alpha"] = {
+      provider: "agnes",
+      id: "agnes-2.5-pro-alpha",
       maxTokens: 16384,
       contextWindow: 131072,
     };

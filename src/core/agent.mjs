@@ -256,7 +256,7 @@ const RATE_LIMITED = /ResourceExhausted|too many requests|rate.?limit/i;
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
 const MAX_ROTATIONS = 4;    // account hops per request before plain backoff
-const AGNES_FAILOVER_MODEL = "agnes/agnes-2.0-flash";
+const AGNES_FAILOVER_MODEL = "agnes/agnes-2.5-flash";
 const OPENROUTER_FAILOVER_MODEL = "openrouter/llama-3-8b";
 
 function applyResolvedModel(target, resolved) {

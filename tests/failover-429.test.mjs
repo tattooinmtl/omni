@@ -70,9 +70,9 @@ function makeSettings(baseUrl) {
         id: "nvidia/nemotron-3-ultra-550b-a55b",
         maxTokens: 512,
       },
-      "agnes/agnes-2.0-flash": {
+      "agnes/agnes-2.5-flash": {
         provider: "agnes",
-        id: "agnes-2.0-flash",
+        id: "agnes-2.5-flash",
         maxTokens: 512,
       },
       "openrouter/llama-3-8b": {
@@ -139,7 +139,7 @@ async function main() {
           totalHops: 5,
           provider: "agnes",
           account: "agnes1",
-          modelKey: "agnes/agnes-2.0-flash",
+          modelKey: "agnes/agnes-2.5-flash",
         },
         {
           hop: 3,
@@ -153,7 +153,7 @@ async function main() {
           totalHops: 5,
           provider: "agnes",
           account: "agnes2",
-          modelKey: "agnes/agnes-2.0-flash",
+          modelKey: "agnes/agnes-2.5-flash",
         },
         {
           hop: 5,

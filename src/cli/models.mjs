@@ -119,6 +119,13 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     if (!ids.includes("nvidia/nemotron-3-ultra-550b-a55b")) ids.push("nvidia/nemotron-3-ultra-550b-a55b");
     ids.sort((a, b) => a.localeCompare(b));
   }
+  if (provKey === "agnes") {
+    const knownAgnes = ["agnes-2.5-flash", "agnes-2.5-pro-alpha", "agnes-2.0-flash"];
+    for (const m of knownAgnes) {
+      if (!ids.includes(m)) ids.push(m);
+    }
+    ids.sort((a, b) => a.localeCompare(b));
+  }
   const q = String(filter || "").toLowerCase();
   const shown = q ? ids.filter((id) => id.toLowerCase().includes(q)) : ids;
   ctx.lastFetchedModels = shown.map((id, i) => ({ index: i + 1, provider: provKey, id, key: modelKeyFor(provKey, id) }));
@@ -291,9 +298,9 @@ function renderModelPicker(ctx, rows, selected, providerName) {
 
 export async function pickModelWithArrows(ctx, providerName = ctx.model.providerName, filter = "") {
   const provKey = normalizeProviderKey(providerName || ctx.model.providerName);
-  // Auto-filter to free models for openrouter and agnes if no explicit filter given
+  // Auto-filter to free models for openrouter if no explicit filter given
   let autoFilter = filter;
-  if (!filter && (provKey === "openrouter" || provKey === "agnes")) {
+  if (!filter && provKey === "openrouter") {
     const freeModels = Object.entries(ctx.settings.models)
       .filter(([, m]) => m.provider === provKey && m.free);
     if (freeModels.length) {
