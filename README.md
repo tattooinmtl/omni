@@ -231,9 +231,15 @@ $env:RUN_LIVE = "1"; npm test   # + live sidecar suite (needs Python)
 
 ## Local models (llama.cpp)
 
-Point `llama.modelsDir` at a folder of `.gguf` files, then `/llama list`,
+Default models directory is `C:\models` on Windows — the installer offers
+to create it if it isn't there. Drop `.gguf` files in, then `/llama list`,
 `/llama start 1`, `/model local/coder`. `contextSize: 0` reads the trained
 context from the GGUF header.
+
+Override with `llama.modelsDir` in `agent/settings.json` or the
+`OMNI_MODELS_DIR` env var. If you have an older install with models under
+`<INSTALL_ROOT>/models`, that path still works as a fallback until you move
+them to `C:\models`.
 
 ## License
 

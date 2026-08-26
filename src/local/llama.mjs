@@ -16,6 +16,18 @@ const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
 let child = null;    // current llama-server child process (or null)
 let current = null;  // { model, host, port, pid, url } while running
 
+// Preferred default: C:\models (Windows-standard place the installer offers to
+// create). Falls back to the legacy in-tree <INSTALL_ROOT>/models only if the
+// standard path is missing and the legacy one exists — otherwise we still
+// return C:\models so /llama list has a stable "empty" message.
+function defaultModelsDir() {
+  const standard = "C:\\models";
+  const legacy = path.join(INSTALL_ROOT, "models");
+  if (fs.existsSync(standard)) return standard;
+  if (fs.existsSync(legacy)) return legacy;
+  return standard;
+}
+
 // Merge the user's settings.llama block with sane defaults.
 export function llamaConfig(settings) {
   const cfg = (settings && settings.llama) || {};
@@ -28,7 +40,7 @@ export function llamaConfig(settings) {
   return {
     binDir,
     exe: path.join(binDir, "llama-server.exe"),
-    modelsDir: cfg.modelsDir || path.join(INSTALL_ROOT, "models"),
+    modelsDir: cfg.modelsDir || process.env.OMNI_MODELS_DIR || defaultModelsDir(),
     host: cfg.host || "127.0.0.1",
     port: cfg.port || 8080,
     // contextSize 0 or "auto" => read the model's trained context from the GGUF.

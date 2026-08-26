@@ -37,7 +37,11 @@ param(
   [switch]$Force,
   [switch]$AutoUpdate,
   [switch]$WithRouter,
-  [switch]$SkipLink
+  [switch]$SkipLink,
+  # Local GGUF models directory. Default target is C:\models. Pass an explicit
+  # path for silent installs; pass "" to skip the create prompt entirely.
+  [string]$ModelsDir = "C:\models",
+  [switch]$SkipModelsPrompt
 )
 
 $ErrorActionPreference = "Stop"
@@ -161,6 +165,32 @@ function Update-FromGit([string]$Root) {
   }
 }
 
+# C:\models is where /llama-start looks by default. If the folder exists, use
+# it silently. If it doesn't, offer to create it (unless -SkipModelsPrompt or
+# ModelsDir="" was passed). Never fabricates GGUF files — just the empty dir.
+function Ensure-ModelsDir() {
+  if ([string]::IsNullOrWhiteSpace($ModelsDir)) {
+    Info "Skipping local models directory setup (ModelsDir='')"
+    return
+  }
+  if (Test-Path $ModelsDir) {
+    Info "Found $ModelsDir — using it for local GGUF models."
+    return
+  }
+  if ($SkipModelsPrompt -or $Force) {
+    New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
+    Info "Created $ModelsDir. Drop .gguf files here to see them in /llama list."
+    return
+  }
+  $ans = Read-Host "Create $ModelsDir for local GGUF models? [Y/n]"
+  if ($ans -eq "" -or $ans -match "^[Yy]") {
+    New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
+    Info "Created $ModelsDir. Drop .gguf files here to see them in /llama list."
+  } else {
+    Info "Skipped. Set llama.modelsDir in agent/settings.json (or OMNI_MODELS_DIR env) to point elsewhere."
+  }
+}
+
 function Initialize-Install([string]$Root) {
   Push-Location $Root
   try {
@@ -211,6 +241,7 @@ try {
   else { Update-FromZip $root }
 
   Check-RequiredFiles $root
+  Ensure-ModelsDir
   Initialize-Install $root
 
   $installed = Get-LocalVersion $root
