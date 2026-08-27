@@ -759,9 +759,24 @@ export const COMMANDS = [
     handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
   },
   {
-    name: "llama", aliases: [], usage: "/llama [list|start <n>|default <n>|stop|status]", category: "Models & Providers",
+    name: "llama", aliases: [], usage: "/llama [list|start <model> [cpu|vulkan] [--force]|default <n>|stop|restart|status]", category: "Models & Providers",
     summary: "manage the bundled local llama.cpp server",
     handler: (ctx, arg, parts) => llamaCommand(ctx, parts[1] || "", parts.slice(2).join(" ").trim()),
+  },
+  {
+    name: "llama-start", aliases: [], usage: "/llama-start [model] [cpu|vulkan] [--force]", category: "Models & Providers",
+    summary: "start the local llama server (backend defaults to hardware-profile recommendation)",
+    handler: (ctx, arg) => llamaCommand(ctx, "start", (arg || "").trim()),
+  },
+  {
+    name: "llama-stop", aliases: [], usage: "/llama-stop", category: "Models & Providers",
+    summary: "stop the local llama server",
+    handler: (ctx) => llamaCommand(ctx, "stop", ""),
+  },
+  {
+    name: "llama-restart", aliases: [], usage: "/llama-restart [model] [cpu|vulkan] [--force]", category: "Models & Providers",
+    summary: "stop the local llama server if running, then start it with the given (or default) params",
+    handler: (ctx, arg) => llamaCommand(ctx, "restart", (arg || "").trim()),
   },
   {
     name: "hardware", aliases: ["hw"], usage: "/hardware [rescan|clear]", category: "Models & Providers",
