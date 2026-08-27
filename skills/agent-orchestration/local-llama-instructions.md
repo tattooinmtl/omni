@@ -24,6 +24,9 @@ bundled llama.cpp. Strict, short instructions follow.
 2. Pick the smallest tool that fits. Priority:
    - **`read_file`**, **`write_file`**, **`list_dir`**, **`run_shell`** for
      direct file / shell work.
+   - **`read_media_file`** when the user pastes a screenshot or points at
+     an image (png/jpg/jpeg/gif/webp/bmp). Requires a vision-capable model
+     — if you're a text-only GGUF, say so and ask the user to describe it.
    - **`memory_search`** before the web — check what prior sessions already
      established. Use **`memory_save`** for durable facts you just proved.
    - **`web_search`** / **`web_fetch`** only when memory lacks it; cite the
