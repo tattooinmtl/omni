@@ -231,15 +231,60 @@ $env:RUN_LIVE = "1"; npm test   # + live sidecar suite (needs Python)
 
 ## Local models (llama.cpp)
 
-Default models directory is `C:\models` on Windows — the installer offers
-to create it if it isn't there. Drop `.gguf` files in, then `/llama list`,
-`/llama start 1`, `/model local/coder`. `contextSize: 0` reads the trained
-context from the GGUF header.
+Omni ships two `llama-server` binaries — a plain CPU build and a Vulkan
+build — in `server/`. Default models directory is `C:\models`; the
+installer offers to create it if it isn't there.
 
-Override with `llama.modelsDir` in `agent/settings.json` or the
-`OMNI_MODELS_DIR` env var. If you have an older install with models under
-`<INSTALL_ROOT>/models`, that path still works as a fallback until you move
-them to `C:\models`.
+Drop `.gguf` files into `C:\models`, then:
+
+```text
+/llama list                       # numbered menu of what's on disk
+/llama-start                      # start default model, auto-pick backend
+/llama-start 3                    # start model #3 from the list
+/llama-start qwen3 vulkan         # explicit backend
+/llama-start qwen3 vulkan --force # override the VRAM<6GB CPU-fallback
+/llama-stop
+/llama-restart
+/hardware                         # show detected cores + VRAM + recommended backend
+```
+
+**Backend heuristic:** on boot Omni scans your hardware once and caches
+the result (`agent/hardware-profile.json`). If detected GPU VRAM is
+**< 6 GB**, `/llama-start` picks `cpu` — small cards spend more on Vulkan
+init and bus transfers than they save. GPUs ≥ 6 GB get `vulkan`.
+
+- Change the threshold: `settings.llama.gpuMinVramGB` (default 6).
+- Make the override persistent: `settings.llama.allowLowVram: true`.
+- One-off override: append `--force` to the command.
+- Force a re-scan (e.g. after swapping a GPU): `/hardware rescan`.
+
+**Models directory:** override with `llama.modelsDir` in
+`agent/settings.json` or the `OMNI_MODELS_DIR` env var. Older installs
+with models under `<INSTALL_ROOT>/models` still work as a fallback.
+
+**When a local model is active,** Omni appends
+`skills/agent-orchestration/local-llama-instructions.md` to the system
+prompt automatically — short, terse rails so small GGUFs use real Omni
+tool names (`read_file`, `memory_search`, `run_shell`, etc.) instead of
+inventing calls. Cloud providers don't get it (no reason to burn their
+context on small-model rails).
+
+## Vision — images and videos
+
+Any vision-capable model can look at pixels:
+
+- **`read_media_file <path>`** — png / jpg / gif / webp / bmp.
+- **`/image`** — paste a screenshot from the clipboard; it's staged to
+  `~/.omni/image-cache/` and any `read_media_file` call can pick it up.
+- **`read_video_file <path>`** — mp4 / mov / webm / mkv / avi / m4v.
+  Extracts N frames via `ffmpeg` (default 6, mode `even`; also `scene`
+  and `interval`). Requires `ffmpeg` on PATH: `winget install Gyan.FFmpeg`
+  (Windows), `brew install ffmpeg` (macOS), `apt-get install ffmpeg`
+  (Linux). Frames are re-encoded at ~1024px wide, capped at 16 frames /
+  20 MB total.
+
+Text-only models get a one-line "image omitted — this model can't see
+images" note instead of a crash.
 
 ## License
 
