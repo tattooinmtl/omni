@@ -11,6 +11,7 @@ import {
   createThinkSplitter, extractThink,
 } from "./toolcalls.mjs";
 import { syncOkfNavGuidance } from "./okfnav.mjs";
+import { syncLocalPromptGuidance } from "./local-prompt.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import {
   CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID,
@@ -791,6 +792,10 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   // Local models get strict index-first OKF navigation rules; frontier
   // providers are left alone. Re-synced every turn so /model switches apply.
   syncOkfNavGuidance(messages, model, tools);
+  // Same pattern for the small-model coding rails: appended for local
+  // GGUFs / Ollama / loopback, stripped for cloud providers. Reads
+  // skills/agent-orchestration/local-llama-instructions.md.
+  syncLocalPromptGuidance(messages, model);
   // Template-aware path: render messages through Jinja2 then use /v1/completions.
   // Active when the resolved model's provider has a chatTemplate configured.
   const useTemplate = Boolean(model.chatTemplate);
