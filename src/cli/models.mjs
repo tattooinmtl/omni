@@ -716,3 +716,138 @@ async function addCustomProviderInteractive(ctx) {
   await saveSettings(ctx.settings);
   infoLine(`added provider ${name} -> ${baseUrl} (saved)`);
 }
+
+// ---------------------------------------------------------------------------
+// /connect — unified provider + model picker (opencode / pi-style)
+// ---------------------------------------------------------------------------
+
+// True when a provider has a real key (not empty, not the "not-needed"
+// sentinel for endpoints like ollama/local that don't want one).
+export function providerHasKey(p) {
+  if (!p) return false;
+  if (p.apiKey === "not-needed") return true; // key is legitimately absent, provider still usable
+  return typeof p.apiKey === "string" && p.apiKey.length > 0;
+}
+
+// Same, but returns false for the "not-needed" sentinel — used to decide
+// whether we should PROMPT for a key. ollama/local don't get prompted.
+export function providerNeedsKeyPrompt(p) {
+  if (!p) return true;
+  if (p.apiKey === "not-needed") return false;
+  return !(typeof p.apiKey === "string" && p.apiKey.length > 0);
+}
+
+// Build the ordered row list for /connect:
+//   1. configured providers with keys        (● first, alphabetical)
+//   2. configured providers still missing a key  (○, alphabetical)
+//   3. preset providers not yet installed        (·, alphabetical)
+//   4. Custom Provider…                          (+, always last)
+// Pure so the ordering can be tested without a live picker.
+export function buildConnectRows(settings) {
+  const providers = settings?.providers || {};
+  const configured = Object.entries(providers).map(([name, p]) => ({
+    name,
+    provider: p,
+    hasKey: providerHasKey(p),
+  }));
+  const withKey = configured.filter((r) => r.hasKey).sort((a, b) => a.name.localeCompare(b.name));
+  const missingKey = configured.filter((r) => !r.hasKey).sort((a, b) => a.name.localeCompare(b.name));
+
+  const configuredNames = new Set(configured.map((r) => r.name));
+  const presetRows = Object.keys(PROVIDER_PRESETS)
+    .filter((n) => !configuredNames.has(n))
+    .sort();
+
+  const rows = [];
+  for (const r of withKey) {
+    rows.push({
+      id: `configured:${r.name}`,
+      label: `● ${r.name}`,
+      dim: r.provider.baseUrl || "",
+    });
+  }
+  for (const r of missingKey) {
+    rows.push({
+      id: `configured:${r.name}`,
+      label: `○ ${r.name}`,
+      dim: `${r.provider.baseUrl || ""}   (key missing)`,
+    });
+  }
+  for (const name of presetRows) {
+    rows.push({
+      id: `preset:${name}`,
+      label: `· ${name}`,
+      dim: PROVIDER_PRESETS[name].baseUrl,
+    });
+  }
+  rows.push({
+    id: "custom",
+    label: "+ Custom Provider…",
+    dim: "enter name, endpoint, API key",
+  });
+  return rows;
+}
+
+// The /connect flow. Interactive-only — non-raw terminals get a hint to
+// use the typed alternatives (/addprovider, /apikey, /model).
+export async function connectInteractive(ctx) {
+  if (!ctx.canRaw) {
+    infoLine("/connect needs an interactive terminal.");
+    infoLine("Use /addprovider <name> <baseUrl> [key], /apikey <name> <key>, /model to switch.");
+    return;
+  }
+
+  const rows = buildConnectRows(ctx.settings);
+  const picked = await runArrowPicker(rows, {
+    ctx,
+    title: "Connect — pick a provider (● has key, ○ needs key, · not installed)",
+    hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
+    initial: 0,
+  });
+  if (!picked) { infoLine("connect canceled"); return; }
+
+  if (picked === "custom") {
+    await addCustomProviderInteractive(ctx);
+    // After adding a custom provider, chain into the model picker for it.
+    const lastAdded = Object.keys(ctx.settings.providers).slice(-1)[0];
+    if (lastAdded) {
+      try { await pickModelWithArrows(ctx, lastAdded); }
+      catch (e) { warnLine(`could not open model picker for ${lastAdded}: ${e.message}`); }
+    }
+    return;
+  }
+
+  const [kind, name] = picked.split(":");
+  const providerName = kind === "preset" ? installProviderPreset(ctx, name) : name;
+  const p = ctx.settings.providers[providerName];
+
+  // Prompt for a key when the provider genuinely needs one and doesn't have
+  // one. Skips ollama/local (apiKey: "not-needed") and any provider that
+  // already has a key stored.
+  if (providerNeedsKeyPrompt(p)) {
+    const key = await askLine(ctx, `API key for ${providerName} (Enter to skip)`, { defaultValue: "" });
+    if (key) {
+      ctx.settings.providers[providerName].apiKey = key;
+      await saveSettings(ctx.settings);
+      infoLine(`saved API key for ${providerName}: ${maskKey(key)}`);
+    } else if (kind === "preset") {
+      // User installed a preset then skipped the key — warn but continue,
+      // they might want to /apikey it later or just browse cached models.
+      warnLine(`no key set for ${providerName} — models fetch will likely fail. Set it later with /apikey ${providerName} <key>.`);
+    }
+  }
+
+  // Fetch models, then hand off to the arrow-picker to select one.
+  try {
+    await fetchModelsForProvider(ctx, providerName, { save: true, filter: "" });
+  } catch (err) {
+    warnLine(`could not fetch models for ${providerName}: ${err.message}`);
+    infoLine("opening picker with previously-known models (if any).");
+  }
+  try {
+    await pickModelWithArrows(ctx, providerName);
+  } catch (e) {
+    errorLine(`could not open model picker: ${e.message}`);
+    infoLine(`switch manually with /model <provider/id> or /model to see the list.`);
+  }
+}

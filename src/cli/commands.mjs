@@ -33,7 +33,7 @@ import { writeProjectContextMode, readMetrics, toolBodyPath } from "../core/cont
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
-  addProviderInteractive,
+  addProviderInteractive, connectInteractive,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
@@ -752,6 +752,11 @@ export const COMMANDS = [
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`updated API key for ${prov}: ${maskKey(key)} (saved)`);
     },
+  },
+  {
+    name: "connect", aliases: [], usage: "/connect", category: "Models & Providers",
+    summary: "unified provider + model picker — pick a configured provider or a preset, add a key if needed, then choose a model",
+    handler: async (ctx) => connectInteractive(ctx),
   },
   {
     name: "addprovider", aliases: [], usage: "/addprovider [name baseUrl [apiKey]]", category: "Models & Providers",
