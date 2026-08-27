@@ -39,6 +39,7 @@ import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
 } from "../core/workspace.mjs";
 import { llamaCommand } from "./llama-cmd.mjs";
+import { hardwareCommand } from "./hardware-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -761,6 +762,11 @@ export const COMMANDS = [
     name: "llama", aliases: [], usage: "/llama [list|start <n>|default <n>|stop|status]", category: "Models & Providers",
     summary: "manage the bundled local llama.cpp server",
     handler: (ctx, arg, parts) => llamaCommand(ctx, parts[1] || "", parts.slice(2).join(" ").trim()),
+  },
+  {
+    name: "hardware", aliases: ["hw"], usage: "/hardware [rescan|clear]", category: "Models & Providers",
+    summary: "show the cached hardware profile (cores, VRAM, recommended backend for /llama-start)",
+    handler: (ctx, arg, parts) => hardwareCommand(ctx, parts[1] || ""),
   },
   {
     name: "browser", aliases: [], usage: "/browser [status|close|navigate <url>|screenshot]", category: "Tools",

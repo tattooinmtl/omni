@@ -23,6 +23,7 @@ import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
 import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView } from "../local/neuralview-server.mjs";
+import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 
 export async function main(args) {
@@ -250,6 +251,11 @@ export async function main(args) {
   // system, not a thing the user starts — bind it now, silently, and let
   // /neuralview just open a browser onto whatever's already running.
   startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
+
+  // Hardware profile is used by /llama-start to pick a backend. Cheap
+  // fingerprint check is <5ms; only spawns the real scan when hardware
+  // changed. Fire-and-forget — never blocks the REPL.
+  refreshHardwareProfile();
 
   await startRepl(ctx, { resumeMode });
 }
