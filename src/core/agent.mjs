@@ -1159,18 +1159,34 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         content: typeof result === "string" ? result : JSON.stringify(result),
       });
       // Vision results: a tool returned {_omni_image, mime, base64, detail,
-      // text}. OpenAI-compatible APIs reject image parts inside role:"tool"
-      // messages, so the pixels ride along as a follow-up user message —
-      // text part first (what happened), then the actual image_url part.
-      if (result && typeof result === "object" && result._omni_image && result.base64 && result.mime) {
-        const imagePart = { type: "image_url", image_url: { url: `data:${result.mime};base64,${result.base64}` } };
-        if (result.detail && result.detail !== "auto") imagePart.image_url.detail = result.detail;
+      // text} (one image) or {_omni_images: [{mime, base64}, ...], detail}
+      // (many frames, e.g. from read_video_file). OpenAI-compatible APIs
+      // reject image parts inside role:"tool" messages, so the pixels ride
+      // along as a follow-up user message — text part first, then N
+      // image_url parts.
+      const imageParts = [];
+      if (result && typeof result === "object") {
+        if (result._omni_image && result.base64 && result.mime) {
+          const p = { type: "image_url", image_url: { url: `data:${result.mime};base64,${result.base64}` } };
+          if (result.detail && result.detail !== "auto") p.image_url.detail = result.detail;
+          imageParts.push(p);
+        }
+        if (Array.isArray(result._omni_images)) {
+          for (const img of result._omni_images) {
+            if (!img || !img.base64 || !img.mime) continue;
+            const p = { type: "image_url", image_url: { url: `data:${img.mime};base64,${img.base64}` } };
+            if (result.detail && result.detail !== "auto") p.image_url.detail = result.detail;
+            imageParts.push(p);
+          }
+        }
+      }
+      if (imageParts.length) {
+        const label = imageParts.length === 1
+          ? `[image attached from ${name} — look at it and answer from what you see]`
+          : `[${imageParts.length} frames attached from ${name} — look at them in order and describe what happens]`;
         const visionMsg = {
           role: "user",
-          content: [
-            { type: "text", text: `[image attached from ${name} — look at it and answer from what you see]` },
-            imagePart,
-          ],
+          content: [{ type: "text", text: label }, ...imageParts],
         };
         messages.push(visionMsg);
         session.append({ type: "user", content: visionMsg.content });

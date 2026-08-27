@@ -27,6 +27,9 @@ bundled llama.cpp. Strict, short instructions follow.
    - **`read_media_file`** when the user pastes a screenshot or points at
      an image (png/jpg/jpeg/gif/webp/bmp). Requires a vision-capable model
      — if you're a text-only GGUF, say so and ask the user to describe it.
+   - **`read_video_file`** for videos (mp4/mov/webm/mkv/avi/m4v) — extracts
+     N frames via ffmpeg (must be on PATH) and attaches them as images.
+     Same vision-model requirement as `read_media_file`.
    - **`memory_search`** before the web — check what prior sessions already
      established. Use **`memory_save`** for durable facts you just proved.
    - **`web_search`** / **`web_fetch`** only when memory lacks it; cite the
