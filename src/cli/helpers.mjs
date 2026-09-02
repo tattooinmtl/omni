@@ -56,18 +56,49 @@ export function trimHealthMessage(message) {
   return String(message || "").replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+// Tracks skill-body system messages that were pushed for the CURRENT turn.
+// After runAgentTurns finishes, the REPL calls evictEphemeralSkillMessages()
+// to remove them so the body isn't re-billed on every subsequent turn (the
+// old behavior: a 26KB skill body × 30 tool iterations = 780K tokens billed
+// for one /invoke). Uses a WeakSet so a message dropped from ctx.messages
+// gets garbage-collected without extra bookkeeping.
+const ephemeralSkillMessages = new WeakSet();
+
+export function markEphemeralSkill(message) {
+  if (message && typeof message === "object") ephemeralSkillMessages.add(message);
+}
+
+export function isEphemeralSkill(message) {
+  return ephemeralSkillMessages.has(message);
+}
+
+// Called by the REPL after each user-initiated turn completes. Filters
+// ctx.messages in place, removing any skill-body system messages that were
+// marked ephemeral. Returns the count removed (0 when nothing to do).
+export function evictEphemeralSkillMessages(messages) {
+  if (!Array.isArray(messages)) return 0;
+  let removed = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isEphemeralSkill(messages[i])) {
+      messages.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
+}
+
 // Inject a skill's instructions as a system message, then queue the user's args.
 //
-// contextMode "classic" (default): push the full skill.body as today — the
-// entire SKILL.md rides along on every subsequent turn.
+// The pushed system message is marked ephemeral: it lives for the turn(s)
+// the skill triggers, then the REPL evicts it once the model returns a plain-
+// text answer. This keeps a single-invoke skill from re-billing its 10–26KB
+// body on every subsequent turn of the session.
 //
+// contextMode "classic" (default): push the full skill.body for THIS turn.
 // contextMode "lean" (opt-in): chunk the body by markdown heading, BM25-rank
 // the chunks against the most recent user message (the `arg` if present, or
 // the last user message on the stack), keep the top ~3 chunks / ~1500 chars,
-// and stash the full body so `/expand-skill <name>` can restore it. This is
-// the single biggest source of re-sent tokens for skill-heavy sessions — a
-// 4KB SKILL.md re-sent for 30 tool iterations is 120KB the provider bills
-// on every hop. The classic path is untouched so an A/B is one flag away.
+// and stash the full body so `/expand-skill <name>` can restore it.
 export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   rememberSkillBody(skill);
   const contextMode = opts.contextMode || "classic";
@@ -105,7 +136,9 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   } else {
     systemContent = `# Skill: ${skill.name}\n${skill.body}`;
   }
-  msgs.push({ role: "system", content: systemContent });
+  const skillMsg = { role: "system", content: systemContent };
+  markEphemeralSkill(skillMsg);
+  msgs.push(skillMsg);
   const userMsg = arg
     ? `Run the "${skill.name}" skill. Arguments: ${arg}`
     : `Run the "${skill.name}" skill.`;

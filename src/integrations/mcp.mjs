@@ -431,11 +431,20 @@ function extractText(result) {
   return parts.join("\n");
 }
 
+// Same output-clip convention as tools/index.mjs (MAX_OUTPUT = 30000) — a
+// huge MCP response must not land in context unbounded. Local copy because
+// clip() there isn't exported.
+const MAX_OUTPUT = 30000;
+function clip(s) {
+  s = String(s);
+  return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n…[truncated]" : s;
+}
+
 function formatToolResult(result) {
   if (!result) return "(no result)";
   const text = extractText(result);
-  if (result.isError) return "ERROR: " + (text || JSON.stringify(result));
-  return text || JSON.stringify(result);
+  if (result.isError) return clip("ERROR: " + (text || JSON.stringify(result)));
+  return clip(text || JSON.stringify(result));
 }
 
 // ---- the proxy tool --------------------------------------------------------

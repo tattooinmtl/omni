@@ -158,6 +158,30 @@ function coerceValue(raw, type = "") {
   return t;
 }
 
+// A tag only counts as protocol structure where the canonical emission
+// (serializeToolCall / textToolInstructions) actually places tags: openers at
+// the START of a line, closers at the END of one (stray spaces tolerated).
+// Anywhere else inside a value the tag is literal content — e.g. a write_file
+// payload quoting this very protocol (this file is full of those strings).
+function openerAtLineStart(src, idx) {
+  let i = idx - 1;
+  while (src[i] === " " || src[i] === "\t") i--;
+  return i < 0 || src[i] === "\n" || src[i] === "\r";
+}
+
+function closerAtLineEnd(src, idx) {
+  let j = idx;
+  while (src[j] === " " || src[j] === "\t") j++;
+  return j >= src.length || src[j] === "\n" || src[j] === "\r" || src[j] === "<";
+}
+
+// Reverse the protocol escape: models are told to write a literal closing tag
+// as \</tag> (see textToolInstructions). Only "\</" is rewritten so real-world
+// values like grep '\<word\>' pass through unchanged.
+function unescapeValue(v) {
+  return typeof v === "string" ? v.replace(/\\<\//g, "</") : v;
+}
+
 function normalizeName(raw, registry) {
   const tokens = String(raw || "").match(/[A-Za-z_][\w.-]*/g) || [];
   if (!tokens.length) return null;
@@ -209,9 +233,9 @@ function parseBlock(body, registry) {
     // Resolve the tool name from leading free text before typing any value,
     // so schema-aware coercion works for hybrid forms like "list_dir<path>…".
     if (!name && freeText.trim()) name = normalizeName(freeText, registry);
-    if (mode === "param" && key != null) args[key] = coerceValue(buf, typeOf(key));
+    if (mode === "param" && key != null) args[key] = unescapeValue(coerceValue(buf, typeOf(key)));
     else if (mode === "arg_key") pendingArgKey = buf.trim();
-    else if (mode === "arg_value" && pendingArgKey) args[pendingArgKey] = coerceValue(buf, typeOf(pendingArgKey));
+    else if (mode === "arg_value" && pendingArgKey) args[pendingArgKey] = unescapeValue(coerceValue(buf, typeOf(pendingArgKey)));
     mode = null;
     key = null;
     buf = "";
@@ -227,13 +251,21 @@ function parseBlock(body, registry) {
     const tagLc = tag.toLowerCase();
 
     // Decide whether this tag is protocol structure or literal text content.
+    // Position decides inside a value: a closer terminates only at end-of-line
+    // (where the emitter puts it), an opener starts structure only at
+    // line-start (malformed-call recovery). Mid-line structural tags are
+    // literal payload text. A leading backslash escapes a tag outright.
+    const escaped = src[m.index - 1] === "\\";
     let isProtocol;
     if (closing) {
-      isProtocol =
+      const isCloser =
         STRUCTURAL.has(tagLc) ||
         (mode === "param" && key !== null && tagLc === key.toLowerCase());
+      isProtocol = isCloser && !escaped && (mode === null || closerAtLineEnd(src, tagRe.lastIndex));
+    } else if (escaped) {
+      isProtocol = false;
     } else if (STRUCTURAL.has(tagLc) || attr) {
-      isProtocol = true;
+      isProtocol = mode === null || openerAtLineStart(src, m.index);
     } else if (mode === null) {
       // Bare `<key>` opener: accept when it names a known parameter of the
       // resolved tool, or when the tool is unknown/has no schema.
@@ -303,6 +335,16 @@ function parseBlock(body, registry) {
   return { name, args };
 }
 
+// The envelope close only appears at the start of a line or right after
+// another closing tag / JSON body — never mid-line. A "</tool_call>" anywhere
+// else is literal string content, and "\</tool_call>" is an escaped literal.
+function isEnvelopeClose(src, idx) {
+  if (src[idx - 1] === "\\") return false;
+  const prev = src[idx - 1] ?? "";
+  if (prev !== "\n" && prev !== "\r" && prev !== ">" && prev !== "}") return false;
+  return closerAtLineEnd(src, idx + "</tool_call>".length);
+}
+
 // Parse assistant text into OpenAI-format tool_calls. Handles closed and
 // UNCLOSED <tool_call> envelopes plus bare <function=…> blocks.
 export function parseTextToolCalls(content, registry = null) {
@@ -311,16 +353,27 @@ export function parseTextToolCalls(content, registry = null) {
   if (!src.includes("<")) return calls;
 
   const blocks = [];
-  const closedRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
   let rest = "";
   let cursor = 0;
   let m;
-  while ((m = closedRe.exec(src)) !== null) {
-    rest += src.slice(cursor, m.index) + "\n";
-    blocks.push(m[1]);
-    cursor = closedRe.lastIndex;
+  for (;;) {
+    const open = src.indexOf("<tool_call>", cursor);
+    if (open === -1) { rest += src.slice(cursor); break; }
+    const bodyStart = open + "<tool_call>".length;
+    let close = -1;
+    let scan = bodyStart;
+    // Skip literal "</tool_call>" occurrences inside values; only a close in
+    // protocol position terminates the block.
+    while ((scan = src.indexOf("</tool_call>", scan)) !== -1) {
+      if (isEnvelopeClose(src, scan)) { close = scan; break; }
+      scan += 1;
+    }
+    // No valid close: the unclosed-envelope split below takes over.
+    if (close === -1) { rest += src.slice(cursor); break; }
+    rest += src.slice(cursor, open) + "\n";
+    blocks.push(src.slice(bodyStart, close));
+    cursor = close + "</tool_call>".length;
   }
-  rest += src.slice(cursor);
 
   // Unclosed envelopes: everything after each remaining <tool_call> opener.
   const openParts = rest.split("<tool_call>");
@@ -378,6 +431,7 @@ export function textToolInstructions(toolDefs) {
     "Rules:",
     "- One <parameter=NAME>VALUE</parameter> line per argument; NAME is the argument name from the schema.",
     "- Plain string values are written as-is (no quotes). Booleans, numbers, arrays, and objects are written as JSON.",
+    "- Values may contain other tags (HTML, XML) as-is. But if a value must contain a literal PROTOCOL closing tag (</parameter>, </function>, </tool_call>), escape it as \\</parameter> — the parser restores it.",
     "- Emit the tool call at the END of your message and output NOTHING after </tool_call>.",
     "- To call several tools at once, emit several complete <tool_call> blocks.",
     "- Never invent tool names. Never describe or explain the tool call.",
@@ -399,6 +453,7 @@ export function recoveryMessage() {
     "<parameter=argument_name>value</parameter>",
     "</function>",
     "</tool_call>",
+    "If a value must contain a literal closing tag like </parameter>, escape it as \\</parameter>.",
     "Output only the corrected <tool_call> block(s) — no other text.",
   ].join("\n");
 }

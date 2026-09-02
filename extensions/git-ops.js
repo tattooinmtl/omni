@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
+import { resolveContained } from "./file-tools.js";
 
 const MAX_OUTPUT = 30000;
 function clip(s) {
@@ -113,7 +113,7 @@ export default {
         name: "git_clone",
         description:
           "Clone a remote repository into a local directory. " +
-          "Wraps `git clone`. The clone happens inside the CURRENT workspace directory unless dest is absolute.",
+          "Wraps `git clone`. The clone destination must stay inside the current workspace directory.",
         parameters: {
           type: "object",
           properties: {
@@ -360,7 +360,10 @@ export default {
       args.push(url);
       if (dest) {
         assertSafeName(dest, "dest");
-        args.push(dest);
+        // Contain the destination to the workspace (lexical + symlink check,
+        // same resolver as the file tools) — `dest: "../../somewhere"` used
+        // to create directories anywhere on disk.
+        args.push(resolveContained(dest));
       }
       const out = runGit(args, process.cwd(), 300000); // 5 min for large repos
       return out || `Cloned ${url}`;
@@ -476,7 +479,10 @@ export default {
 
     // ── Init & misc ──────────────────────────────────────────────────
     git_init({ path: p = ".", initial_branch } = {}) {
-      const cwd = path.resolve(process.cwd(), p);
+      // Contain the target directory to the workspace (lexical + symlink
+      // check, same resolver as the file tools) — `path: "../../somewhere"`
+      // used to create + init directories anywhere on disk.
+      const cwd = resolveContained(p);
       if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
       const args = ["init"];
       if (initial_branch) {

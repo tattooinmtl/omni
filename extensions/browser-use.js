@@ -7,7 +7,7 @@
 // Tools exposed (one BrowserSession, lazily spawned on first call, kept warm
 // across turns, killed on process exit):
 //   browser_navigate    url                  go to a URL, wait for load
-//   browser_screenshot  [path]               capture viewport as PNG
+//   browser_screenshot  [path]               capture viewport as PNG (path must stay in workspace or %TEMP%)
 //   browser_get_text    [selector]           visible text (whole page or selector match)
 //   browser_get_html    [selector]           innerHTML of element (or full page)
 //   browser_extract     selector             array of textContent for each match
@@ -30,6 +30,7 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import dns from "node:dns/promises";
 import net from "node:net";
+import { resolveContained } from "./file-tools.js";
 
 const BROWSER_CANDIDATES = [
   process.env.OMNI_BROWSER_EXE,
@@ -292,13 +293,15 @@ class BrowserSession {
   }
 
   async screenshot({ path: outPath } = {}) {
+    // Contain a model-supplied output path BEFORE spawning the browser:
+    // workspace root or the OS temp dir only (same lexical + symlink
+    // containment as the core write tools, via file-tools' resolver).
+    const file = outPath
+      ? resolveContained(outPath, { roots: [process.cwd(), os.tmpdir()] })
+      : path.join(os.tmpdir(), `omni-screenshot-${Date.now()}.png`);
     await this._spawn();
     const { data } = await this._send("Page.captureScreenshot", { format: "png" });
     const buf = Buffer.from(data, "base64");
-    let file = outPath;
-    if (!file) {
-      file = path.join(os.tmpdir(), `omni-screenshot-${Date.now()}.png`);
-    }
     await fs.writeFile(file, buf);
     return { path: file, bytes: buf.length };
   }
@@ -428,7 +431,7 @@ export default {
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Output file path (default: a temp file under %TEMP%)" },
+            path: { type: "string", description: "Output file path — must stay inside the workspace or %TEMP% (default: a temp file under %TEMP%)" },
           },
         },
       },

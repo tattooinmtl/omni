@@ -55,7 +55,9 @@ function isBlockedIp(ip) {
   return false;
 }
 
-async function assertPublicUrl(urlStr) {
+// Exported (with safeFetch below) so http-request.js reuses this single
+// SSRF-guard implementation instead of growing a divergent copy.
+export async function assertPublicUrl(urlStr) {
   const u = new URL(urlStr);
   if (u.protocol !== "http:" && u.protocol !== "https:") {
     throw new Error(`unsupported protocol: ${u.protocol}`);
@@ -84,7 +86,7 @@ async function assertPublicUrl(urlStr) {
 // fetch() with redirect:"follow" validates only the FIRST url — a redirect to
 // an internal address would sail through unchecked. Follow redirects
 // ourselves, one hop at a time, re-validating every target.
-async function safeFetch(url, options, maxRedirects = 5) {
+export async function safeFetch(url, options, maxRedirects = 5) {
   let current = url;
   for (let i = 0; i <= maxRedirects; i++) {
     await assertPublicUrl(current);

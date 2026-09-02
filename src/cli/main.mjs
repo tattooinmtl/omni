@@ -3,7 +3,7 @@
 
 import { c, infoLine, warnLine, errorLine, costLine, shutdown } from "../ui.mjs";
 import {
-  loadSettings, saveSettings, resolveModel, setProviderKey, Session,
+  loadSettings, saveSettings, resolveModel, setProviderKey, Session, turnMaxIterations,
 } from "../core/config.mjs";
 import { runTurn } from "../core/agent.mjs";
 import { registerExtensions, memoryPreamble, setSessionCtx } from "../tools/index.mjs";
@@ -186,7 +186,6 @@ export async function main(args) {
     model,
     messages,
     session,
-    maxIterations: model.maxToolIterations ?? settings.maxToolIterations ?? 30,
     diffPreview: settings.diffPreview ?? true,
     activePersona: null,
     routeMode: routerCfg.mode || "auto",
@@ -234,7 +233,7 @@ export async function main(args) {
       settings,
       messages,
       session,
-      maxIterations: ctx.maxIterations,
+      maxIterations: turnMaxIterations(ctx.model, ctx.settings),
       persona: ctx.activePersona,
       signal: ctx.currentAbort.signal,
       permissions: settings.permissions,

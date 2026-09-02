@@ -1,5 +1,7 @@
 // Regression test for the per-model maxToolIterations fix.
-// minimax.io allows 200 calls per 5 hours; everything else defaults to 30.
+// Calibrated per-provider caps (confirmed against official docs):
+// minimax 200 calls/5h, xai unmetered (200 as runaway guard), kimi 100 RPM
+// at Tier1, nvidia 40/h, agnes/openrouter/groq 30, everything else 30.
 // Previously this was hardcoded to 30 in DEFAULT_SETTINGS, which cut
 // minimax sessions short on long edit/refactor tasks.
 //
@@ -145,7 +147,7 @@ ok("user-saved provider names reach the right cap via the name-based fallback", 
   // The real test of the fix: a user whose settings.json has a provider
   // called just "nvidia" / "agnes" / "openrouter" (NOT the canonical
   // "nvidia" or whatever the defaults use) still gets the right cap.
-  for (const [providerName, expected] of [["nvidia", 40], ["agnes", 30], ["openrouter", 30]]) {
+  for (const [providerName, expected] of [["nvidia", 40], ["agnes", 30], ["openrouter", 30], ["kimi", 100], ["moonshot", 100], ["xai", 200], ["groq", 30]]) {
     const m = resolveModel({
       defaultModel: `${providerName}/some-model`, reasoning: "medium", maxToolIterations: 30,
       providers: { [providerName]: { baseUrl: "https://x", apiKey: "k" } },
@@ -153,6 +155,27 @@ ok("user-saved provider names reach the right cap via the name-based fallback", 
     }, `${providerName}/some-model`);
     assert.equal(m.maxToolIterations, expected, `${providerName} should be ${expected}, got ${m.maxToolIterations}`);
   }
+});
+
+// --- Sticky-session regression --------------------------------------------
+// The REPL used to freeze maxIterations in ctx at startup from the LAUNCH
+// model; /model swapped ctx.model but nothing re-resolved the cap, so a
+// session launched on nvidia (40) kept stopping at 40 after switching to
+// minimax or kimi. The cap must be re-read from the CURRENT model every turn.
+const { turnMaxIterations } = await import(u("core/config.mjs"));
+
+ok("turnMaxIterations follows the current model, not the launch model", () => {
+  const s = makeSettings();
+  const launch = resolveModel(s, "nvidia/glm-5.2");
+  assert.equal(turnMaxIterations(launch, s), 40);
+  const switched = resolveModel(s, "minimax.io/m3");
+  assert.equal(turnMaxIterations(switched, s), 200, "after /model the new model's cap must apply");
+});
+
+ok("turnMaxIterations falls back to settings, then 30", () => {
+  assert.equal(turnMaxIterations({}, { maxToolIterations: 50 }), 50);
+  assert.equal(turnMaxIterations({}, {}), 30);
+  assert.equal(turnMaxIterations(null, null), 30);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

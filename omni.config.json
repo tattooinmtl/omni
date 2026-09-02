@@ -7,7 +7,8 @@
     "extensions/web-search.js",
     "extensions/browser-use.js",
     "extensions/vision-tools.js",
-    "extensions/git-ops.js"
+    "extensions/git-ops.js",
+    "extensions/http-request.js"
   ],
   "skills": [
     "skills/code-review",

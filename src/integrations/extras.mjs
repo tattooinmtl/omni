@@ -259,37 +259,34 @@ export function buildSystemPrompt(config, skills) {
   return base + "\n" + ctx + sk;
 }
 
-// Group skills by category (TODO #1 — was a flat one-line-per-skill list
-// that ran ~150 chars per skill for every turn). The list still shows the
-// command + a one-line description so the model can pick a slash command,
-// but it's now organised into sections the model can scan top-down rather
-// than linearly. Skill bodies are NOT included — those load only when the
-// user (or the dispatcher blurb in the prompt) invokes the skill.
+// skills-master stub. Previously this dumped every skill (command + one-line
+// description) grouped by category — ~24KB / ~6K tokens shipped on EVERY turn
+// regardless of what the model was doing. That drowned attention and burned
+// context budget. Now: one small block naming the total, the category list,
+// and the two tools the model uses to discover/invoke a skill on demand.
+// Skill bodies still load via /<cmd> or find_skill → invoke_skill, and they
+// are evicted after the turn so a session never carries multiple full bodies.
 function renderSkillsSection(skills) {
+  if (!skills || !skills.length) return "";
   const byCategory = new Map();
   for (const s of skills) {
     const cat = s.category || "Other";
     if (!byCategory.has(cat)) byCategory.set(cat, []);
     byCategory.get(cat).push(s);
   }
-  const sortedCats = [...byCategory.keys()].sort((a, b) => {
-    // "Process skills" first (the superpowers-style workflow skills live
-    // there; they're the most relevant to every task), then everything else
-    // alphabetically. "Other" last.
+  const cats = [...byCategory.keys()].sort((a, b) => {
     if (a === "Process skills") return -1;
     if (b === "Process skills") return 1;
     if (a === "Other") return 1;
     if (b === "Other") return -1;
     return a.localeCompare(b);
   });
-  const lines = [
+  const catLine = cats.map((c) => `${c} (${byCategory.get(c).length})`).join(", ");
+  return [
     "# Skills",
-    "The user can invoke these with slash commands. When invoked, you'll be given the skill's full instructions. Pick the category that matches the task and scan its section before improvising.",
-  ];
-  for (const cat of sortedCats) {
-    const items = byCategory.get(cat).sort((a, b) => a.command.localeCompare(b.command));
-    lines.push("", `## ${cat}`);
-    for (const s of items) lines.push(`- ${s.command} — ${s.description}`);
-  }
-  return lines.join("\n");
+    `${skills.length} skills available across ${cats.length} categories: ${catLine}.`,
+    "Skill bodies are NOT loaded ambiently — call find_skill(query) to search descriptions,",
+    "then the user or you can invoke one with /<command>. The skill body is loaded only",
+    "for the invocation turn and evicted afterward, so it never persists across turns.",
+  ].join("\n");
 }

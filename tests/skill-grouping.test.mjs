@@ -1,8 +1,11 @@
-// Regression tests for the skill-loading changes requested by the user:
-//   1) Skills in the system prompt are grouped by category (not a flat list)
-//   3) The default system prompt carries a dispatcher blurb so the model
-//      routes to skills on its own instead of needing /using-superpowers
-//      to be invoked manually first.
+// Regression tests for the skill catalog rendering.
+//
+// Prior versions dumped every skill (grouped by category) into the system
+// prompt on every turn — ~24KB / ~6K tokens billed per hop regardless of
+// what the model was doing. The current design replaces that with a tiny
+// "skills-master" stub: total count, category summary, and a pointer to
+// find_skill for on-demand lookup. Skill bodies load only via /<cmd> and
+// are turn-scoped (see applySkill / evictEphemeralSkillMessages).
 //
 // Run: node tests/skill-grouping.test.mjs
 
@@ -22,8 +25,6 @@ const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z
 const root = path.join(here, "..");
 const u = (p) => pathToFileURL(path.join(root, "src", p)).href;
 
-// Set up an isolated HOME so the test doesn't pick up the real user-scope
-// skills (~/.agents/skills etc.) and so we can install a fake one.
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-skill-grouping-"));
 process.env.OMNI_HOME = tmpHome;
 
@@ -31,89 +32,81 @@ const extrasMod = await import(u("integrations/extras.mjs"));
 const { loadSkills, buildSystemPrompt } = extrasMod;
 
 // ============================================================================
-// #1 — skills are grouped by category in the system prompt
+// Skill loading still assigns categories (used by find_skill and the stub)
 // ============================================================================
 
 await ok("loadSkills() assigns each built-in skill a category derived from its dir under skills/", () => {
-  // The actual installed layout uses 2-segment paths for many skills
-  // (e.g. skills/languages/bash-coding) and 1-segment for single-skill
-  // categories (e.g. skills/code-review). Both should resolve to a sensible
-  // category from the first segment.
   const bashSkill = extrasMod.loadSkills({ autoDiscoverSkills: true, skills: ["skills/languages/bash-coding"] })[0];
   const subSkill = extrasMod.loadSkills({ autoDiscoverSkills: true, skills: ["skills/agent-orchestration/launch-subagent"] })[0];
   assert.ok(bashSkill, "expected bash-coding to load");
   assert.ok(subSkill, "expected sub-skill to load");
-  // bash-coding lives at skills/languages/bash-coding → category "Languages".
-  assert.equal(bashSkill.category, "Languages", `bash-coding category was ${bashSkill.category}`);
-  assert.equal(subSkill.category, "Agent Orchestration", `sub-skill category was ${subSkill.category}`);
+  assert.equal(bashSkill.category, "Languages");
+  assert.equal(subSkill.category, "Agent Orchestration");
 });
 
-await ok("buildSystemPrompt groups skills under ## headers (one per category), not a flat list", () => {
+// ============================================================================
+// The skills catalog block is now a tiny stub, not a per-skill listing
+// ============================================================================
+
+await ok("system prompt no longer lists each skill's command inline", () => {
   const skills = [
     { name: "a-skill", command: "/a-skill", description: "an A skill", body: "x", dir: "/tmp/a", category: "Alpha" },
     { name: "b-skill", command: "/b-skill", description: "a B skill", body: "x", dir: "/tmp/b", category: "Alpha" },
     { name: "c-skill", command: "/c-skill", description: "a C skill", body: "x", dir: "/tmp/c", category: "Beta" },
   ];
   const out = buildSystemPrompt({}, skills);
-  // Section headers present, in the right shape.
-  assert.ok(out.includes("## Alpha"), `output missing '## Alpha':\n${out}`);
-  assert.ok(out.includes("## Beta"), `output missing '## Beta':\n${out}`);
-  // Per-category entries are below their header, not in one big bucket.
-  const alphaIdx = out.indexOf("## Alpha");
-  const betaIdx = out.indexOf("## Beta");
-  const aCmd = out.indexOf("/a-skill");
-  const bCmd = out.indexOf("/b-skill");
-  const cCmd = out.indexOf("/c-skill");
-  assert.ok(aCmd > alphaIdx && aCmd < betaIdx, "/a-skill should sit under ## Alpha, before ## Beta");
-  assert.ok(bCmd > alphaIdx && bCmd < betaIdx, "/b-skill should sit under ## Alpha");
-  assert.ok(cCmd > betaIdx, "/c-skill should sit under ## Beta");
+  // Total count is present so the model knows the pool exists.
+  assert.ok(out.includes("3 skills"), `expected total count in stub:\n${out}`);
+  // Categories mentioned in the summary line (Alpha (2), Beta (1)).
+  assert.ok(out.includes("Alpha (2)"), `expected 'Alpha (2)' summary:\n${out}`);
+  assert.ok(out.includes("Beta (1)"), `expected 'Beta (1)' summary:\n${out}`);
+  // But NOT every command/description as its own line — that's the old bloat.
+  assert.ok(!out.includes("/a-skill"), `/a-skill should NOT be inlined:\n${out}`);
+  assert.ok(!out.includes("/b-skill"), `/b-skill should NOT be inlined:\n${out}`);
+  assert.ok(!out.includes("an A skill"), `descriptions should NOT be inlined:\n${out}`);
 });
 
-await ok("'Process skills' is the first section (superpowers-style workflow skills surface first)", () => {
+await ok("skill bodies never leak into the system prompt", () => {
   const skills = [
-    { name: "x", command: "/x", description: "x", body: "x", dir: "/tmp", category: "Alpha" },
-    { name: "y", command: "/y", description: "y", body: "x", dir: "/tmp", category: "Process skills" },
+    { name: "leaky", command: "/leaky", description: "d", body: "THIS BODY MUST NOT APPEAR", dir: "/tmp", category: "Alpha" },
   ];
   const out = buildSystemPrompt({}, skills);
-  const processIdx = out.indexOf("## Process skills");
-  const alphaIdx = out.indexOf("## Alpha");
-  assert.ok(processIdx > 0 && alphaIdx > 0, "both sections should render");
-  assert.ok(processIdx < alphaIdx, "Process skills must precede Alpha");
+  assert.ok(!out.includes("THIS BODY MUST NOT APPEAR"), "skill body leaked into system prompt");
 });
 
-await ok("no skill body leaks into the system prompt (only command + description)", () => {
-  const skills = [
-    { name: "leaky", command: "/leaky", description: "this is the description", body: "THIS BODY MUST NOT APPEAR IN THE SYSTEM PROMPT", dir: "/tmp", category: "Alpha" },
-  ];
+await ok("skills-master stub stays small — one-line category summary, not a wall of text", () => {
+  // Build a large synthetic skill set and confirm the block stays tiny.
+  const skills = [];
+  for (let i = 0; i < 200; i++) {
+    skills.push({
+      name: `s${i}`,
+      command: `/s${i}`,
+      description: `description for skill ${i} ${"long ".repeat(20)}`,
+      body: "not shown",
+      dir: "/tmp",
+      category: `Cat${i % 45}`,
+    });
+  }
   const out = buildSystemPrompt({}, skills);
-  assert.ok(!out.includes("THIS BODY MUST NOT APPEAR"), `skill body leaked into system prompt:\n${out}`);
-  assert.ok(out.includes("this is the description"), `description missing:\n${out}`);
+  const skillsBlockStart = out.indexOf("# Skills");
+  const skillsBlock = skillsBlockStart >= 0 ? out.slice(skillsBlockStart) : "";
+  assert.ok(skillsBlock.length > 0, "expected a # Skills block");
+  // Old rendering with 200 skills was well over 30KB. New stub must be <2KB.
+  assert.ok(skillsBlock.length < 2000, `skills block too large (${skillsBlock.length} chars) — stub should stay under 2KB`);
+  assert.ok(skillsBlock.includes("200 skills"), "stub should announce the total count");
+  assert.ok(skillsBlock.includes("find_skill"), "stub should point at find_skill for on-demand discovery");
 });
 
 // ============================================================================
-// #3 — default system prompt carries a dispatcher blurb
+// Default dispatcher blurb still nudges the model toward skills
 // ============================================================================
 
 await ok("the default system prompt includes a concise 'Skill invocation' dispatcher blurb", () => {
-  // buildSystemPrompt with no skills still picks up the prompt file or the
-  // agent.mjs fallback. Both carry the same concise dispatcher blurb —
-  // the categorized skill list (also rendered) carries the routing detail,
-  // so the prose stays short (~280 chars vs the verbose version that was
-  // here before). Quality of skill invocations doesn't degrade because the
-  // categorized list is right below the blurb in the same system message.
   const out = buildSystemPrompt({}, []);
   assert.ok(/Skill invocation/i.test(out), `output missing 'Skill invocation' blurb:\n${out.slice(0, 800)}…`);
-  assert.ok(/find-skills/i.test(out), `blurb should mention /find-skills as the discover path:\n${out.slice(0, 800)}…`);
-  assert.ok(/using-superpowers/i.test(out), `blurb should reference /using-superpowers:\n${out.slice(0, 800)}…`);
-  // The blurb is intentionally concise — make sure we haven't bloated it
-  // back to the verbose multi-paragraph version.
   const blurbSlice = out.slice(out.indexOf("# Skill invocation"), out.indexOf("# Skills") >= 0 ? out.indexOf("# Skills") : undefined);
   assert.ok(blurbSlice.length < 600, `dispatcher blurb is too verbose: ${blurbSlice.length} chars — should be < 600`);
 });
-
-// ============================================================================
-// cleanup
-// ============================================================================
 
 fs.rmSync(tmpHome, { recursive: true, force: true });
 

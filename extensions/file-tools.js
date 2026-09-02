@@ -5,18 +5,18 @@
 import fs from "node:fs";
 import path from "node:path";
 
-function resolve(p) {
-  const root = path.resolve(process.cwd());
+// Two-layer containment check against one root: lexical (path.relative)
+// first, then realpath — a symlink inside the workspace can point outside
+// it, so resolve realpaths (walking up past any path segment that doesn't
+// exist yet, e.g. a file about to be created) and check containment again
+// against the real, symlink-resolved locations. Throws if `p` escapes.
+function resolveUnder(root, p) {
   const full = path.resolve(root, p);
   const rel = path.relative(root, full);
   if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) {
     throw new Error(`path escapes workspace: ${rel || full}`);
   }
 
-  // Lexical containment isn't enough — a symlink inside the workspace can
-  // point outside it. Resolve realpaths (walking up past any path segment
-  // that doesn't exist yet, e.g. a file about to be created) and check
-  // containment again against the real, symlink-resolved locations.
   const realRoot = fs.realpathSync(root);
   let dir = full;
   let suffix = "";
@@ -39,6 +39,26 @@ function resolve(p) {
     throw new Error(`path escapes workspace via a symlink: ${rel || full}`);
   }
   return full;
+}
+
+// Containment resolver shared with the other extensions (browser-use and
+// git-ops import it). A path is accepted when it stays inside ANY of
+// `roots` (default: just the workspace root) — e.g. browser_screenshot
+// additionally allows os.tmpdir().
+export function resolveContained(p, { roots = [process.cwd()] } = {}) {
+  let lastErr;
+  for (const root of roots) {
+    try {
+      return resolveUnder(path.resolve(root), p);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+function resolve(p) {
+  return resolveContained(p);
 }
 
 export default {

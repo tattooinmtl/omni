@@ -726,15 +726,19 @@ async function checkPermission(name, summary, permissions, confirmTool) {
   return { allowed: false, message: `DENIED: the user declined the "${name}" tool call.` };
 }
 
-// Extra gate for run_shell/start_process commands matching a high-risk pattern
-// (registry edits, persistence, firewall/boot changes, irreversible deletes —
-// see commandRisk in tools/index.mjs). Independent of the tool's configured
-// permission state: even "allow" doesn't skip this, and the model can't
-// self-authorize past it by passing allow_unsafe — only a human answering the
-// confirm prompt can. No confirmTool (non-interactive session) means no human
-// to ask, so it's denied rather than silently allowed.
-async function checkCommandRisk(name, args, confirmTool) {
-  if (name !== "run_shell" && name !== "start_process") return null;
+// Extra gate for run_shell/run_test/start_process commands matching a
+// high-risk pattern (registry edits, persistence, firewall/boot changes,
+// irreversible deletes — see commandRisk in tools/index.mjs). Independent of
+// the tool's configured permission state: even "allow" doesn't skip this, and
+// the model can't self-authorize past it by passing allow_unsafe — only a
+// human answering the confirm prompt can. No confirmTool (non-interactive
+// session) means no human to ask, so it's denied rather than silently
+// allowed. run_test is gated too: it shares runShellCommand with run_shell
+// and its schema exposes allow_unsafe, so without this it was a straight
+// bypass of the human gate.
+// Exported for testing (tests/agent-risk-gate.test.mjs).
+export async function checkCommandRisk(name, args, confirmTool) {
+  if (name !== "run_shell" && name !== "run_test" && name !== "start_process") return null;
   const risk = commandRisk(args?.command);
   if (risk.level !== "blocked") return null;
   if (!confirmTool) {
@@ -856,10 +860,12 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
 
       if (useTemplate) {
         // Render the full message history through the provider's Jinja2 template,
-        // then send as a raw prompt to /v1/completions.
+        // then send as a raw prompt to /v1/completions. Image parts are swapped
+        // for text notes first — the qwythos template emits bare <|image_pad|>
+        // placeholders with no pixel data, so the model would hallucinate.
         let prompt;
         try {
-          prompt = await renderTemplate(model.chatTemplate, messages, tools);
+          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages), tools);
         } catch (e) {
           stopStatus();
           errorLine(`Template render failed: ${e.message}`);
@@ -1153,9 +1159,13 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     for (const { call, name, args, result } of toolResults) {
       toolResultLine(result);
       session.append({ type: "tool", name, args, result, tool_call_id: call.id });
+      // name rides along so messagesWithTextTools can label the block
+      // ("Tool result (grep): ...") — without it, parallel tool batches
+      // render as anonymous "Tool result:" blocks on text-tool providers.
       messages.push({
         role: "tool",
         tool_call_id: call.id,
+        name,
         content: typeof result === "string" ? result : JSON.stringify(result),
       });
       // Vision results: a tool returned {_omni_image, mime, base64, detail,

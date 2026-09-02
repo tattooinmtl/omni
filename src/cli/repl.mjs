@@ -7,14 +7,14 @@ import {
   promptTop, promptBottom, statusBar, setPersonaIndicator,
 } from "../ui.mjs";
 import { runTurn } from "../core/agent.mjs";
-import { Session } from "../core/config.mjs";
+import { Session, turnMaxIterations } from "../core/config.mjs";
 import { disconnectAll, setMcpConfirm } from "../integrations/mcp.mjs";
 import { disconnectBridge } from "../integrations/bridge.mjs";
 import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
 import { classifyIntent, killSidecar } from "../integrations/router.mjs";
 import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
-import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint } from "./helpers.mjs";
+import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
@@ -132,7 +132,17 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     },
   });
   ctx.rl = rl;
-  const canBracketPaste = process.stdin.isTTY && process.stdout.isTTY;
+  // Bracketed paste: on POSIX terminals this lets us disambiguate real paste
+  // from typed input. On Windows Terminal / ConHost, however, several stacks
+  // in the readline path (Node's own line editor + downstream renderers) re-
+  // emit the wrapped payload, so a typed line visibly repeats on submit —
+  // the "prompt printed twice" bug. Default off on win32; opt back in with
+  // OMNI_BRACKET_PASTE=1 for a POSIX shell running on Windows (WSL, Git Bash
+  // on some setups) where the sequence does behave correctly.
+  const bracketPasteOptIn = process.env.OMNI_BRACKET_PASTE === "1";
+  const canBracketPaste =
+    process.stdin.isTTY && process.stdout.isTTY &&
+    (process.platform !== "win32" || bracketPasteOptIn);
   if (canBracketPaste) process.stdout.write(BRACKET_PASTE_ON);
 
   // Ctrl-C interrupt: wired to BOTH process and rl (rl.pause() mutes rl's
@@ -345,7 +355,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         settings: ctx.settings,
         messages: ctx.messages,
         session: ctx.session,
-        maxIterations: ctx.maxIterations,
+        maxIterations: turnMaxIterations(ctx.model, ctx.settings),
         diffPreview: ctx.diffPreview,
         persona: ctx.activePersona,
         signal: ctx.currentAbort.signal,
@@ -372,6 +382,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       }
     }
     stopInterruptWatch();
+    // Turn-scoped skill bodies (see applySkill / markEphemeralSkill in
+    // helpers.mjs) live only for the turn(s) triggered by /<skill>. Once the
+    // model returns a plain-text answer, drop them so a 10–26KB SKILL.md
+    // isn't re-billed on every subsequent turn of the session.
+    evictEphemeralSkillMessages(ctx.messages);
     console.log("");
     clearPendingInput();
     // The REPL may have closed while the turn ran (stdin EOF, /exit) —

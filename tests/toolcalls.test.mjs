@@ -84,6 +84,56 @@ check("invoke style",
   `<tool_call><invoke name="read_file"><parameter=path>x.js</parameter></invoke></tool_call>`,
   [{ name: "read_file", args: { path: "x.js" } }]);
 
+// 13. Literal </parameter> mid-value survives (canonical form): the emitter
+// only places </parameter> at end-of-line, so a mid-line one is content.
+check("literal </parameter> mid-value (canonical)",
+  `<tool_call>\n<function=write_file>\n<parameter=path>a.txt</parameter>\n<parameter=content>line1\nline2 </parameter> tricky</parameter>\n</function>\n</tool_call>`,
+  [{ name: "write_file", args: { path: "a.txt", content: "line1\nline2 </parameter> tricky" } }]);
+
+// 14. Literal </parameter> inside a Qwen JSON string value.
+check("literal </parameter> mid-value (Qwen JSON)",
+  `<tool_call>\n{"name": "write_file", "arguments": {"path": "y.js", "content": "a </parameter> b"}}\n</tool_call>`,
+  [{ name: "write_file", args: { path: "y.js", content: "a </parameter> b" } }]);
+
+// 15. Literal </tool_call> inside a Qwen JSON string no longer swallows the args.
+check("literal </tool_call> mid-value (Qwen JSON)",
+  `<tool_call>\n{"name": "write_file", "arguments": {"path": "x.js", "content": "alpha</tool_call> beta"}}\n</tool_call>`,
+  [{ name: "write_file", args: { path: "x.js", content: "alpha</tool_call> beta" } }]);
+
+// 16. Literal </tool_call> mid-value in the canonical tag form.
+check("literal </tool_call> mid-value (canonical)",
+  `<tool_call>\n<function=write_file>\n<parameter=path>b.txt</parameter>\n<parameter=content>foo </tool_call> bar</parameter>\n</function>\n</tool_call>`,
+  [{ name: "write_file", args: { path: "b.txt", content: "foo </tool_call> bar" } }]);
+
+// 17. Realistic payload: a snippet of this parser's own source written via
+// write_file — full of protocol-looking tags inside regexes and strings.
+const parserSnippet = [
+  "// Does the content look like the model attempted a tool call at all?",
+  "export function hasToolIntent(content) {",
+  "  return /<tool_call|<function\\s*=|<arg_key>|<parameter\\s*=|<invoke\\b/i.test(String(content || \"\"));",
+  "}",
+  "export function stripToolCallText(content) {",
+  "  let s = String(content || \"\");",
+  "  s = s.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, \"\");",
+  "  s = s.replace(/<function\\s*=[^>]*>[\\s\\S]*?(?:<\\/function>|$)/g, \"\");",
+  "  return s;",
+  "}",
+].join("\n");
+check("write_file payload of this parser's own source",
+  `<tool_call>\n<function=write_file>\n<parameter=path>src/core/toolcalls.mjs</parameter>\n<parameter=content>${parserSnippet}</parameter>\n</function>\n</tool_call>`,
+  [{ name: "write_file", args: { path: "src/core/toolcalls.mjs", content: parserSnippet } }]);
+
+// 18. Escape convention round-trip: \</parameter> survives even at end-of-line,
+// where a bare tag would look like a terminator.
+check("escaped \\</parameter> round-trip",
+  `<tool_call>\n<function=write_file>\n<parameter=path>c.txt</parameter>\n<parameter=content>line1\nliteral \\</parameter>\nline3</parameter>\n</function>\n</tool_call>`,
+  [{ name: "write_file", args: { path: "c.txt", content: "line1\nliteral </parameter>\nline3" } }]);
+
+// 19. Escaped \</tool_call> neither closes the envelope nor loses the backslash fix.
+check("escaped \\</tool_call> round-trip",
+  `<tool_call>\n<function=write_file>\n<parameter=path>d.txt</parameter>\n<parameter=content>alpha \\</tool_call>\nomega</parameter>\n</function>\n</tool_call>`,
+  [{ name: "write_file", args: { path: "d.txt", content: "alpha </tool_call>\nomega" } }]);
+
 checkBool("intent detect", hasToolIntent("<tool_call>garbage") === true);
 checkBool("intent negative", hasToolIntent("normal text") === false);
 checkBool("strip removes closed + unclosed blocks",

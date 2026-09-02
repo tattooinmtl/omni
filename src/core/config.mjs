@@ -628,11 +628,20 @@ export function resolveModel(settings, modelKey) {
 // but a user who picked a provider via /addprovider without that field in
 // DEFAULT_SETTINGS still needs the right cap).
 //
-// Per-provider rate limits (as confirmed against the live APIs):
+// Per-provider rate limits (as confirmed against the live APIs/docs):
 //   minimax      200 calls / 5 hours
+//   xai          no binding request limit even at Tier 0 (≥37 RPS, no daily
+//                cap — docs.x.ai/docs/rate-limits); 200 is a runaway-cost
+//                guard, not 429 avoidance
+//   kimi/moonshot 100 RPM at Tier1 ($10 recharge, the realistic agent floor),
+//                no hourly/daily request quota at Tier1+; Tier0 (3 RPM) just
+//                degrades into 429-backoff — there is no quota to exhaust
 //   nvidia        40 calls / hour (well below 200/5hr ≈ 40/hr scaled)
 //   agnes         30 calls / hour
 //   openrouter    30 calls / hour
+//   groq          30 RPM + 1,000 RPD free tier (token caps bind before
+//                request counts); dev tier is 1,000 RPM — set the field on
+//                the provider entry if you're on it
 //   everything else 30
 // Order: most specific first (minimax before nvidia, so a hypothetical
 // "minimax-via-nvidia" still gets 200).
@@ -640,9 +649,12 @@ function knownProviderMaxIterations(providerName) {
   if (!providerName) return null;
   const n = String(providerName).toLowerCase();
   if (n.includes("minimax")) return 200;
+  if (n.includes("xai")) return 200;
+  if (n.includes("kimi") || n.includes("moonshot")) return 100;
   if (n.includes("nvidia")) return 40;
   if (n.includes("agnes")) return 30;
   if (n.includes("openrouter")) return 30;
+  if (n.includes("groq")) return 30;
   return null;
 }
 
@@ -651,6 +663,16 @@ function knownProviderMaxIterations(providerName) {
 // works for the user's specific provider name without going through
 // the full loadSettings pipeline.
 export { knownProviderMaxIterations };
+
+// Per-turn tool-iteration cap, re-read from the CURRENT model at every turn.
+// The CLI used to freeze this in ctx at startup, so after /model the session
+// kept the launch provider's cap (nvidia's 40 followed the user onto
+// minimax/kimi). resolveModel already bakes the full precedence chain into
+// model.maxToolIterations, so this is just a null-safe read — kept as a
+// function so both call sites and the regression test share one definition.
+export function turnMaxIterations(model, settings) {
+  return model?.maxToolIterations ?? settings?.maxToolIterations ?? 30;
+}
 
 // Whether the active model's provider still needs an API key. The "not-needed"
 // sentinel (used by the local llama provider) counts as configured.

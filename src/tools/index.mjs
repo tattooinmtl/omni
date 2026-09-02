@@ -15,6 +15,7 @@ import {
   activeProviderFromDisk, layeredProvider, currentAtoms, formatMemoryRecord, explainAtomText,
 } from "../core/memory-provider.mjs";
 import { buildIndex as ragBuild, searchIndex as ragSearch } from "../integrations/rag.mjs";
+import { rankChunks } from "../core/bm25.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 
 const MAX_OUTPUT = 30000;
@@ -277,6 +278,44 @@ function coverageCommand() {
   return null;
 }
 
+// Pick the lint/format command that matches the project's setup (lint_check).
+// Same detection idiom as coverageCommand: package.json scripts first, then
+// tool config files. `target` is a pre-validated, pre-quoted path scope ("" =
+// whole project). Returns null when nothing is detected.
+function lintCommand({ fix = false, target = "" } = {}) {
+  const cwd = process.cwd();
+  const has = (f) => fs.existsSync(path.join(cwd, f));
+  if (has("package.json")) {
+    let pkg = {};
+    try { pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")); } catch { /* unparseable */ }
+    const scripts = pkg.scripts || {};
+    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm";
+    const run = pm === "yarn" ? "yarn" : `${pm} run`;
+    for (const script of ["lint", "format", "format:check"]) {
+      if (!scripts[script]) continue;
+      // `-- --fix` is the npm/pnpm/bun arg-passthrough idiom for the fix
+      // variant of a lint script; a `format` script already writes by default.
+      let cmd = `${run} ${script}`;
+      if (fix && script !== "format") cmd += " -- --fix";
+      if (target) cmd += ` -- ${target}`;
+      return cmd;
+    }
+  }
+  let entries = [];
+  try { entries = fs.readdirSync(cwd); } catch { /* unreadable cwd */ }
+  const someFile = (re) => entries.some((f) => re.test(f));
+  if (has("biome.json") || has("biome.jsonc")) return `npx biome check${fix ? " --write" : ""} ${target || "."}`;
+  if (someFile(/^\.eslintrc(\.|$)/) || someFile(/^eslint\.config\./)) return `npx eslint ${target || "."}${fix ? " --fix" : ""}`;
+  if (someFile(/^\.prettierrc(\.|$)/) || someFile(/^prettier\.config\./)) return `npx prettier --${fix ? "write" : "check"} ${target || "."}`;
+  let ruff = has("ruff.toml") || has(".ruff.toml");
+  if (!ruff && has("pyproject.toml")) {
+    try { ruff = /\[tool\.ruff[.\]]/.test(fs.readFileSync(path.join(cwd, "pyproject.toml"), "utf8")); } catch { /* unreadable */ }
+  }
+  if (ruff) return `ruff check${fix ? " --fix" : ""} ${target || "."}`;
+  if (has(".rubocop.yml")) return `rubocop${fix ? " -A" : ""}${target ? ` ${target}` : ""}`;
+  return null;
+}
+
 // Secret-detection rules for security_scan: [label, ripgrep regex].
 // Matches are reported as file:line + rule only; values are never echoed.
 const SECRET_RULES = [
@@ -368,6 +407,24 @@ export const tools = [
           new_string: { type: "string" },
         },
         required: ["path", "old_string", "new_string"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_lines",
+      description:
+        "Replace a 1-based, inclusive line range of a file with new content (new_string may be empty to delete the lines). To INSERT without replacing, pass end_line < start_line — the new lines go in before start_line. Use when edit_file's exact-match replacement is awkward (old_string missing or repeated).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path (relative to cwd or absolute)" },
+          start_line: { type: "integer", description: "First line to replace (1-based)" },
+          end_line: { type: "integer", description: "Last line to replace (inclusive). Pass a value < start_line to insert before start_line instead." },
+          new_string: { type: "string", description: "Replacement lines; empty string deletes the range. A single trailing newline is a line terminator, not an extra line." },
+        },
+        required: ["path", "start_line", "end_line", "new_string"],
       },
     },
   },
@@ -518,6 +575,23 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "diff_files",
+      description:
+        "Unified diff between any two files (unlike git_diff, the files need not be git-tracked). Uses git diff --no-index, with a simple built-in line-diff fallback when git is unavailable.",
+      parameters: {
+        type: "object",
+        properties: {
+          path_a: { type: "string", description: "First file (relative to cwd or absolute)" },
+          path_b: { type: "string", description: "Second file (relative to cwd or absolute)" },
+          context: { type: "integer", description: "Context lines around each change (default 3)" },
+        },
+        required: ["path_a", "path_b"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "git_commit",
       description:
         "Stage selected workspace paths and create a git commit. Use only after reviewing git_status/git_diff and when the user asked to commit.",
@@ -654,14 +728,31 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "process_input",
+      description:
+        "Send a line of stdin to a running background process started by start_process — answer an interactive prompt or drive a REPL. Returns output captured shortly after the input is sent, so you can see its effect.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Process id returned by start_process" },
+          input: { type: "string", description: "Text to write to the process's stdin" },
+          newline: { type: "boolean", description: "Append a trailing newline (default true)" },
+        },
+        required: ["id", "input"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "spawn_agent",
       description:
-        "Spawn an independent sub-agent on a self-contained sub-task, running in the BACKGROUND in parallel with you — you keep working, then check agent_status later for its result. Give it a `model` (e.g. 'agnes/agnes-2.0-flash') to run it on a different provider than your own, so the two run truly concurrently instead of competing for the same rate limit. The sub-agent shares this workspace and has the same tools you do, but its own isolated conversation — write the prompt so it makes sense with zero context from this conversation (what to do, relevant file paths, what \"done\" looks like). Caution: it can read/write the SAME files you can, at the same time — only spawn one for a sub-task that doesn't overlap files you're actively touching, to avoid both of you editing the same file at once.",
+        "Spawn an independent sub-agent on a self-contained sub-task, running in the BACKGROUND in parallel with you — you keep working, then check agent_status later for its result. Give it a `model` (e.g. 'agnes/agnes-2.5-flash') to run it on a different provider than your own, so the two run truly concurrently instead of competing for the same rate limit. The sub-agent shares this workspace and has the same tools you do, but its own isolated conversation — write the prompt so it makes sense with zero context from this conversation (what to do, relevant file paths, what \"done\" looks like). Caution: it can read/write the SAME files you can, at the same time — only spawn one for a sub-task that doesn't overlap files you're actively touching, to avoid both of you editing the same file at once.",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string", description: "Full, self-contained task description for the sub-agent — it has no memory of this conversation." },
-          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.0-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the default model if omitted." },
+          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.5-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the default model if omitted." },
           name: { type: "string", description: "Optional short label shown in agent_status." },
         },
         required: ["prompt"],
@@ -692,6 +783,22 @@ export const tools = [
           id: { type: "string", description: "Sub-agent id returned by spawn_agent" },
         },
         required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Ask the user a clarifying question mid-task and wait for the answer. Use when a requirement is genuinely ambiguous and guessing wrong would be costly. Where no interactive user exists (one-shot runs, goal mode, background sub-agents) the tool does not block — it tells you to proceed on a stated assumption instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask the user" },
+          options: { type: "array", items: { type: "string" }, description: "Optional choices to present" },
+        },
+        required: ["question"],
       },
     },
   },
@@ -910,6 +1017,21 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "lint_check",
+      description:
+        "Run the project's linter/formatter, auto-detecting the setup: package.json scripts (lint, format, format:check) first, then config files (biome.json, .eslintrc*/eslint.config.*, .prettierrc*, ruff.toml or pyproject [tool.ruff], .rubocop.yml). Executes through the same risk-gated shell path as run_shell.",
+      parameters: {
+        type: "object",
+        properties: {
+          fix: { type: "boolean", description: "Run the fix/write variant instead of check-only (default false)" },
+          path: { type: "string", description: "Optional file or directory inside the workspace to scope the run to" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "security_scan",
       description:
         "Security sweep of the workspace: (secrets) pattern-scan for hardcoded credentials, API keys, tokens and private keys — reports file:line and rule only, never the value — plus .env hygiene; (deps) run the package manager's vulnerability audit. scope=all runs both.",
@@ -1021,6 +1143,25 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "find_skill",
+      description:
+        "Search the skill catalog by keyword. Returns up to `limit` skills ranked by relevance to `query`, " +
+        "each shown as `command — description`. Skill bodies are NOT ambient — call this whenever you're " +
+        "about to improvise a workflow to see if a matching skill exists. To load a skill's full instructions, " +
+        "the user invokes /<command>; the body loads for that turn and is evicted afterward.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Keywords describing the task (e.g. 'html game', 'code review', 'okf memory')" },
+          limit: { type: "integer", description: "Max results to return (default 5, max 20)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_tool",
       description:
         "Create a brand-new tool for yourself, right now — no restart needed. Write the " +
@@ -1085,6 +1226,26 @@ export const impl = {
 
     stream.destroy(); // ensure file handle is released
     return clip(lines.join("\n") || "(empty file)");
+  },
+
+  // Search the loaded skill catalog by keywords. Ranks skills by BM25 against
+  // "<command> <description>" — no bodies read, no filesystem hit. Requires
+  // an active session context (skills are attached to ctx by main.mjs).
+  find_skill({ query, limit = 5 }) {
+    if (!query || !String(query).trim()) throw new Error("query is required");
+    const skills = _sessionCtx?.skills || [];
+    if (!skills.length) return "(no skills loaded in this session)";
+    const cap = Math.min(Math.max(1, Number(limit) || 5), 20);
+    const haystack = skills.map((s) => `${s.command} ${s.description || ""} ${s.category || ""}`);
+    const ranked = rankChunks(String(query), haystack);
+    const top = ranked.slice(0, cap);
+    if (!top.length || top[0].score === 0) return `(no skills match "${query}" — try broader keywords)`;
+    return top
+      .map((r) => {
+        const s = skills[haystack.indexOf(r.text)];
+        return `${s.command} — ${(s.description || "").slice(0, 200)}`;
+      })
+      .join("\n");
   },
 
   rag_search({ query, k = 6 }) {
@@ -1197,6 +1358,41 @@ export const impl = {
     const diff = new_string.length - old_string.length;
     const sign = diff >= 0 ? "+" : "";
     return `Edited ${p} (${sign}${diff} chars)`;
+  },
+
+  edit_lines({ path: p, start_line, end_line, new_string }) {
+    if (new_string === undefined) throw new Error("new_string is required");
+    if (!Number.isInteger(start_line) || start_line < 1) throw new Error("start_line must be a positive integer (1-based)");
+    if (!Number.isInteger(end_line)) throw new Error("end_line must be an integer (pass end_line < start_line to insert before start_line)");
+    const full = resolve(p);
+    if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
+    const text = fs.readFileSync(full, "utf8");
+    // Split on "\n" only: a trailing "\n" is the last line's terminator, not
+    // an extra empty line, and untouched lines stay byte-identical (any "\r"
+    // in a CRLF file rides along on its line and is rejoined as-is).
+    const hadFinalNewline = text.endsWith("\n");
+    const lines = text === "" ? [] : text.split("\n");
+    if (hadFinalNewline) lines.pop();
+    const total = lines.length;
+    const inserting = end_line < start_line;
+    if (inserting) {
+      if (start_line > total + 1) throw new Error(`cannot insert before line ${start_line}: ${p} has ${total} line(s) (valid insert range is 1-${total + 1})`);
+    } else {
+      if (start_line > total) throw new Error(`start_line ${start_line} out of range: ${p} has ${total} line(s)`);
+      if (end_line > total) throw new Error(`end_line ${end_line} out of range: ${p} has ${total} line(s)`);
+    }
+    // A single trailing newline in new_string terminates the last replacement
+    // line; it does not add an empty line after it.
+    const body = new_string.endsWith("\n") ? new_string.slice(0, -1) : new_string;
+    const newLines = body === "" ? [] : body.split("\n");
+    const removed = inserting ? 0 : end_line - start_line + 1;
+    lines.splice(start_line - 1, removed, ...newLines);
+    let out = lines.join("\n");
+    if (hadFinalNewline && out !== "") out += "\n"; // preserve trailing-newline state
+    atomicWriteFileSync(full, out);
+    if (inserting) return `Edited ${p}: inserted ${newLines.length} line(s) before line ${start_line} (${total} → ${lines.length} lines)`;
+    if (!newLines.length) return `Edited ${p}: deleted lines ${start_line}-${end_line} (${total} → ${lines.length} lines)`;
+    return `Edited ${p}: replaced lines ${start_line}-${end_line} with ${newLines.length} line(s) (${total} → ${lines.length} lines)`;
   },
 
   apply_patch({ patch }) {
@@ -1523,6 +1719,24 @@ export const impl = {
     return `$ ${cmd}\n` + runShellCommand({ command: cmd, timeout_ms });
   },
 
+  lint_check({ fix = false, path: p } = {}) {
+    // The command is assembled from a fixed whitelist (detected script names
+    // and linter invocations), so the only model-influenced part is the path
+    // scope — validate it hard before letting it near a shell string.
+    let target = "";
+    if (p) {
+      const rel = path.relative(process.cwd(), resolve(p)).replace(/\\/g, "/");
+      if (!/^[\w ./-]+$/.test(rel)) throw new Error(`path "${rel}" contains characters that are unsafe in a shell command`);
+      target = `"${rel}"`;
+    }
+    const cmd = lintCommand({ fix: Boolean(fix), target });
+    if (!cmd) return "(could not detect a lint/format setup — no lint/format/format:check script in package.json and no supported linter config found)";
+    // Same gate as run_shell/run_test: runShellCommand applies the
+    // unsafe-command blocklist (commandRisk) before executing — there is no
+    // allow_unsafe here, so a blocked pattern is always refused.
+    return `$ ${cmd}\n` + runShellCommand({ command: cmd, timeout_ms: 300000 });
+  },
+
   security_scan({ scope = "all", path: p = "." }) {
     const sections = [];
 
@@ -1617,6 +1831,33 @@ export const impl = {
     return runGit(args) || "(no diff)";
   },
 
+  diff_files({ path_a, path_b, context = 3 }) {
+    if (!path_a) throw new Error("path_a is required");
+    if (!path_b) throw new Error("path_b is required");
+    const fullA = resolve(path_a);
+    const fullB = resolve(path_b);
+    if (!fs.existsSync(fullA)) throw new Error(`File not found: ${path_a}`);
+    if (!fs.existsSync(fullB)) throw new Error(`File not found: ${path_b}`);
+    const ctx = Math.max(0, Math.min(Number.isInteger(context) ? context : 3, 50));
+    // Array-form spawn (no shell string), same as extensions/git-ops.js.
+    const r = spawnSync("git", ["diff", "--no-index", "--no-color", `--unified=${ctx}`, "--", fullA, fullB], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 16,
+    });
+    if (r.error) {
+      // git unavailable — built-in fallback over the raw file contents.
+      const a = fs.readFileSync(fullA, "utf8");
+      const b = fs.readFileSync(fullB, "utf8");
+      return clip(simpleLineDiff(path_a, a, path_b, b));
+    }
+    // `git diff --no-index` exit codes: 0 = identical, 1 = differences found
+    // (NOT an error), anything else = real failure.
+    if (r.status === 0) return "(identical — no differences)";
+    if (r.status === 1) return clip((r.stdout || "").trimEnd() || "(files differ, but git produced no patch — binary files?)");
+    throw new Error((r.stderr || "").trim() || `git diff --no-index exited with code ${r.status}`);
+  },
+
   git_commit({ message, paths = [], all = false, allow_unsafe = false }) {
     if (!message || !String(message).trim()) throw new Error("commit message is required");
 
@@ -1692,6 +1933,23 @@ export const impl = {
     return stopManagedProcess(id);
   },
 
+  async process_input({ id, input, newline = true }) {
+    if (!id) throw new Error("id is required");
+    if (input === undefined) throw new Error("input is required");
+    const rec = managedProcesses.get(id);
+    if (!rec) throw new Error(`process not found: ${id}`);
+    if (rec.status !== "running") throw new Error(`process ${id} is ${rec.status} — cannot send input to it`);
+    const stdin = rec.child.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded) throw new Error(`process ${id} stdin is closed`);
+    const before = rec.log.length;
+    stdin.write(newline === false ? String(input) : String(input) + "\n");
+    // Give the child a beat to react so the result shows the effect of the
+    // input (a prompt answered, a REPL evaluation) instead of a stale log.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fresh = rec.log.slice(before).trim();
+    return clip(fresh || `(input sent to ${id}; no new output yet)`);
+  },
+
   spawn_agent({ prompt, model, name }, context) {
     return spawnSubAgent({ prompt, model, name, permissions: context?.permissions, confirmTool: context?.confirmTool });
   },
@@ -1702,6 +1960,17 @@ export const impl = {
 
   stop_agent({ id }) {
     return stopSubAgent(id);
+  },
+
+  async ask_user({ question, options = [] }) {
+    if (!question || !String(question).trim()) throw new Error("question is required");
+    // The REPL wires ctx.askUser via setSessionCtx; one-shot runs, goal mode
+    // and background sub-agents have no question channel. Fall back to a text
+    // result instead of throwing — the model proceeds on a stated assumption.
+    if (_sessionCtx && typeof _sessionCtx.askUser === "function") {
+      return String(await _sessionCtx.askUser({ question: String(question), options: Array.isArray(options) ? options.map(String) : [] }));
+    }
+    return "No interactive user available. Proceed with the most reasonable assumption, state it explicitly, and continue.";
   },
   // Routed through the active memory provider (settings.memory.provider —
   // "legacy-jsonl" by default, or "layered-okf"). See core/memory-provider.mjs.
@@ -2024,6 +2293,29 @@ function runGit(args) {
   return clip(out);
 }
 
+// Built-in fallback for diff_files when git is unavailable: trim the common
+// head and tail, then report the differing middle as -/+ blocks. Not a full
+// LCS — interleaved changes collapse into one replace block — but it is
+// dependency-free and honest about what changed.
+function simpleLineDiff(labelA, a, labelB, b) {
+  const la = a.split("\n");
+  const lb = b.split("\n");
+  let start = 0;
+  while (start < la.length && start < lb.length && la[start] === lb[start]) start++;
+  let endA = la.length;
+  let endB = lb.length;
+  while (endA > start && endB > start && la[endA - 1] === lb[endB - 1]) { endA--; endB--; }
+  if (start === la.length && start === lb.length) return "(identical — no differences)";
+  const out = [
+    `--- ${labelA}`,
+    `+++ ${labelB}`,
+    `@@ lines ${start + 1}-${endA} of ${la.length} → lines ${start + 1}-${endB} of ${lb.length} (simple diff — git unavailable) @@`,
+  ];
+  for (let i = start; i < endA; i++) out.push(`-${la[i]}`);
+  for (let i = start; i < endB; i++) out.push(`+${lb[i]}`);
+  return out.join("\n");
+}
+
 function readJsonIfExists(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -2126,9 +2418,13 @@ function startManagedProcess({ command, cwd = ".", name, allow_unsafe = false })
   const args = isWin ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command];
   const child = spawn(shell, args, {
     cwd: procCwd,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"], // stdin piped so process_input can answer prompts / drive REPLs
     windowsHide: true,
   });
+  // Swallow stdin errors (EPIPE when the child closes stdin early or exits)
+  // so a process_input write to a dying child can't crash the whole session —
+  // the exit handler below records the state either way.
+  child.stdin.on("error", () => { /* logged via the exit handler */ });
   const id = `P${String(nextProcessId++).padStart(3, "0")}`;
   const rec = {
     id,
