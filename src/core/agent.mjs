@@ -93,7 +93,7 @@ function publishLiveEdge(source, target, edgeKind) {
 // without slowing normal use.
 function fileLockKey(name, args) {
   if (!args || typeof args !== "object") return null;
-  if (name === "read_file" || name === "edit_file" || name === "write_file") {
+  if (name === "read_file" || name === "edit_file" || name === "write_file" || name === "edit_lines") {
     return String(args.path || "").trim() || null;
   }
   if (name === "apply_patch") return `patch:${String(args.patch || "")}`;
@@ -536,7 +536,7 @@ export function systemPrompt() {
     "- Keep prose concise. After finishing, briefly summarize what you did.",
     "",
     "# Skill invocation",
-    "Before improvising, scan `# Skills` below for a matching category and invoke `/<cmd>` (its body loads into context). Process skills (superpowers-style) come first — they set the approach; implementation skills carry it out. Don't know which skill fits? `/find-skills`. Full enforcement lives in `/using-superpowers`; the rules above are the always-on summary.",
+    "Before improvising a workflow, call `find_skill(query)` to see if one fits — no bodies are ambient. Then `invoke_skill(command)` loads that skill's instructions for the current turn only (evicted after). Users can also type `/<command>`. Full enforcement: `/using-superpowers`.",
   ].join("\n");
 }
 

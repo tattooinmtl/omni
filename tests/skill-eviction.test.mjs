@@ -79,6 +79,24 @@ await ok("repeated invocations don't stack skill bodies across turns", async () 
   assert.ok(!msgs.some((m) => (m.content || "").includes("BODY_")), "no skill bodies should remain");
 });
 
+await ok("restoreSessionMessages replays skill records as user invocations (no body)", async () => {
+  const records = [
+    { type: "user", content: "kick things off" },
+    { type: "skill", skill: "code-review", arg: "src/foo.js", contextMode: "classic" },
+    { type: "assistant", message: { role: "assistant", content: "reviewed it" } },
+    { type: "skill", skill: "html-game-builder", arg: "", contextMode: "classic" },
+  ];
+  const msgs = [];
+  helpers.restoreSessionMessages(records, msgs);
+  assert.equal(msgs.length, 4);
+  assert.equal(msgs[0].role, "user");
+  assert.ok(msgs[1].content.startsWith("[resumed] Run the \"code-review\" skill. Arguments: src/foo.js"));
+  assert.equal(msgs[2].role, "assistant");
+  assert.equal(msgs[3].content, "[resumed] Run the \"html-game-builder\" skill.");
+  // Bodies are intentionally NOT re-injected on resume.
+  assert.ok(!msgs.some((m) => /# Skill:/.test(m.content || "")), "no skill bodies should appear on resume");
+});
+
 fs.rmSync(tmpHome, { recursive: true, force: true });
 
 console.log(`\n${pass} passed, ${fail} failed`);

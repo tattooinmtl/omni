@@ -147,6 +147,11 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
 }
 
 // Rebuild the in-memory message list from a saved session's records.
+// "skill" records are replayed as the equivalent user invocation message
+// ("Run the X skill…") — the full body is intentionally NOT re-injected on
+// resume (it was ephemeral in the original session and would defeat the
+// purpose to reload 26KB per resume). The prior conversation carries what
+// the skill actually produced; the invocation line preserves intent.
 export function restoreSessionMessages(records, msgs) {
   for (const rec of records) {
     if (rec.type === "user") {
@@ -159,6 +164,11 @@ export function restoreSessionMessages(records, msgs) {
         tool_call_id: rec.tool_call_id,
         content: typeof rec.result === "string" ? rec.result : JSON.stringify(rec.result),
       });
+    } else if (rec.type === "skill" && rec.skill) {
+      const invocation = rec.arg
+        ? `Run the "${rec.skill}" skill. Arguments: ${rec.arg}`
+        : `Run the "${rec.skill}" skill.`;
+      msgs.push({ role: "user", content: `[resumed] ${invocation}` });
     }
   }
 }

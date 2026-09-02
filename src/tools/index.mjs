@@ -16,6 +16,7 @@ import {
 } from "../core/memory-provider.mjs";
 import { buildIndex as ragBuild, searchIndex as ragSearch } from "../integrations/rag.mjs";
 import { rankChunks } from "../core/bm25.mjs";
+import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 
 const MAX_OUTPUT = 30000;
@@ -1147,8 +1148,8 @@ export const tools = [
       description:
         "Search the skill catalog by keyword. Returns up to `limit` skills ranked by relevance to `query`, " +
         "each shown as `command — description`. Skill bodies are NOT ambient — call this whenever you're " +
-        "about to improvise a workflow to see if a matching skill exists. To load a skill's full instructions, " +
-        "the user invokes /<command>; the body loads for that turn and is evicted afterward.",
+        "about to improvise a workflow to see if a matching skill exists. Then call invoke_skill(command) to " +
+        "load that skill's full instructions for the current turn (body is evicted afterward).",
       parameters: {
         type: "object",
         properties: {
@@ -1156,6 +1157,25 @@ export const tools = [
           limit: { type: "integer", description: "Max results to return (default 5, max 20)" },
         },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "invoke_skill",
+      description:
+        "Load a skill's full instructions into the current turn — equivalent to the user typing /<command>. " +
+        "The body is ephemeral: it's dropped after this turn's tool loop finishes, so it doesn't re-bill on " +
+        "subsequent turns. Use find_skill first to discover the exact command name. Once loaded, follow the " +
+        "skill's instructions to complete the user's task.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Skill command, with or without the leading slash (e.g. '/code-review' or 'code-review')" },
+          args: { type: "string", description: "Optional arguments to pass to the skill" },
+        },
+        required: ["command"],
       },
     },
   },
@@ -1229,8 +1249,8 @@ export const impl = {
   },
 
   // Search the loaded skill catalog by keywords. Ranks skills by BM25 against
-  // "<command> <description>" — no bodies read, no filesystem hit. Requires
-  // an active session context (skills are attached to ctx by main.mjs).
+  // "<command> <description> <category>" — no bodies read, no filesystem hit.
+  // Requires an active session context (skills are attached to ctx by main.mjs).
   find_skill({ query, limit = 5 }) {
     if (!query || !String(query).trim()) throw new Error("query is required");
     const skills = _sessionCtx?.skills || [];
@@ -1240,12 +1260,37 @@ export const impl = {
     const ranked = rankChunks(String(query), haystack);
     const top = ranked.slice(0, cap);
     if (!top.length || top[0].score === 0) return `(no skills match "${query}" — try broader keywords)`;
+    // rankChunks already returns the source index — use it directly instead
+    // of an O(N²) indexOf lookup that also mis-selects on duplicate haystack
+    // strings.
     return top
       .map((r) => {
-        const s = skills[haystack.indexOf(r.text)];
+        const s = skills[r.index];
         return `${s.command} — ${(s.description || "").slice(0, 200)}`;
       })
       .join("\n");
+  },
+
+  // Load a skill's body for the current turn (equivalent to the user typing
+  // /<command>). The body is marked ephemeral: it lives for the turn that
+  // triggered it, then evicted by the REPL after runAgentTurns finishes.
+  // Enables autonomous flows (goal mode, sub-agents) to self-serve on skills
+  // without needing a human to type the slash command.
+  invoke_skill({ command, args = "" }) {
+    if (!command || !String(command).trim()) throw new Error("command is required (e.g. '/code-review' or 'code-review')");
+    const ctx = _sessionCtx;
+    if (!ctx || !Array.isArray(ctx.skills)) throw new Error("no active session context — skill invocation only works inside an interactive session");
+    const wanted = String(command).trim();
+    const norm = wanted.startsWith("/") ? wanted : "/" + wanted;
+    const skill = ctx.skills.find((s) => s.command === norm);
+    if (!skill) return `unknown skill: ${norm}. Call find_skill(query) to list matching commands.`;
+    // Push the skill body straight into the live conversation. The REPL's
+    // post-turn eviction (evictEphemeralSkillMessages) will drop it once
+    // this turn's loop returns to plain-text.
+    const sysMsg = { role: "system", content: `# Skill: ${skill.name}\n${skill.body}` };
+    markSkillEphemeral(sysMsg);
+    ctx.messages.push(sysMsg);
+    return `Loaded skill "${skill.name}" for this turn (${(skill.body || "").length} chars). Follow its instructions${args ? ` with these arguments: ${args}` : ""}.`;
   },
 
   rag_search({ query, k = 6 }) {

@@ -108,4 +108,4 @@ skill walks through scaffolding and verifying any of these.
 - Never exfiltrate secrets. Treat API keys and credentials as sensitive.
 
 # Skill invocation
-Before improvising, scan `# Skills` below for a matching category and invoke `/<cmd>` (its body loads into context). Process skills (superpowers-style) come first — they set the approach; implementation skills carry it out. Don't know which skill fits? `/find-skills`. Full enforcement lives in `/using-superpowers`; the rules above are the always-on summary.
+Before improvising a workflow, call `find_skill(query)` to see if one fits — no bodies are ambient. Then `invoke_skill(command)` loads that skill's instructions for the current turn only (evicted after). Users can also type `/<command>`. Full enforcement: `/using-superpowers`.

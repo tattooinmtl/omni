@@ -16,7 +16,7 @@ import {
 import { registerMcpProxy } from "../integrations/mcp.mjs";
 import { registerNimToolsProxy } from "../integrations/bridge.mjs";
 import { classifyIntent, warmSidecar } from "../integrations/router.mjs";
-import { applySkill, reportMissingKey, reportInsecureEndpoint, maskKey } from "./helpers.mjs";
+import { applySkill, reportMissingKey, reportInsecureEndpoint, maskKey, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
@@ -241,6 +241,10 @@ export async function main(args) {
       contextMode: ctx.contextMode,
     });
     ctx.currentAbort = null;
+    // Same eviction the REPL runs after each turn — pointless in one-shot
+    // (process exits) but keeps the semantics identical across entry points
+    // so behavior differences never sneak in via an unrun helper.
+    evictEphemeralSkillMessages(messages);
     costLine(session);
     await shutdown(0);
     return;

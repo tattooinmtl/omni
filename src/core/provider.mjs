@@ -41,11 +41,25 @@ function flattenToolMessages(messages = []) {
   });
 }
 
+// Some in-memory shape leaks the harness uses internally aren't in the
+// OpenAI chat.completions spec. Strip them before the network hop so a
+// strict provider validator (some OpenAI-compat proxies do reject unknown
+// fields) can't 400 the request. Only `role: "tool"` messages carry a
+// `name` field today — the text-tool renderer uses it upstream, but the
+// native-tools path ships messages as-is via JSON.stringify.
+function sanitizeForNativeTools(messages) {
+  return messages.map((m) => {
+    if (m.role !== "tool" || m.name === undefined) return m;
+    const { name, ...rest } = m;
+    return rest;
+  });
+}
+
 export function buildChatBody({ model, messages, tools }) {
   const nativeTools = providerUsesNativeTools(model);
   const body = {
     model: model.id,
-    messages: nativeTools ? messages : flattenToolMessages(messages),
+    messages: nativeTools ? sanitizeForNativeTools(messages) : flattenToolMessages(messages),
     max_tokens: model.maxTokens,
     temperature: 0.2,
     stream: true,
