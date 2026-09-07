@@ -374,7 +374,7 @@ function applyEnvKeyOverrides(settings) {
   // (e.g. /apikey nvidia1 <key>), the change is the user's and persists.
   const savedAccounts = {};
   for (const [name, prov] of Object.entries(settings.providers)) {
-    const envKey = `OMNI_${name.toUpperCase()}_KEY`;
+    const envKey = providerKeyEnvVar(name);
     if (process.env[envKey]) {
       savedKeys[name] = prov.apiKey || "";
       prov.apiKey = process.env[envKey];
@@ -457,6 +457,19 @@ function migrateSettings(settings) {
   const orFallback = settings.models?.["openrouter/llama-3-8b"];
   if (orFallback?.id === "meta-llama/llama-3-8b-instruct:free") {
     orFallback.id = "meta-llama/llama-3-8b-instruct";
+  }
+
+  // Repair corrupted provider baseUrls (e.g. if an apiKey was mistakenly saved as baseUrl)
+  for (const [name, p] of Object.entries(settings.providers || {})) {
+    if (p && p.baseUrl && !/^https?:\/\//i.test(p.baseUrl)) {
+      const def = DEFAULT_SETTINGS.providers?.[name];
+      if (def?.baseUrl) {
+        if (!p.apiKey || p.apiKey === "not-needed") {
+          p.apiKey = p.baseUrl;
+        }
+        p.baseUrl = def.baseUrl;
+      }
+    }
   }
 
   // Purge legacy hardcoded GWN VPS raw IP endpoint if present from older installs.
@@ -683,7 +696,7 @@ export function providerKeyMissing(model) {
 
 // The environment variable that overrides a provider's key (see loadSettings).
 export function providerKeyEnvVar(providerName) {
-  return `OMNI_${String(providerName).toUpperCase()}_KEY`;
+  return `OMNI_${String(providerName).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_KEY`;
 }
 
 function cwdSlug() {

@@ -640,7 +640,18 @@ export async function addProviderInteractive(ctx, arg = "") {
   if (trimmed) {
     const [name, baseUrl, ...keyParts] = trimmed.split(/\s+/);
     if (!name || !baseUrl) {
-      errorLine("usage: /addprovider <name> <baseUrl> [apiKey]");
+      errorLine("usage: /addprovider <name> <baseUrl> [apiKey] or /addprovider <preset> <apiKey>");
+      return;
+    }
+    // If the 2nd argument was an API key for a known preset instead of a full URL
+    if (PROVIDER_PRESETS[name] && !keyParts.length && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+      const prov = installProviderPreset(ctx, name, baseUrl);
+      await saveSettings(ctx.settings);
+      infoLine(`installed preset ${prov} -> ${ctx.settings.providers[prov].baseUrl} with API key (saved)`);
+      return;
+    }
+    if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+      errorLine(`invalid baseUrl "${baseUrl}" — must start with http:// or https:// (use /apikey <name> <key> to set API keys)`);
       return;
     }
     ctx.settings.providers[name] = { baseUrl, apiKey: keyParts.join(" ").trim() || "not-needed", label: name };
@@ -849,5 +860,93 @@ export async function connectInteractive(ctx) {
   } catch (e) {
     errorLine(`could not open model picker: ${e.message}`);
     infoLine(`switch manually with /model <provider/id> or /model to see the list.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /disconnect — clear a provider's API key or remove it entirely
+// ---------------------------------------------------------------------------
+
+// Build the row list for /disconnect: only providers that have a key set.
+export function buildDisconnectRows(settings) {
+  const providers = settings?.providers || {};
+  const rows = [];
+  for (const [name, p] of Object.entries(providers).sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (!providerHasKey(p)) continue;
+    const keyHint = p.apiKey === "not-needed" ? "(no key needed)" : maskKey(p.apiKey);
+    rows.push({
+      id: name,
+      label: `● ${name}`,
+      dim: `${p.baseUrl || ""}   ${keyHint}`,
+    });
+  }
+  return rows;
+}
+
+export async function disconnectInteractive(ctx, arg) {
+  // Non-interactive fast path: /disconnect <provider>
+  const directName = (arg || "").trim();
+  if (directName) {
+    const p = ctx.settings.providers[directName];
+    if (!p) { errorLine(`unknown provider "${directName}" — try /providers to see the list.`); return; }
+    if (!providerHasKey(p)) { infoLine(`${directName} has no API key set.`); return; }
+    p.apiKey = "";
+    if (p.accounts) {
+      for (const acct of Object.keys(p.accounts)) p.accounts[acct] = "";
+    }
+    await saveSettings(ctx.settings);
+    infoLine(`cleared API key for ${directName}. Use /connect or /apikey to set a new one.`);
+    return;
+  }
+
+  // Interactive arrow picker
+  if (!ctx.canRaw) {
+    infoLine("/disconnect needs an interactive terminal (or pass a provider name: /disconnect <provider>).");
+    return;
+  }
+
+  const rows = buildDisconnectRows(ctx.settings);
+  if (rows.length === 0) {
+    infoLine("no providers with API keys configured. Nothing to disconnect.");
+    return;
+  }
+
+  const picked = await runArrowPicker(rows, {
+    ctx,
+    title: "Disconnect — pick a provider to clear its API key",
+    hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
+    initial: 0,
+  });
+  if (!picked) { infoLine("disconnect canceled"); return; }
+
+  // Ask whether to clear just the key or fully remove the provider
+  const actionRows = [
+    { id: "clear-key", label: "Clear API key only", dim: "provider entry stays, key is wiped" },
+    { id: "remove",    label: "Remove provider entirely", dim: "deletes the provider from settings" },
+  ];
+  const action = await runArrowPicker(actionRows, {
+    ctx,
+    title: `${picked} — what do you want to do?`,
+    hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
+    initial: 0,
+  });
+  if (!action) { infoLine("disconnect canceled"); return; }
+
+  if (action === "remove") {
+    delete ctx.settings.providers[picked];
+    await saveSettings(ctx.settings);
+    infoLine(`removed provider ${picked} from settings.`);
+    // If the current model belonged to this provider, warn the user.
+    if (ctx.model?.provider?.label && ctx.model.key?.startsWith(picked + "/")) {
+      warnLine(`your active model was on ${picked} — switch with /model or /connect.`);
+    }
+  } else {
+    const p = ctx.settings.providers[picked];
+    p.apiKey = "";
+    if (p.accounts) {
+      for (const acct of Object.keys(p.accounts)) p.accounts[acct] = "";
+    }
+    await saveSettings(ctx.settings);
+    infoLine(`cleared API key for ${picked}. Use /connect or /apikey to set a new one.`);
   }
 }

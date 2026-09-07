@@ -76,8 +76,16 @@ export function buildChatBody({ model, messages, tools }) {
   return body;
 }
 
+function ensureValidBaseUrl(provider, context = "provider") {
+  const base = provider?.baseUrl || "";
+  if (!base || !/^https?:\/\//i.test(base)) {
+    throw new Error(`Invalid ${context} baseUrl: "${base}" (must be a valid URL starting with https:// or http:// — reconfigure with /connect or /addprovider)`);
+  }
+  return base.replace(/\/$/, "");
+}
+
 export async function chatStream({ model, messages, tools, signal, onToken }) {
-  const url = model.provider.baseUrl.replace(/\/$/, "") + "/chat/completions";
+  const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/chat/completions";
   const body = buildChatBody({ model, messages, tools });
 
   const res = await fetch(url, {
@@ -99,7 +107,7 @@ export async function chatStream({ model, messages, tools, signal, onToken }) {
 // Uses /v1/completions (raw text) instead of /v1/chat/completions.
 // Tool definitions are baked into the prompt; the caller parses <tool_call> XML.
 export async function completionStream({ model, prompt, signal, onToken }) {
-  const url = model.provider.baseUrl.replace(/\/$/, "") + "/completions";
+  const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/completions";
   const body = {
     model: model.id,
     prompt,
@@ -149,7 +157,7 @@ function formatProviderError(res, text, model) {
 }
 
 export async function listProviderModels(provider, { signal } = {}) {
-  const url = provider.baseUrl.replace(/\/$/, "") + "/models";
+  const url = ensureValidBaseUrl(provider) + "/models";
   const res = await fetch(url, {
     method: "GET",
     headers: authHeaders(provider),
@@ -171,7 +179,7 @@ export async function probeModel(model, { signal, timeoutMs = 12000 } = {}) {
   const controller = signal ? null : new AbortController();
   const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const probeSignal = signal || controller.signal;
-  const url = model.provider.baseUrl.replace(/\/$/, "") + "/chat/completions";
+  const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/chat/completions";
   const body = {
     model: model.id,
     messages: [{ role: "user", content: "Reply with OK only." }],

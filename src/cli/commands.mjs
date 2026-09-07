@@ -33,7 +33,8 @@ import { writeProjectContextMode, readMetrics, toolBodyPath } from "../core/cont
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
-  addProviderInteractive, connectInteractive,
+  addProviderInteractive, connectInteractive, disconnectInteractive,
+  PROVIDER_PRESETS,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
@@ -759,6 +760,11 @@ export const COMMANDS = [
     handler: async (ctx) => connectInteractive(ctx),
   },
   {
+    name: "disconnect", aliases: [], usage: "/disconnect [provider]", category: "Models & Providers",
+    summary: "clear a provider's API key or remove it entirely — lets you reconnect with a different key via /connect",
+    handler: async (ctx, arg) => disconnectInteractive(ctx, arg),
+  },
+  {
     name: "addprovider", aliases: [], usage: "/addprovider [name baseUrl [apiKey]]", category: "Models & Providers",
     summary: "pick a provider preset (arrow-key menu) or supply <name> <baseUrl> [apiKey] directly",
     handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
@@ -895,7 +901,17 @@ async function providerCommand(ctx, arg) {
     }
     case "add": {
       const [name, baseUrl, ...keyParts] = subArg.split(/\s+/);
-      if (!name || !baseUrl) { errorLine("usage: /provider add <name> <baseUrl> [apiKey]"); break; }
+      if (!name || !baseUrl) { errorLine("usage: /provider add <name> <baseUrl> [apiKey] or /provider add <preset> <apiKey>"); break; }
+      if (PROVIDER_PRESETS[name] && !keyParts.length && !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+        const prov = installProviderPreset(ctx, name, baseUrl);
+        await saveSettings(ctx.settings);
+        infoLine(`installed preset ${prov} -> ${ctx.settings.providers[prov].baseUrl} with API key (saved)`);
+        break;
+      }
+      if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+        errorLine(`invalid baseUrl "${baseUrl}" — must start with http:// or https://`);
+        break;
+      }
       ctx.settings.providers[name] = { baseUrl, apiKey: keyParts.join(" ").trim() || "not-needed" };
       await saveSettings(ctx.settings);
       infoLine(`added provider ${name} -> ${baseUrl} (saved)`);

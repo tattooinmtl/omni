@@ -20,7 +20,7 @@ function printProfile(p, { stale = false } = {}) {
   console.log(`    cpu:      ${p.cpuCores} physical / ${p.cpuThreads} logical  (recommend -t ${p.recommendedThreads})`);
   console.log(`    ram:      ${p.totalRamGB} GB`);
   console.log(`    gpu:      ${p.gpuName}  ${p.gpuVramGB} GB  ${c.dim(`(via ${p.gpuVramSource})`)}`);
-  console.log(`    backend:  ${c.bright(p.recommendedBackend)}  ${c.dim(`(pass to /llama-start; --force overrides)`)}`);
+  console.log(`    backend:  ${c.bold(p.recommendedBackend)}  ${c.dim(`(pass to /llama-start; --force overrides)`)}`);
   if (Array.isArray(p.notes) && p.notes.length) {
     for (const n of p.notes) console.log(`    note:     ${c.dim(n)}`);
   }

@@ -1,0 +1,9 @@
+{
+  "name": "scan-now",
+  "trigger": "SessionStart",
+  "description": "Run bin/scan-now.js on session start so newly added skills are indexed before the agent picks up any work.",
+  "command": "node C:/.skills/bin/scan-now.js",
+  "background": true,
+  "timeout_ms": 15000,
+  "notes": "Default scans C:/.skills/skills. Pass --root <dir> for on-demand discovery of a chosen folder."
+}

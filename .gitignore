@@ -52,6 +52,9 @@ omni/
 # project that happens to live in this folder, never part of the harness.
 okf-memory-galaxy-source/
 
+# OmniV4 nested repo
+OmniV4/
+
 *.bak
 *.bak?
 *.backup

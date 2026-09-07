@@ -66,7 +66,7 @@ function Resolve-InstallDir() {
     $candidate = Split-Path -Parent $PSScriptRoot
     if (Test-Path (Join-Path $candidate "package.json")) { return $candidate }
   }
-  return (Join-Path $HOME "Omni")
+  return (Join-Path $HOME ".omni")
 }
 
 function Get-LatestVersion() {

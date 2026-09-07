@@ -48,5 +48,8 @@
     "python": {
       "interpreter": "python"
     }
-  }
+  },
+  "hooks": [
+    "scan-now.json"
+  ]
 }

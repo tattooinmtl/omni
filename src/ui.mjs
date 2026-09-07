@@ -9,6 +9,7 @@ function wrap(code) {
 export const c = {
   dim: wrap("2"),
   bold: wrap("1"),
+  bright: wrap("1"),
   red: wrap("31"),
   green: wrap("32"),
   yellow: wrap("33"),
