@@ -32,8 +32,9 @@ Or clone it yourself:
 
 ```powershell
 # Requires Git and Node.js 20+
-git clone https://github.com/tattooinmtl/omni.git
-cd omni
+# Clone straight into ~/.omni so it matches the one-liner's default install dir
+git clone https://github.com/tattooinmtl/omni.git $HOME\.omni
+cd $HOME\.omni
 .\install\install.ps1
 omni
 ```
@@ -41,10 +42,12 @@ omni
 Both routes run the same script — [`install/install.ps1`](install/install.ps1) — and
 it is the only installer. The public URL serves a shim that fetches that file
 from this repo, so the installer is whatever is on `main`: push a change and the
-one-liner picks it up, with nothing to redeploy. It detects what it's pointed at
-(a git checkout updates with `git pull`, anything else resyncs from the branch
-zip), and re-running is always safe — your `.env` and `agent/settings.json` are
-never overwritten.
+one-liner picks it up, with nothing to redeploy. The install dir is always
+`~/.omni` (the leading dot avoids a name collision with an unrelated "omni"
+app from another vendor) — pass `-InstallDir <path>` to override for a
+development checkout. It detects what it's pointed at (a git checkout updates
+with `git pull`, anything else resyncs from the branch zip), and re-running is
+always safe — your `.env` and `agent/settings.json` are never overwritten.
 
 ```powershell
 .\install\install.ps1 -AutoUpdate   # update in place without prompting

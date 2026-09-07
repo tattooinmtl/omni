@@ -74,9 +74,11 @@ const DEFAULT_SETTINGS = {
       apiKey: "", // get a free key at https://build.nvidia.com
       // Multiple accounts against the same endpoint. The active account's key
       // is mirrored into apiKey (which is all the request path ever reads);
-      // switch manually with /switch-provider nvidia1|nvidia2, and the agent
+      // switch manually with /switch-provider nvidia1..nvidia4, and the agent
       // rotates to the next account automatically when one gets rate-limited.
-      accounts: { nvidia1: "", nvidia2: "" },
+      // Empty slots are skipped by the rotation logic — add keys with
+      // /apikey nvidia1 <key>, /apikey nvidia2 <key>, etc.
+      accounts: { nvidia1: "", nvidia2: "", nvidia3: "", nvidia4: "" },
       activeAccount: "nvidia1",
       label: "NVIDIA NIM",
       api: "openai-completions",
@@ -127,7 +129,7 @@ const DEFAULT_SETTINGS = {
     "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
-      label: "MiniMax",
+      label: "MiniMax (api.minimax.io)",
       // MiniMax's reasoning control is a {type:"adaptive"|"disabled"} object
       // via a `thinking` field, not the simple reasoning_effort string this
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
@@ -357,6 +359,12 @@ export function findAccountProvider(settings, name) {
 
 // Allow env var overrides for API keys: OMNI_<PROVIDER>_KEY, and per
 // account OMNI_<ACCOUNT>_KEY (e.g. OMNI_NVIDIA1_KEY).
+//
+// Precedence: settings.json wins. Env vars only fill in slots that are empty
+// on disk, so a stale .env entry can't keep overwriting a key the user set
+// via /apikey (used to look like "/apikey didn't save"). Env-sourced values
+// are still recorded in settings._env so saveSettings strips them back out —
+// secrets stay out of settings.json either way.
 function applyEnvKeyOverrides(settings) {
   // Back-compat alias used in some local setups: map OMNI_AGNES_KEY2 to the
   // account-scoped name consumed by the generic account loader.
@@ -364,9 +372,6 @@ function applyEnvKeyOverrides(settings) {
     process.env.OMNI_AGNES2_KEY = process.env.OMNI_AGNES_KEY2;
   }
 
-  // Env/.env keys are runtime-only overrides. Remember each provider's on-disk
-  // key in settings._env so saveSettings can restore it instead of persisting
-  // the secret into settings.json (saveSettings drops _env itself).
   const savedKeys = {};
   // Per-account bookkeeping: { provider: { account: { was, imposed } } }.
   // `was` is the on-disk value to restore; `imposed` is what the environment
@@ -375,16 +380,21 @@ function applyEnvKeyOverrides(settings) {
   const savedAccounts = {};
   for (const [name, prov] of Object.entries(settings.providers)) {
     const envKey = providerKeyEnvVar(name);
-    if (process.env[envKey]) {
+    const envVal = process.env[envKey];
+    const onDisk = String(prov.apiKey || "").trim();
+    const envFilled = envVal && !onDisk;
+    if (envFilled) {
       savedKeys[name] = prov.apiKey || "";
-      prov.apiKey = process.env[envKey];
+      prov.apiKey = envVal;
     }
     const acctNames = Object.keys(prov.accounts || {});
     for (const acct of acctNames) {
       const acctEnv = `OMNI_${acct.toUpperCase()}_KEY`;
-      if (process.env[acctEnv]) {
-        (savedAccounts[name] ||= {})[acct] = { was: prov.accounts[acct] || "", imposed: process.env[acctEnv] };
-        prov.accounts[acct] = process.env[acctEnv];
+      const acctEnvVal = process.env[acctEnv];
+      const acctOnDisk = String(prov.accounts[acct] || "").trim();
+      if (acctEnvVal && !acctOnDisk) {
+        (savedAccounts[name] ||= {})[acct] = { was: prov.accounts[acct] || "", imposed: acctEnvVal };
+        prov.accounts[acct] = acctEnvVal;
       }
     }
     if (acctNames.length) {
@@ -392,7 +402,9 @@ function applyEnvKeyOverrides(settings) {
       // first account seeds that account, so switching/failover has a base.
       const first = acctNames[0];
       if (!String(prov.accounts[first] || "").trim() && String(prov.apiKey || "").trim()) {
-        if (process.env[envKey]) {
+        // Track this seed only when the apiKey came from env, so saveSettings
+        // strips it back. A settings.json-sourced apiKey is the user's choice.
+        if (envFilled) {
           (savedAccounts[name] ||= {})[first] = { was: "", imposed: prov.apiKey };
         }
         prov.accounts[first] = prov.apiKey;
@@ -480,6 +492,29 @@ function migrateSettings(settings) {
   if (settings.models?.["gwn/mythos"]) {
     delete settings.models["gwn/mythos"];
     if (settings.defaultModel === "gwn/mythos") settings.defaultModel = "nvidia/glm-5.2";
+  }
+
+  // Older installs carried a "minimax/m3" model pointing at the non-canonical
+  // "minimax" provider. Migrate to "minimax.io/m3" and drop the stray entry
+  // so the model picker doesn't show two near-duplicates.
+  if (settings.models?.["minimax/m3"]) {
+    if (!settings.models?.["minimax.io/m3"]) {
+      settings.models["minimax.io/m3"] = { ...settings.models["minimax/m3"], provider: "minimax.io" };
+    }
+    delete settings.models["minimax/m3"];
+    if (settings.defaultModel === "minimax/m3") settings.defaultModel = "minimax.io/m3";
+  }
+
+  // Both minimax.io and minimax used to ship with the same "MiniMax" label,
+  // making /connect, /disconnect, and /provider pickers visually identical.
+  // Split them so users can tell the two providers apart. Only refreshes
+  // labels that still match the old ambiguous value — a custom label the
+  // user typed is preserved.
+  if (settings.providers?.["minimax.io"]?.label === "MiniMax") {
+    settings.providers["minimax.io"].label = "MiniMax (api.minimax.io)";
+  }
+  if (settings.providers?.minimax?.label === "MiniMax") {
+    settings.providers.minimax.label = "MiniMax (legacy alias)";
   }
 
   return settings;

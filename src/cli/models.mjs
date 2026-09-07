@@ -17,8 +17,8 @@ import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from ".
 export const PROVIDER_PRESETS = {
   // User-curated first batch
   kimi:    { baseUrl: "https://api.moonshot.cn/v1",  label: "Kimi (Moonshot)", reasoningParam: "none" },
-  "minimax.io": { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax",         reasoningParam: "none" },
-  minimax:      { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax",         reasoningParam: "none" },
+  "minimax.io": { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax (api.minimax.io)", reasoningParam: "none" },
+  minimax:      { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax (legacy alias)",    reasoningParam: "none" },
   agnes:   { baseUrl: "https://apihub.agnes-ai.com/v1", label: "Agnes AI" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",

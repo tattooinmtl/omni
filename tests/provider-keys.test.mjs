@@ -24,6 +24,7 @@ process.env.OMNI_HOME = home;
 const KEY_VARS = [
   "OMNI_NVIDIA_KEY", "OMNI_NVIDIA1_KEY", "OMNI_NVIDIA2_KEY",
   "OMNI_AGNES_KEY", "OMNI_AGNES1_KEY", "OMNI_AGNES2_KEY", "OMNI_AGNES_KEY2",
+  "OMNI_MINIMAX_IO_KEY", "OMNI_MINIMAX_KEY",
 ];
 function clearEnvKeys() {
   for (const k of KEY_VARS) process.env[k] = "";
@@ -170,6 +171,33 @@ async function main() {
       assert.ok(!raw.includes("ENV-SECRET-legacy-seed"), "settings.json contains the legacy-seed env value");
       assert.equal(json.providers.nvidia.apiKey, "");
       assert.equal(json.providers.nvidia.accounts.nvidia1, "");
+    });
+  }
+
+  // 7. settings.json wins when env ALSO has a key for the same provider.
+  //    Previously, env always overrode settings.json — /apikey looked broken
+  //    when the new key differed from .env's value (a stale .env entry kept
+  //    reasserting itself on every launch). Precedence now: settings.json
+  //    is canonical; env only fills empty slots.
+  reset();
+  {
+    process.env.OMNI_MINIMAX_IO_KEY = "ENV-OVERRIDE-KEY";
+    // Seed settings.json with a real key first (simulates user ran /apikey).
+    const initial = JSON.parse(JSON.stringify({
+      ...(await loadSettings()),
+    }));
+    initial.providers["minimax.io"].apiKey = "SETTINGS-JSON-KEY";
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(initial, null, 2));
+    const settings = await loadSettings();
+    ok("settings.json key wins over env when both are set", () => {
+      assert.equal(settings.providers["minimax.io"].apiKey, "SETTINGS-JSON-KEY");
+    });
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("env key does not leak into settings.json, settings.json key persists", () => {
+      assert.equal(json.providers["minimax.io"].apiKey, "SETTINGS-JSON-KEY");
+      assert.ok(!raw.includes("ENV-OVERRIDE-KEY"), "env key leaked into settings.json");
     });
   }
 

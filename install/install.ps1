@@ -57,15 +57,13 @@ function Ensure-Command([string]$Name, [string]$Hint) {
   }
 }
 
-# Where does Omni live? Explicit -InstallDir wins. Otherwise: running from a
-# checkout (install\install.ps1) targets that checkout; piped from the web
-# ($PSScriptRoot is empty) targets the default user install dir.
+# Where does Omni live? The canonical user install dir is always $HOME/.omni.
+# The leading dot avoids a name collision with the unrelated "omni" app shipped
+# by another vendor — never install to a bare ~/omni. Pass -InstallDir to
+# override (e.g. for a development checkout); otherwise the piped one-liner and
+# .\install\install.ps1 from anywhere both target $HOME/.omni.
 function Resolve-InstallDir() {
   if ($InstallDir) { return (New-Item -ItemType Directory -Path $InstallDir -Force).FullName }
-  if ($PSScriptRoot) {
-    $candidate = Split-Path -Parent $PSScriptRoot
-    if (Test-Path (Join-Path $candidate "package.json")) { return $candidate }
-  }
   return (Join-Path $HOME ".omni")
 }
 
