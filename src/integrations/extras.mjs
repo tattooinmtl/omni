@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { fdPath, INSTALL_ROOT } from "../paths.mjs";
 import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
 import { HOME } from "../core/config.mjs";
+import { wrapSessionContext } from "../core/session-context.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
@@ -242,11 +243,13 @@ function titleCase(slug) {
   return String(slug || "").replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Build the full system prompt: prompt file (or fallback) + runtime context + skills.
-export function buildSystemPrompt(config, skills) {
+// Build the full system prompt: prompt file (or fallback) + runtime context +
+// skills + any extra context (memory preamble). Everything after `base` is
+// wrapped in the session-context marker so the per-turn persona swap in
+// core/agent.mjs can carry it across instead of discarding it.
+export function buildSystemPrompt(config, skills, extra = "") {
   const base = readPromptText(config) || fallbackPrompt();
   const ctx = [
-    "",
     "# Environment",
     `Working directory: ${process.cwd()}`,
     `Platform: ${process.platform}`,
@@ -256,7 +259,8 @@ export function buildSystemPrompt(config, skills) {
   if (skills && skills.length) {
     sk = "\n\n" + renderSkillsSection(skills);
   }
-  return base + "\n" + ctx + sk;
+  const tail = String(extra || "").trim();
+  return base + "\n\n" + wrapSessionContext(ctx + sk + (tail ? "\n\n" + tail : ""));
 }
 
 // skills-master stub. Previously this dumped every skill (command + one-line

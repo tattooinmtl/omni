@@ -12,6 +12,7 @@ import {
 } from "./toolcalls.mjs";
 import { syncOkfNavGuidance } from "./okfnav.mjs";
 import { syncLocalPromptGuidance } from "./local-prompt.mjs";
+import { extractSessionContext } from "./session-context.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import {
   CHAT_MEMORY_ID, CODEGRAPH_ID, OKF_ROOT_ID,
@@ -787,10 +788,17 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
 
   // If a persona is active, swap the system message and iteration budget.
   // Falls back to the defaults above when persona is null (existing behaviour).
+  // Only the base prompt is swapped — the session-context block (environment,
+  // skill catalog, memory preamble) is carried over, since the router runs on
+  // every turn and a wholesale replace silently dropped all three from turn 2 on.
   if (persona) {
     maxIterations = persona.maxIterations ?? maxIterations;
     if (messages.length > 0 && messages[0].role === "system") {
-      messages[0] = { role: "system", content: persona.systemPrompt() };
+      const carried = extractSessionContext(messages[0].content);
+      messages[0] = {
+        role: "system",
+        content: persona.systemPrompt() + (carried ? "\n\n" + carried : ""),
+      };
     }
   }
   // Local models get strict index-first OKF navigation rules; frontier
