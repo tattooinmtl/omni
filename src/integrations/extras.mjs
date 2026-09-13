@@ -10,6 +10,7 @@ import { fdPath, INSTALL_ROOT } from "../paths.mjs";
 import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
 import { HOME } from "../core/config.mjs";
 import { wrapSessionContext } from "../core/session-context.mjs";
+import { parseFrontmatter } from "../core/frontmatter.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
@@ -127,48 +128,9 @@ function discoverSkills() {
   return out;
 }
 
-// Frontmatter parser for the leading `---` ... `---` block. Handles
-// `key: value` lines plus YAML block scalars (`|`, `|-`, `>`, `>-`):
-// indented lines that follow are folded into a single value. The same form
-// is used by every supported skill format, so all known frontmatter keys
-// (name, command, description, license, maintainer, user-invocable, …) work
-// uniformly — extras we don't consume are simply ignored.
-function parseFrontmatter(text) {
-  const m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-  if (!m) return { meta: {}, body: text };
-  const meta = {};
-  const raw = m[1].split("\n");
-  let i = 0;
-  while (i < raw.length) {
-    const line = raw[i];
-    const kv = line.match(/^([\w-]+):\s*(.*)$/);
-    if (!kv) { i++; continue; }
-    const key = kv[1];
-    let val = kv[2];
-    // Block scalars (`|`, `|-`, `>`, `>-`) and a common author mistake —
-    // a bare `description:` (empty value) followed by indented continuation
-    // lines. Both fold the next run of indented/blank lines into a single
-    // value.
-    const isBlockScalar = val === "|" || val === "|-" || val === ">" || val === ">-";
-    const isContinuationStart = val === "" && /^\s+\S/.test(raw[i + 1] || "");
-    if (isBlockScalar || isContinuationStart) {
-      const block = [];
-      i++;
-      while (i < raw.length) {
-        const next = raw[i];
-        if (next === "" || /^\s/.test(next)) {
-          block.push(next.replace(/^\s+/, ""));
-          i++;
-        } else break;
-      }
-      val = block.join(" ").replace(/\s+/g, " ").trim();
-    } else {
-      i++;
-    }
-    meta[key] = val;
-  }
-  return { meta, body: m[2].trim() };
-}
+// Frontmatter parsing lives in core/frontmatter.mjs — core/skill-index.mjs
+// needs the same parser, and importing it from here would close the
+// extras -> agent -> tools cycle.
 
 // Skills come from one place only: <INSTALL_ROOT>/skills/. Per-user skill
 // dirs under the home directory (e.g. ~/.kimi-code/skills, ~/.agents/skills)

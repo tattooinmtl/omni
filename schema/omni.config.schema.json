@@ -29,6 +29,10 @@
       "type": "boolean",
       "description": "When true, auto-discover skill directories by scanning skills/**/SKILL.md."
     },
+    "skillIndex": {
+      "type": "string",
+      "description": "Path to a skills.json index written by an external scanner (see hooks/scan-now.json). Skills listed there become searchable via find_skill and loadable via invoke_skill, tagged [external]. Bundled skills win on a name collision. Defaults to C:/.skills/skills.json; set to \"\" to disable."
+    },
     "registry": {
       "type": "string",
       "description": "Base URL of the package registry. `omni install <name>` reads <registry>/registry.json and downloads from <registry>/downloads/."

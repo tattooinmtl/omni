@@ -16,6 +16,7 @@ import {
 } from "../core/memory-provider.mjs";
 import { buildIndex as ragBuild, searchIndex as ragSearch } from "../integrations/rag.mjs";
 import { rankChunks } from "../core/bm25.mjs";
+import { loadScannedSkills } from "../core/skill-index.mjs";
 import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 
@@ -1248,12 +1249,18 @@ export const impl = {
     return clip(lines.join("\n") || "(empty file)");
   },
 
-  // Search the loaded skill catalog by keywords. Ranks skills by BM25 against
-  // "<command> <description> <category>" — no bodies read, no filesystem hit.
-  // Requires an active session context (skills are attached to ctx by main.mjs).
+  // Search the skill catalog by keywords. Ranks skills by BM25 against
+  // "<command> <description> <category>" — no bodies sent to the model.
+  //
+  // Searches the bundled catalog (<INSTALL_ROOT>/skills, attached to ctx by
+  // main.mjs) AND any skills the scan-now hook indexed from an external
+  // folder. The scanner has always written that index; nothing read it until
+  // now, so hundreds of scanned skills were invisible every session.
   find_skill({ query, limit = 5 }) {
     if (!query || !String(query).trim()) throw new Error("query is required");
-    const skills = _sessionCtx?.skills || [];
+    const bundled = _sessionCtx?.skills || [];
+    const external = loadScannedSkills(_sessionCtx?.project, bundled);
+    const skills = [...bundled, ...external];
     if (!skills.length) return "(no skills loaded in this session)";
     const cap = Math.min(Math.max(1, Number(limit) || 5), 20);
     const haystack = skills.map((s) => `${s.command} ${s.description || ""} ${s.category || ""}`);
@@ -1266,7 +1273,8 @@ export const impl = {
     return top
       .map((r) => {
         const s = skills[r.index];
-        return `${s.command} — ${(s.description || "").slice(0, 200)}`;
+        const tag = s.external ? " [external]" : "";
+        return `${s.command}${tag} — ${(s.description || "").slice(0, 200)}`;
       })
       .join("\n");
   },
@@ -1282,7 +1290,11 @@ export const impl = {
     if (!ctx || !Array.isArray(ctx.skills)) throw new Error("no active session context — skill invocation only works inside an interactive session");
     const wanted = String(command).trim();
     const norm = wanted.startsWith("/") ? wanted : "/" + wanted;
-    const skill = ctx.skills.find((s) => s.command === norm);
+    // Bundled first (they win on a name collision), then anything the
+    // scan-now hook indexed from an external folder.
+    const skill =
+      ctx.skills.find((s) => s.command === norm) ||
+      loadScannedSkills(ctx.project, ctx.skills).find((s) => s.command === norm);
     if (!skill) return `unknown skill: ${norm}. Call find_skill(query) to list matching commands.`;
     // Push the skill body straight into the live conversation. The REPL's
     // post-turn eviction (evictEphemeralSkillMessages) will drop it once
