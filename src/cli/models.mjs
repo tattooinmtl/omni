@@ -18,8 +18,10 @@ export const PROVIDER_PRESETS = {
   // User-curated first batch
   kimi:    { baseUrl: "https://api.moonshot.cn/v1",  label: "Kimi (Moonshot)", reasoningParam: "none" },
   "minimax.io": { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax (api.minimax.io)", reasoningParam: "none" },
-  minimax:      { baseUrl: "https://api.minimax.io/v1",  label: "MiniMax (legacy alias)",    reasoningParam: "none" },
   agnes:   { baseUrl: "https://apihub.agnes-ai.com/v1", label: "Agnes AI" },
+  // xKiro — unified gateway (OpenAI-compatible), 11 free-tier models under
+  // 5M tokens/day. Get a key at https://xkiro.com/dashboard.
+  xkiro:   { baseUrl: "https://api.xkiro.com/v1", label: "xKiro", reasoningParam: "none" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",
