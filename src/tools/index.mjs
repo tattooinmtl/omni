@@ -769,6 +769,52 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "self_review",
+      description:
+        "Have an independent critic review the change you just made, BEFORE you report it as done. " +
+        "It runs a separate agent that sees only the original task and your diff — never your reasoning — and returns " +
+        "findings as [BLOCKER|MAJOR|MINOR] file:line with concrete fixes, ending in a VERDICT line. It cannot modify anything. " +
+        "This blocks until the review comes back, then you act on it. " +
+        "Running the tests proves the code executes; this is what catches a requirement you missed, a case you didn't handle, " +
+        "or behaviour you broke somewhere else. Use it after implementing anything non-trivial, and again after a substantial revision. " +
+        "Pass `model` to review on a different model than your own — a second opinion from the same model tends to agree with itself.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: {
+            type: "string",
+            description: "What the change was supposed to accomplish, in the user's terms. The critic judges the diff against THIS, so state the actual requirement, including anything the user asked for that you chose not to do.",
+          },
+          diff_from: {
+            type: "string",
+            enum: ["unstaged", "staged", "head"],
+            description: "What to review: 'unstaged' (default, working-tree changes), 'staged', or 'head' (everything since the last commit).",
+          },
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional paths to limit the review to. Omit to review the whole diff.",
+          },
+          focus: {
+            type: "string",
+            description: "Optional — anything you're specifically unsure about and want scrutinised.",
+          },
+          model: {
+            type: "string",
+            description: "Optional model key to run the critic on, e.g. 'xkiro/mistral-large'. Defaults to the default model.",
+          },
+          timeout_ms: {
+            type: "integer",
+            description: "Max wait in ms (default 240000, max 600000).",
+          },
+        },
+        required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "agent_status",
       description: "Check on a sub-agent started by spawn_agent: still running, or its final result. Omit id to list every spawned sub-agent.",
       parameters: {
@@ -2016,6 +2062,10 @@ export const impl = {
     return spawnSubAgent({ prompt, model, name, permissions: context?.permissions, confirmTool: context?.confirmTool });
   },
 
+  self_review(args) {
+    return runSelfReview(args || {});
+  },
+
   agent_status({ id }) {
     return subAgentStatus({ id });
   },
@@ -2566,6 +2616,147 @@ function lastAssistantText(messages) {
     if (m.role === "assistant" && typeof m.content === "string" && m.content.trim()) return m.content.trim();
   }
   return "";
+}
+
+// ── self_review: an adversarial second pass over your own work ────────────
+//
+// VERIFY (run the tests) answers "does it execute". It cannot answer "is this
+// what was asked for", "did this miss a requirement", or "did this quietly
+// break something adjacent" — nothing in the loop ever challenged the work
+// itself, so a confidently wrong change sailed through as long as the suite
+// was green.
+//
+// The critic is a separate conversation that never sees the author's
+// reasoning — only the original task and the resulting diff. That is the
+// whole point: the author has already convinced itself, so re-reading its own
+// justification would just reconfirm it. Fresh eyes on the artifact alone.
+
+// Read-only allowlist. The critic gets a hard deny-by-default so it can
+// investigate but cannot "helpfully" fix anything — a critic that edits is no
+// longer an independent check, and its edits would land unreviewed.
+const CRITIC_PERMISSIONS = {
+  "*": "deny",
+  read_file: "allow",
+  read_many_files: "allow",
+  list_dir: "allow",
+  search: "allow",
+  find_files: "allow",
+  find_symbol: "allow",
+  grep: "allow",
+  git_diff: "allow",
+  git_status: "allow",
+  rag_search: "allow",
+  deps: "allow",
+  project_inspect: "allow",
+  diff_files: "allow",
+  jq_query: "allow",
+  where_is: "allow",
+};
+
+const CRITIC_PROMPT = [
+  "You are a code reviewer. You are reviewing someone else's change. You did not write it and you have no stake in it being correct.",
+  "",
+  "You are given the task that was requested and the diff that was produced. Your job is to find what is WRONG with it — not to summarize it, not to praise it.",
+  "",
+  "Check, in this order:",
+  "1. REQUIREMENT — does the change actually do what the task asked? Name anything asked for that is missing, partial, or quietly reinterpreted into something easier.",
+  "2. CORRECTNESS — bugs, wrong logic, off-by-one, bad error handling, unhandled null/empty/failure cases, race conditions, wrong types. Give a concrete input or state that produces the wrong result.",
+  "3. REGRESSION — does it break or contradict existing behaviour, callers, or tests? Read the surrounding code to check; do not assume the diff is self-contained.",
+  "4. EVIDENCE — does the claimed verification actually prove the change works, or was something asserted without being run?",
+  "",
+  "You may read files to investigate. You cannot modify anything — do not try.",
+  "",
+  "Output format — findings first, most severe first:",
+  "  [BLOCKER|MAJOR|MINOR] file:line — what is wrong, why it matters, and the concrete fix.",
+  "End with one line: `VERDICT: BLOCKERS` / `VERDICT: MAJOR` / `VERDICT: MINOR` / `VERDICT: CLEAN`.",
+  "",
+  "Only say VERDICT: CLEAN if you genuinely found nothing, and in that case list what you checked so the author can see the review had teeth.",
+  "Do not invent problems to look thorough — a fabricated finding wastes more time than it saves. Report what you can point at in the code.",
+].join("\n");
+
+async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, focus, timeout_ms = 240000 }) {
+  if (!task || !String(task).trim()) {
+    throw new Error("task is required — state what the change was supposed to accomplish, in the user's terms, so the critic can judge whether it does");
+  }
+
+  // Gather the artifact under review.
+  let diff = "";
+  const scope = Array.isArray(paths) && paths.length ? paths : [null];
+  for (const p of scope) {
+    const args = ["diff"];
+    if (diff_from === "staged") args.push("--staged");
+    else if (diff_from === "head") args.push("HEAD");
+    if (p) {
+      if (String(p).startsWith("-")) throw new Error(`path "${p}" starts with '-'`);
+      args.push("--", p);
+    }
+    const out = runGit(args);
+    if (out) diff += (diff ? "\n" : "") + out;
+  }
+  if (!diff.trim()) {
+    return "(nothing to review — no diff found. If the work is uncommitted new files, `git add -N <path>` first so they appear in the diff; if it was already committed, pass diff_from:\"head\".)";
+  }
+  // Keep the critic inside its context window; a 200KB diff would blow it.
+  const MAX_DIFF = 60000;
+  let noteTruncated = "";
+  if (diff.length > MAX_DIFF) {
+    noteTruncated = `\n\n[diff truncated at ${MAX_DIFF} of ${diff.length} chars — review what is shown and say so if you need the rest]`;
+    diff = diff.slice(0, MAX_DIFF);
+  }
+
+  const { runTurn } = await import("../core/agent.mjs");
+  const settings = await loadSettings();
+  const resolved = resolveModel(settings, model || settings.defaultModel);
+  const messages = [
+    { role: "system", content: CRITIC_PROMPT },
+    {
+      role: "user",
+      content: [
+        "## Task that was requested",
+        String(task).trim(),
+        focus ? `\n## The author specifically wants scrutiny on\n${String(focus).trim()}` : "",
+        "\n## Diff produced",
+        "```diff",
+        diff,
+        "```" + noteTruncated,
+      ].filter(Boolean).join("\n"),
+    },
+  ];
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(30000, Math.min(Number(timeout_ms) || 240000, 600000)));
+  try {
+    await runTurn({
+      model: resolved,
+      settings,
+      messages,
+      session: new Session(),
+      maxIterations: 12,
+      diffPreview: false,
+      signal: controller.signal,
+      permissions: CRITIC_PERMISSIONS,
+      confirmTool: null,
+    });
+  } catch (e) {
+    if (controller.signal.aborted) {
+      return `(self_review timed out after ${Math.round((Number(timeout_ms) || 240000) / 1000)}s on ${resolved.key} — treat the change as UNREVIEWED. Re-run with a smaller paths scope, or review it yourself against the task.)`;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const verdict = lastAssistantText(messages);
+  if (!verdict) {
+    return `(the critic on ${resolved.key} returned nothing — treat the change as UNREVIEWED rather than approved.)`;
+  }
+  return [
+    `Independent review of your change by ${resolved.key} (it saw only the task and the diff, not your reasoning):`,
+    "",
+    verdict,
+    "",
+    "Now act on this: fix what is real, and for anything you disagree with, say why in your summary rather than silently ignoring it. A CLEAN verdict is not permission to skip running the tests.",
+  ].join("\n");
 }
 
 function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = null }) {

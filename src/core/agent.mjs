@@ -227,7 +227,7 @@ function messagesWithTextTools(messages) {
 // "[object Object]". Swap each image part for a one-line text note so calling
 // read_media_file on a non-vision model degrades gracefully instead of
 // breaking the request. Vision-capable native-tool providers keep the pixels.
-function stripImageParts(messages) {
+function stripImageParts(messages, modelKey = null) {
   let touched = false;
   const out = messages.map((m) => {
     if (!Array.isArray(m.content)) return m;
@@ -245,7 +245,12 @@ function stripImageParts(messages) {
         .filter((p) => typeof p === "string" ? p.trim().length > 0 : (p?.text || "").length > 0),
     };
   });
-  if (touched) warnLine("image part(s) dropped — the active model has no vision support");
+  if (touched) {
+    warnLine(
+      `image(s) not sent — ${modelKey || "the active model"} is not marked vision-capable. ` +
+      `If it can see images, add "vision": true to that model's entry in settings.json (or to its provider) and retry.`,
+    );
+  }
   return out;
 }
 
@@ -501,11 +506,13 @@ function statusForTools(calls) {
 export function systemPrompt() {
   return [
     "You are Omni Agent, a terminal-based coding agent.",
-    "You help with software engineering tasks in the user's current working directory.",
+    "You build and you audit: you create new projects and features from scratch, and you find and fix bugs, errors and vulnerabilities in existing ones. Both are core work — read the request to see which it is, rather than defaulting to one.",
+    "You work in the user's current working directory.",
     `Working directory: ${process.cwd()}`,
     `Platform: ${process.platform}`,
     "",
     "Use the provided tools to inspect projects, read files, patch code, manage project todos, inspect git, manage dev processes, run shell commands, and run tests.",
+    "You can build complete applications end to end: scaffold with run_shell (raise timeout_ms — create-* and installs exceed the 120s default), write the code, install dependencies, start the dev server with start_process, then actually check your work — web_fetch or http_request with allow_internal:true to hit your own endpoints, browser_navigate with allow_internal:true plus browser_screenshot and read_media_file to see the page render.",
     "Prefer making concrete changes with tools over describing them.",
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
@@ -513,11 +520,15 @@ export function systemPrompt() {
     "Work through every task in these steps, in order. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
     "1. UNDERSTAND — read the whole prompt as one piece, then silently categorize it: what kind of task is this (question / bug fix / new feature / refactor / investigation / config change / something else), what is it actually asking for, what parts of the codebase does it touch.",
     "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Read-only tools are always fine to use freely at this stage — this step is what makes step 3 accurate instead of a guess.",
-    "3. PRESENT THE PLAN, then STOP and wait — this is a real checkpoint, not a formality. For any task beyond a one-line trivial fix or a simple factual question, your reply must be plain text ONLY (no write/change tool calls yet: no edit_file, apply_patch, write_file, run_shell that changes anything, git_commit, etc.) laying out: (a) how you categorized the request — what you understood it to mean, (b) the concrete plan — the steps you intend to take, and (c) if there is more than one reasonable way to do it (different libraries, quick fix vs. proper refactor, anything where the right call depends on a preference you don't know), the options with their tradeoffs. Then wait for the user's next message. If they correct your understanding (by re-explaining, rephrasing, or adjusting the request), re-read it and present a revised plan the same way — do not proceed on a plan you know was corrected. Only skip this checkpoint for something so small a plan would be pure noise (fix this typo, what does this function do, run this exact command).",
+    "3. PLAN — state how you categorized the request and the concrete steps you intend to take. Whether you then stop depends on what the work would do:",
+    "   STOP and wait for the user when the work is RISKY OR UNDERDETERMINED: it modifies or deletes existing code or data the user did not point you at; it is a large refactor or migration; it touches auth, payments, secrets, or production config; it is irreversible; or there is more than one reasonable approach and the right call depends on a preference you don't know (in which case list the options with their tradeoffs). In these cases reply in plain text ONLY — no edit_file, apply_patch, write_file, mutating run_shell, or git_commit yet.",
+    "   PROCEED without stopping when the request is clear and ADDITIVE: building something new (a new project, app, file, feature, endpoint, component, test), or a small well-scoped fix. Say the plan in a couple of lines, then carry it out in the same turn. 'Build me X' is an instruction to build X, not a request for a proposal — stopping to ask permission to start is a failure to do the task.",
+    "   If the user corrects your understanding at any point, re-read the request and revise the plan before continuing — never proceed on a plan you know was corrected.",
     "3b. IF BLOCKED ON MISSING INFORMATION — at any point, if something you need to proceed correctly is missing or unclear (a file that should exist doesn't, a requirement could mean two different things, you need a credential/URL/decision only the user has), STOP and ask the user directly instead of guessing on anything consequential. Only proceed on your own judgment for genuinely low-stakes, easily-reversible details.",
     "4. IMPLEMENT — once the user has approved the plan (or the task was small enough to skip step 3), execute it start to finish without stopping to ask again — you already have what you need. Make changes in small increments, one file at a time. Use apply_patch for multi-hunk/multi-file edits, edit_file for tiny exact replacements, write_file only for new files or full rewrites. Match the conventions of the surrounding code. For multi-step work, track it in project_todo (add each task, mark the active one in_progress) as you go rather than re-asking the user anything already settled by the approved plan.",
     "5. VERIFY — this step is not optional and is not a formality. Prove the change actually works: run the relevant tests, build, or linter (run_test / run_shell); check git_diff to confirm the change is exactly what you intended. If verification fails OR you didn't actually run it, you are NOT done — fix it and re-verify, looping back to step 4/5 as many times as it takes, on your own, without waiting for the user to tell you to. Never report a task as finished, or that something \"should work,\" without having actually run something that proves it.",
-    "6. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, and anything left open.",
+    "6. REVIEW — for any non-trivial change, call self_review before you report. It runs an independent critic that sees only the task and your diff, and returns findings with a VERDICT. Step 5 proves the code RUNS; this is what catches a requirement you skipped, a case you didn't handle, or behaviour you broke elsewhere — the things you are least able to spot in your own work, because you already believe it's right. Fix every BLOCKER and MAJOR, then re-verify. If you disagree with a finding, say so with a reason in your summary; do not silently drop it. Skip this only for genuinely trivial edits (a typo, a one-line config value).",
+    "7. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, what the review said, and anything left open.",
     "",
     "# Guidelines",
     "- Always read a file before editing it so you know the exact content.",
@@ -813,6 +824,12 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   const useTemplate = Boolean(model.chatTemplate);
   const useNativeTools = model.nativeTools !== false;
   const useTextTools = !useNativeTools;
+  // Vision is its own capability. The old gate keyed off tool-calling mode,
+  // so any native-tools model kept the pixels whether or not it could see —
+  // a text-only model then either 400'd on the image_url part or invented a
+  // description of an image it never received. Pixels now go only to a model
+  // declared vision-capable (`vision: true` on the model or its provider).
+  const canSeeImages = model.vision === true;
 
   // Schema registry for the tolerant text-tool parser, and a budget of
   // corrective retries when the model emits a malformed/truncated tool call.
@@ -873,7 +890,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // placeholders with no pixel data, so the model would hallucinate.
         let prompt;
         try {
-          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages), tools);
+          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages, model.key), tools);
         } catch (e) {
           stopStatus();
           errorLine(`Template render failed: ${e.message}`);
@@ -897,9 +914,10 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // provider sees them (in-memory `messages` is untouched — the full
         // body is still on disk for /expand). Classic mode is a no-op.
         const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
+        const visible = canSeeImages ? shaped : stripImageParts(shaped, model.key);
         const providerMessages = useTextTools
-          ? messagesWithTextTools(stripImageParts(shaped))
-          : useTemplate ? stripImageParts(shaped) : shaped;
+          ? messagesWithTextTools(stripImageParts(visible, model.key))
+          : visible;
         resp = await chatStreamWithRetry({
           model,
           settings,

@@ -229,9 +229,9 @@ const DEFAULT_SETTINGS = {
   // contextWindow is the model's full context size; omit it to auto-detect
   // (provider metadata, then a known-family table). Override with /context.
   models: {
-    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576 },
-    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576 },
-    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000 },
+    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576, vision: true },
+    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576, vision: true },
+    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000, vision: true },
     "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192, contextWindow: 8192 },
     "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
     "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
@@ -436,7 +436,31 @@ function applyEnvKeyOverrides(settings) {
   settings._env = { savedKeys, savedAccounts };
 }
 
+// Model ids known to accept image input. Used only to stamp `vision: true`
+// onto an existing settings.json that predates the flag — without this, an
+// install that already has its own "openai/gpt-4.1" entry keeps winning the
+// merge against DEFAULT_SETTINGS and silently loses the ability to see
+// images. Matching is on the provider-side model id, not the local key, so a
+// user's own naming still resolves. An explicit `vision: false` is respected.
+const KNOWN_VISION_MODEL_IDS = [
+  /^gpt-4\.1(-mini|-nano)?$/i,
+  /^gpt-4o(-mini)?$/i,
+  /^o4-mini$/i,
+  /^o3(-mini)?$/i,
+];
+
+function stampKnownVisionModels(settings) {
+  for (const entry of Object.values(settings.models || {})) {
+    if (!entry || typeof entry !== "object") continue;
+    if ("vision" in entry) continue; // user's explicit choice, either way
+    if (KNOWN_VISION_MODEL_IDS.some((re) => re.test(String(entry.id || "")))) {
+      entry.vision = true;
+    }
+  }
+}
+
 function migrateSettings(settings) {
+  stampKnownVisionModels(settings);
   if (settings.defaultModel === "nvidia/glm-5.1" || settings.defaultModel === "nvidia/glm-5.2") {
     settings.defaultModel = "nvidia/nemotron-3-ultra-550b-a55b";
   }
@@ -705,6 +729,14 @@ export function resolveModel(settings, modelKey) {
     chatTemplate: provider.chatTemplate || null,
     reasoning: m.reasoning === false ? "off" : (settings.reasoning || "medium"),
     nativeTools: m.nativeTools !== false && provider.nativeTools !== false,
+    // Whether this model can actually see images. Separate from nativeTools:
+    // tool-calling support says nothing about vision, and conflating the two
+    // meant a text-only model on a native-tools provider was sent raw
+    // image_url parts (a 400, or a confident hallucination about an image it
+    // never received). Unset = unknown, which agent.mjs treats as "don't send
+    // pixels" — a needless "image omitted" note is cheap; a fabricated
+    // description of a screenshot is not.
+    vision: m.vision === true || (m.vision !== false && provider.vision === true),
     // Per-model tool-call cap. Default 30 (matches the old hardcoded value
     // for everything); specific providers/models override it via the
     // `maxToolIterations` field on their model entry (e.g. minimax.io gets
