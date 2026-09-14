@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 let pass = 0, fail = 0;
@@ -60,10 +61,30 @@ await ok("self_review refuses to run without the original task", async () => {
 });
 
 await ok("self_review reports 'nothing to review' rather than approving an empty diff", async () => {
-  const out = await impl.self_review({ task: "anything", paths: ["package.json"] });
-  assert.match(String(out), /nothing to review/i);
-  assert.ok(!/CLEAN|approved|looks good/i.test(String(out)),
-    "an empty diff must never read as a pass");
+  // In a throwaway repo with one committed, untouched file — NOT this repo's
+  // own package.json, which this suite used to point at. That only read as an
+  // empty diff while the working tree happened to be clean; the moment anyone
+  // edited it (a version bump, say) the assertion flipped and the test fired a
+  // real model call to find out.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cleanrepo-"));
+  fs.writeFileSync(path.join(repo, "clean.txt"), "committed and untouched\n");
+  const git = (...args) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  if (git("init", "-q").status !== 0) {
+    console.log("    (skipped — git unavailable)");
+    return;
+  }
+  git("add", "clean.txt");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed");
+
+  const cwd = process.cwd();
+  try {
+    process.chdir(repo);
+    const out = String(await impl.self_review({ task: "anything", paths: ["clean.txt"] }));
+    assert.match(out, /nothing to review/i);
+    assert.ok(!/CLEAN|approved|looks good/i.test(out), "an empty diff must never read as a pass");
+  } finally {
+    process.chdir(cwd);
+  }
 });
 
 // Plenty of real work happens in folders that were never `git init`ed. There,
