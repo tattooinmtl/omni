@@ -18,6 +18,7 @@
     "skills/okf-knowledge"
   ],
   "autoDiscoverSkills": true,
+  "skillIndex": "C:/.skills/skills.json",
   "registry": "https://globalwarningnetworks.com/repo",
   "mcpServers": {
     "okf": {

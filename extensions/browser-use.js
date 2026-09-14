@@ -32,6 +32,10 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import { resolveContained } from "./file-tools.js";
 
+// Where screenshots land by default. Must match vision-tools.js's readable
+// roots exactly, or read_media_file refuses the file we just wrote.
+const IMAGE_CACHE = path.join(os.homedir(), ".omni", "image-cache");
+
 const BROWSER_CANDIDATES = [
   process.env.OMNI_BROWSER_EXE,
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -294,16 +298,26 @@ class BrowserSession {
 
   async screenshot({ path: outPath } = {}) {
     // Contain a model-supplied output path BEFORE spawning the browser:
-    // workspace root or the OS temp dir only (same lexical + symlink
-    // containment as the core write tools, via file-tools' resolver).
+    // workspace root, the image cache, or the OS temp dir only (same lexical +
+    // symlink containment as the core write tools, via file-tools' resolver).
+    //
+    // The default lands in IMAGE_CACHE, not %TEMP%, because vision-tools'
+    // read_media_file only accepts the workspace or the image cache — a
+    // %TEMP% default meant the agent could take a screenshot it was then
+    // refused permission to look at.
     const file = outPath
-      ? resolveContained(outPath, { roots: [process.cwd(), os.tmpdir()] })
-      : path.join(os.tmpdir(), `omni-screenshot-${Date.now()}.png`);
+      ? resolveContained(outPath, { roots: [process.cwd(), IMAGE_CACHE, os.tmpdir()] })
+      : path.join(IMAGE_CACHE, `omni-screenshot-${Date.now()}.png`);
+    await fs.mkdir(path.dirname(file), { recursive: true });
     await this._spawn();
     const { data } = await this._send("Page.captureScreenshot", { format: "png" });
     const buf = Buffer.from(data, "base64");
     await fs.writeFile(file, buf);
-    return { path: file, bytes: buf.length };
+    return {
+      path: file,
+      bytes: buf.length,
+      hint: "To look at this screenshot, call read_media_file with this path — it attaches the pixels. read_file would return raw PNG bytes as text.",
+    };
   }
 
   async evaluate(expression, { awaitPromise = false } = {}) {
@@ -314,7 +328,9 @@ class BrowserSession {
       awaitPromise,
     }, { timeoutMs: 30000 });
     if (result.exceptionDetails) {
-      throw new Error(`JS error: ${result.exceptionDetails.text || JSON.stringify(result.exceptionDetails)}`);
+      const desc = result.exceptionDetails.exception?.description;
+      const text = desc || result.exceptionDetails.text || JSON.stringify(result.exceptionDetails);
+      throw new Error(`JS error: ${text}`);
     }
     return result.result?.value;
   }
@@ -427,11 +443,12 @@ export default {
         name: "browser_screenshot",
         description:
           "Take a PNG screenshot of the current viewport and save it to disk. Returns the file path. " +
-          "The agent reads the file with read_file when it needs to inspect the image.",
+          "To actually SEE the result, pass that path to read_media_file, which attaches the pixels — " +
+          "do NOT use read_file, which returns raw PNG bytes as unreadable text.",
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Output file path — must stay inside the workspace or %TEMP% (default: a temp file under %TEMP%)" },
+            path: { type: "string", description: "Output file path — must stay inside the workspace, the image cache, or %TEMP% (default: the image cache, which read_media_file can always read)" },
           },
         },
       },

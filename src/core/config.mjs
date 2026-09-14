@@ -126,6 +126,15 @@ const DEFAULT_SETTINGS = {
       activeAccount: "agnes1",
       label: "Agnes AI",
     },
+    xkiro: {
+      // Unified gateway to 100+ models via a single OpenAI-compatible API.
+      // Free tier: 5M tokens/day across the free-priced models below (no card).
+      // Get a key at https://xkiro.com/dashboard — docs at https://docs.xkiro.com.
+      baseUrl: "https://api.xkiro.com/v1",
+      apiKey: "",
+      label: "xKiro",
+      reasoningParam: "none",
+    },
     "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
@@ -220,9 +229,9 @@ const DEFAULT_SETTINGS = {
   // contextWindow is the model's full context size; omit it to auto-detect
   // (provider metadata, then a known-family table). Override with /context.
   models: {
-    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576 },
-    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576 },
-    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000 },
+    "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576, vision: true },
+    "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576, vision: true },
+    "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000, vision: true },
     "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192, contextWindow: 8192 },
     "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
     "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
@@ -251,6 +260,18 @@ const DEFAULT_SETTINGS = {
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384, contextWindow: 262144 },
     "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384, contextWindow: 163840 },
     "local/coder": { provider: "local", id: "Qwopus3.5-9B-Coder.i1-Q6_K", maxTokens: 8192 },
+    // xKiro free tier — 11 models at $0/token, 5M tokens/day shared cap.
+    "xkiro/mistral-large":          { provider: "xkiro", id: "mistralai/mistral-large-2512",     maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/mistral-medium-3.5":     { provider: "xkiro", id: "mistralai/mistral-medium-3.5",     maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/mistral-small":          { provider: "xkiro", id: "mistralai/mistral-small-2603",     maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/codestral":              { provider: "xkiro", id: "mistralai/codestral-2508",         maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/devstral-medium":        { provider: "xkiro", id: "mistralai/devstral-medium",        maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/ministral-14b":          { provider: "xkiro", id: "mistralai/ministral-14b",          maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/ministral-8b":           { provider: "xkiro", id: "mistralai/ministral-8b",           maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/ministral-3b":           { provider: "xkiro", id: "mistralai/ministral-3b",           maxTokens: 16384, contextWindow: 131072, free: true },
+    "xkiro/gpt-5.3-codex-spark":    { provider: "xkiro", id: "openai/gpt-5.3-codex-spark",       maxTokens: 16384, contextWindow: 131072, free: true },
+    "xkiro/sensenova-6.8-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.8-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/sensenova-6.7-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.7-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
   // warm Python sidecar + local ML (sub-ms, free, no network).
@@ -415,7 +436,31 @@ function applyEnvKeyOverrides(settings) {
   settings._env = { savedKeys, savedAccounts };
 }
 
+// Model ids known to accept image input. Used only to stamp `vision: true`
+// onto an existing settings.json that predates the flag — without this, an
+// install that already has its own "openai/gpt-4.1" entry keeps winning the
+// merge against DEFAULT_SETTINGS and silently loses the ability to see
+// images. Matching is on the provider-side model id, not the local key, so a
+// user's own naming still resolves. An explicit `vision: false` is respected.
+const KNOWN_VISION_MODEL_IDS = [
+  /^gpt-4\.1(-mini|-nano)?$/i,
+  /^gpt-4o(-mini)?$/i,
+  /^o4-mini$/i,
+  /^o3(-mini)?$/i,
+];
+
+function stampKnownVisionModels(settings) {
+  for (const entry of Object.values(settings.models || {})) {
+    if (!entry || typeof entry !== "object") continue;
+    if ("vision" in entry) continue; // user's explicit choice, either way
+    if (KNOWN_VISION_MODEL_IDS.some((re) => re.test(String(entry.id || "")))) {
+      entry.vision = true;
+    }
+  }
+}
+
 function migrateSettings(settings) {
+  stampKnownVisionModels(settings);
   if (settings.defaultModel === "nvidia/glm-5.1" || settings.defaultModel === "nvidia/glm-5.2") {
     settings.defaultModel = "nvidia/nemotron-3-ultra-550b-a55b";
   }
@@ -513,9 +558,6 @@ function migrateSettings(settings) {
   if (settings.providers?.["minimax.io"]?.label === "MiniMax") {
     settings.providers["minimax.io"].label = "MiniMax (api.minimax.io)";
   }
-  if (settings.providers?.minimax?.label === "MiniMax") {
-    settings.providers.minimax.label = "MiniMax (legacy alias)";
-  }
 
   return settings;
 }
@@ -559,8 +601,33 @@ export async function loadSettings() {
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
-  } catch {
+  } catch (e) {
+    // An unreadable settings.json used to fall back to bare defaults in
+    // silence. Every provider key vanished with no message, and the next
+    // saveSettings() wrote those defaults straight over the file — turning a
+    // one-character typo in a hand-edited config into permanent key loss that
+    // presents as "I added my API key, restarted, and it wasn't saved".
+    //
+    // Now: say so loudly, keep a copy of whatever was there, and mark the
+    // settings so saveSettings refuses to overwrite the original.
     const settings = { ...DEFAULT_SETTINGS };
+    const missing = e?.code === "ENOENT";
+    if (!missing) {
+      let backup = null;
+      try {
+        backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+        fs.copyFileSync(SETTINGS_PATH, backup);
+      } catch { backup = null; }
+      settings._loadError = { message: e?.message || String(e), backup };
+      process.stderr.write(
+        `\n!! Could not read ${SETTINGS_PATH}\n` +
+        `   ${e?.message || e}\n` +
+        `   Running on built-in defaults for this session — your providers, API keys and models are NOT loaded.\n` +
+        (backup ? `   A copy of the unreadable file is at:\n     ${backup}\n` : "") +
+        `   Fix the JSON (a trailing comma or an unescaped quote is the usual cause) and restart.\n` +
+        `   Settings will NOT be saved over while in this state, so nothing further is lost.\n\n`,
+      );
+    }
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
@@ -571,7 +638,19 @@ export async function loadSettings() {
 // Note: env-var key overrides always win on next load (see applyEnvKeyOverrides).
 export async function saveSettings(settings) {
   ensureHome();
-  const { _env, ...clean } = settings; // drop any runtime-only fields
+  // Refuse to write when this session booted on defaults because the real
+  // settings.json could not be parsed. Saving here would replace a file that
+  // is still fully recoverable by hand with a stripped-down default — the
+  // user's keys would go from "temporarily unreadable" to actually gone.
+  if (settings?._loadError) {
+    process.stderr.write(
+      `\n!! Not saving settings — ${SETTINGS_PATH} could not be read at startup.\n` +
+      `   Overwriting it now would discard the providers and keys still in that file.\n` +
+      `   Fix its JSON and restart, then re-apply this change.\n\n`,
+    );
+    return;
+  }
+  const { _env, _loadError, ...clean } = settings; // drop any runtime-only fields
   // Providers whose key came from the environment keep their original on-disk
   // value — unless the user changed the key this session (e.g. /apikey), in
   // which case the new value is intentional and persists.
@@ -650,6 +729,14 @@ export function resolveModel(settings, modelKey) {
     chatTemplate: provider.chatTemplate || null,
     reasoning: m.reasoning === false ? "off" : (settings.reasoning || "medium"),
     nativeTools: m.nativeTools !== false && provider.nativeTools !== false,
+    // Whether this model can actually see images. Separate from nativeTools:
+    // tool-calling support says nothing about vision, and conflating the two
+    // meant a text-only model on a native-tools provider was sent raw
+    // image_url parts (a 400, or a confident hallucination about an image it
+    // never received). Unset = unknown, which agent.mjs treats as "don't send
+    // pixels" — a needless "image omitted" note is cheap; a fabricated
+    // description of a screenshot is not.
+    vision: m.vision === true || (m.vision !== false && provider.vision === true),
     // Per-model tool-call cap. Default 30 (matches the old hardcoded value
     // for everything); specific providers/models override it via the
     // `maxToolIterations` field on their model entry (e.g. minimax.io gets

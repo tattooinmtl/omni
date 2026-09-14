@@ -161,7 +161,7 @@ export async function main(args) {
   }
 
   const session = new Session();
-  const messages = [{ role: "system", content: buildSystemPrompt(project, skills) + memoryPreamble() }];
+  const messages = [{ role: "system", content: buildSystemPrompt(project, skills, memoryPreamble()) }];
 
   // Persist the current model as "last good" on every clean exit (Ctrl+C,
   // /exit, normal completion) so the next launch reloads it. Async save —

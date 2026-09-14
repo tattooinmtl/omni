@@ -61,13 +61,41 @@ export const PERSONAS = {
 // ---------------------------------------------------------------------------
 const CODING_RE = /\b(fix|bug|error|exception|traceback|refactor|implement|build|compile|debug|test|lint|deploy|migrate|patch|commit|rebase|merge|dockerfile|webpack|vite|npm|pip|cargo|gradle|cmake|makefile)\b|\.(py|js|ts|mjs|rs|go|java|cpp|c|cs|rb|php|sh|sql|yml|yaml|toml|json)\b|```[\w]*\n|def\s+\w+\s*\(|function\s+\w+\s*\(|class\s+\w+[\s:(]|import\s+\w|from\s+\w+\s+import|(File|line)\s+\d+/i;
 
-const ASSISTANT_RE = /^(what\s+is|what\s+are|who\s+is|explain|summarize|describe|tell\s+me|how\s+do\s+i|can\s+you|write\s+(me\s+)?(a\s+)?(poem|song|story|joke|haiku)|translate|compare|list\s+the|give\s+me|pros\s+and\s+cons|what'?s\s+the\s+difference)/i;
+// Creative/translation asks are assistant work even when they mention code —
+// "write me a poem about debugging" is a poem, not a debugging task. These
+// outrank the coding signals.
+const CREATIVE_RE = /^(write\s+(me\s+)?(a\s+)?(poem|song|story|joke|haiku|limerick)|translate\b)/i;
 
-function jsHeuristic(message) {
-  // Check assistant-strong signals first so creative/conversational prompts that
-  // happen to contain a coding keyword ("poem about debugging") route correctly.
-  if (ASSISTANT_RE.test(message)) return { persona: "assistant", confidence: 0.75, method: "js-heuristic" };
-  if (CODING_RE.test(message)) return { persona: "coding", confidence: 0.80, method: "js-heuristic" };
+// Generic conversational openers. These are WEAK: they say how the sentence
+// starts, not what it's about. "How do I…", "Can you…" and "Give me…" open
+// plenty of real build requests, so a coding signal in the rest of the
+// message outranks them.
+const OPENER_RE = /^(what\s+is|what\s+are|who\s+is|explain|summarize|describe|tell\s+me|how\s+do\s+i|can\s+you|compare|list\s+the|give\s+me|pros\s+and\s+cons|what'?s\s+the\s+difference)/i;
+
+// Build/scaffold vocabulary that CODING_RE misses. It keys on repair verbs
+// ("fix", "bug", "refactor") and file extensions, so a from-scratch request
+// like "make a chat app with websockets" carries no signal at all and used to
+// fall through to whichever branch matched first.
+// Bare "app" and "site" are deliberately absent: they appear in plenty of
+// prose questions ("summarize the twelve-factor app") and turned those into
+// coding turns. Compound and framework terms carry the build intent instead.
+const BUILD_RE = /\b(api|backend|frontend|full[\s-]?stack|database|schema|endpoint|web\s?app|mobile\s+app|website|dashboard|landing\s+page|scaffold|boilerplate|crud|authentication|component|micro-?service|e-?commerce|saas|react|next\.?js|vue|svelte|express|fastapi|django|flask|rails|postgres|mysql|sqlite|mongo|tailwind|websocket)\b/i;
+
+export function jsHeuristic(message) {
+  const text = String(message || "");
+  // Creative first — it must win even when the topic is code.
+  if (CREATIVE_RE.test(text)) return { persona: "assistant", confidence: 0.80, method: "js-heuristic" };
+  // Then real work signals. Checking these BEFORE the generic openers is the
+  // fix: previously ASSISTANT_RE ran first, so "how do i build a full stack
+  // app with auth" and "can you create a next.js dashboard" were classified
+  // assistant — a 425-char prompt with no workflow, no VERIFY step, no skill
+  // guidance and 12 tool iterations instead of 30. This path is the fallback
+  // whenever the Python sidecar is missing, so it has to stand on its own.
+  if (CODING_RE.test(text) || BUILD_RE.test(text)) {
+    return { persona: "coding", confidence: 0.80, method: "js-heuristic" };
+  }
+  // A bare conversational question with no work signal really is assistant.
+  if (OPENER_RE.test(text)) return { persona: "assistant", confidence: 0.75, method: "js-heuristic" };
   return { persona: "coding", confidence: 0.50, method: "js-default" };
 }
 

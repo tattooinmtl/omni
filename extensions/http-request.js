@@ -7,9 +7,11 @@
 // Security:
 // - Reuses the SSRF guard + redirect-hopping safeFetch from web-search.js
 //   (the single implementation — every redirect target is re-validated, so
-//   a public URL that redirects to 169.254.169.254 is still refused). The
-//   guard has no loopback override: 127.0.0.0/8 and localhost are refused
-//   here; use browser_navigate's allow_internal for local dev work.
+//   a public URL that redirects to 169.254.169.254 is still refused).
+//   allow_internal opens loopback only, and only on the first hop, so the
+//   agent can exercise a dev server it started without that flag also
+//   accepting a public URL that 302s to 127.0.0.1. Private LAN, link-local
+//   and unique-local stay refused with or without it.
 // - Credential-shaped response headers (authorization, set-cookie,
 //   x-api-key, ...) are replaced with "[redacted]" before output, mirroring
 //   the repo's redact-secrets convention (src/core/config.mjs keeps
@@ -93,8 +95,10 @@ export default {
         description:
           "Make an HTTP request (GET/POST/PUT/PATCH/DELETE/HEAD) with custom headers and an optional string body, " +
           "and return the status line, response headers, and body. Use for API testing, where web_fetch " +
-          "(GET-only, fixed headers) is insufficient. Internal/private/loopback addresses are refused, and " +
-          "every redirect hop is re-validated against the same guard. Secret-shaped response headers are redacted.",
+          "(GET-only, fixed headers) is insufficient — including exercising the endpoints of a dev server you " +
+          "started, by passing allow_internal:true. Private LAN and cloud-metadata addresses are refused " +
+          "regardless, and every redirect hop is re-validated against the same guard. " +
+          "Secret-shaped response headers are redacted.",
         parameters: {
           type: "object",
           properties: {
@@ -117,6 +121,10 @@ export default {
               type: "integer",
               description: "Request timeout in ms (default 30000, max 120000)",
             },
+            allow_internal: {
+              type: "boolean",
+              description: "Allow loopback/localhost URLs — use to call a local dev server you started (default false). Private LAN and cloud-metadata addresses stay blocked regardless.",
+            },
           },
           required: ["url"],
         },
@@ -124,7 +132,7 @@ export default {
     },
   ],
   impl: {
-    async http_request({ url, method = "GET", headers, body, timeout_ms } = {}) {
+    async http_request({ url, method = "GET", headers, body, timeout_ms, allow_internal = false } = {}) {
       const timeout = Math.max(1000, Math.min(Number(timeout_ms) || DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS));
       try {
         if (!url || !/^https?:\/\//i.test(String(url))) {
@@ -144,7 +152,7 @@ export default {
         const opts = { method: m, headers: hdrs, signal: AbortSignal.timeout(timeout) };
         // fetch() itself rejects a body on GET/HEAD — drop it there.
         if (body != null && m !== "GET" && m !== "HEAD") opts.body = String(body);
-        const res = await safeFetch(url, opts);
+        const res = await safeFetch(url, opts, 5, { allowInternal: !!allow_internal });
         const buf = Buffer.from(await res.arrayBuffer());
         return formatResponse({ status: res.status, statusText: res.statusText, headers: res.headers, body: buf });
       } catch (e) {

@@ -16,23 +16,28 @@ const UA =
 // both literal IPs and DNS-resolved hostnames (so a hostname that merely
 // *resolves* to an internal address is caught too, not just a literal IP in
 // the URL).
+// Returns a reason string ("loopback", "private", …) or null when the address
+// is fine. A reason rather than a boolean so callers can treat loopback
+// differently from the rest: the agent legitimately needs to reach a dev
+// server it just started, and only loopback is ever overridable. Same shape
+// and policy as the guard in browser-use.js.
 function isBlockedIp(ip) {
   const version = net.isIP(ip);
   if (version === 4) {
     const [a, b] = ip.split(".").map(Number);
-    if (a === 127) return true;                        // loopback
-    if (a === 10) return true;                          // private
-    if (a === 172 && b >= 16 && b <= 31) return true;    // private
-    if (a === 192 && b === 168) return true;             // private
-    if (a === 169 && b === 254) return true;             // link-local, incl. cloud metadata
-    if (a === 0) return true;                            // "this network"
-    return false;
+    if (a === 127) return "loopback";
+    if (a === 10) return "private";
+    if (a === 172 && b >= 16 && b <= 31) return "private";
+    if (a === 192 && b === 168) return "private";
+    if (a === 169 && b === 254) return "link-local";     // incl. cloud metadata
+    if (a === 0) return "this-network";
+    return null;
   }
   if (version === 6) {
     const low = ip.toLowerCase();
-    if (low === "::1" || low === "::") return true;      // loopback / unspecified
-    if (low.startsWith("fe80:")) return true;            // link-local
-    if (/^f[cd][0-9a-f]{0,2}:/.test(low)) return true;   // unique local (fc00::/7)
+    if (low === "::1" || low === "::") return "loopback"; // loopback / unspecified
+    if (low.startsWith("fe80:")) return "link-local";
+    if (/^f[cd][0-9a-f]{0,2}:/.test(low)) return "unique-local"; // fc00::/7
     // IPv4-mapped (::ffff:a.b.c.d) / IPv4-compatible (::a.b.c.d) IPv6 —
     // net.isIP classifies these as version 6, so without unwrapping them a
     // literal like "::ffff:127.0.0.1" or "::ffff:169.254.169.254" sails
@@ -50,24 +55,34 @@ function isBlockedIp(ip) {
       const octets = [high >> 8, high & 0xff, lowWord >> 8, lowWord & 0xff];
       return isBlockedIp(octets.join("."));
     }
-    return false;
+    return null;
   }
-  return false;
+  return null;
 }
 
 // Exported (with safeFetch below) so http-request.js reuses this single
 // SSRF-guard implementation instead of growing a divergent copy.
-export async function assertPublicUrl(urlStr) {
+// `allowInternal` permits LOOPBACK ONLY (127.0.0.0/8, ::1, "localhost") — the
+// case where the agent needs to read a dev server it just started. Private
+// RFC-1918 ranges, link-local (cloud metadata) and unique-local stay refused
+// unconditionally; there is no flag that opens those.
+export async function assertPublicUrl(urlStr, { allowInternal = false } = {}) {
   const u = new URL(urlStr);
   if (u.protocol !== "http:" && u.protocol !== "https:") {
     throw new Error(`unsupported protocol: ${u.protocol}`);
   }
   const hostname = u.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 [] brackets
   if (hostname.toLowerCase() === "localhost") {
-    throw new Error(`refusing to fetch localhost`);
+    if (allowInternal) return;
+    throw new Error(`refusing to fetch localhost (pass allow_internal:true to read a local dev server)`);
   }
   if (net.isIP(hostname)) {
-    if (isBlockedIp(hostname)) throw new Error(`refusing to fetch internal/private address: ${hostname}`);
+    const why = isBlockedIp(hostname);
+    if (why === "loopback" && allowInternal) return;
+    if (why === "loopback") {
+      throw new Error(`refusing to fetch loopback address: ${hostname} (pass allow_internal:true to read a local dev server)`);
+    }
+    if (why) throw new Error(`refusing to fetch ${why} address: ${hostname}`);
     return;
   }
   let addrs;
@@ -77,8 +92,10 @@ export async function assertPublicUrl(urlStr) {
     throw new Error(`could not resolve host: ${hostname}`);
   }
   for (const { address } of addrs) {
-    if (isBlockedIp(address)) {
-      throw new Error(`refusing to fetch — "${hostname}" resolves to an internal/private address (${address})`);
+    const why = isBlockedIp(address);
+    if (why === "loopback" && allowInternal) continue;
+    if (why) {
+      throw new Error(`refusing to fetch — "${hostname}" resolves to a ${why} address (${address})`);
     }
   }
 }
@@ -86,10 +103,17 @@ export async function assertPublicUrl(urlStr) {
 // fetch() with redirect:"follow" validates only the FIRST url — a redirect to
 // an internal address would sail through unchecked. Follow redirects
 // ourselves, one hop at a time, re-validating every target.
-export async function safeFetch(url, options, maxRedirects = 5) {
+//
+// `allowInternal` deliberately applies to the FIRST hop only. Honouring it on
+// redirects would reopen the exact hole the guard exists to close: a public
+// URL (possibly named by a page the model just read) answering 302 ->
+// http://127.0.0.1:<port>/ and reaching a local service. A dev server the
+// agent started does not redirect to itself via a public host, so first-hop
+// only costs the legitimate case nothing.
+export async function safeFetch(url, options, maxRedirects = 5, { allowInternal = false } = {}) {
   let current = url;
   for (let i = 0; i <= maxRedirects; i++) {
-    await assertPublicUrl(current);
+    await assertPublicUrl(current, { allowInternal: allowInternal && i === 0 });
     const res = await fetch(current, { ...options, redirect: "manual" });
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       const loc = res.headers.get("location");
@@ -334,12 +358,18 @@ export default {
       function: {
         name: "web_fetch",
         description:
-          "Fetch an http(s) URL and return its readable text content (HTML stripped). Use after web_search to read documentation or articles. YouTube URLs are automatically routed to youtube_transcript.",
+          "Fetch an http(s) URL and return its readable text content (HTML stripped). Use after web_search to read documentation or articles. " +
+          "YouTube URLs are automatically routed to youtube_transcript. " +
+          "To read a dev server you started on localhost (e.g. checking your own API or page renders), pass allow_internal:true.",
         parameters: {
           type: "object",
           properties: {
             url: { type: "string", description: "Full http(s) URL to fetch" },
             max_chars: { type: "integer", description: "Max characters to return, default 15000" },
+            allow_internal: {
+              type: "boolean",
+              description: "Allow loopback/localhost URLs — use for a local dev server you started (default false). Private LAN and cloud-metadata addresses stay blocked regardless.",
+            },
           },
           required: ["url"],
         },
@@ -384,7 +414,7 @@ export default {
       }
     },
 
-    async web_fetch({ url, max_chars = 15000 }) {
+    async web_fetch({ url, max_chars = 15000, allow_internal = false }) {
       try {
         if (!/^https?:\/\//i.test(String(url))) {
           return "web_fetch error: only http(s) URLs are supported";
@@ -396,7 +426,7 @@ export default {
         const res = await safeFetch(url, {
           headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
           signal: AbortSignal.timeout(30000),
-        });
+        }, 5, { allowInternal: !!allow_internal });
         if (!res.ok) return `web_fetch failed: HTTP ${res.status} ${res.statusText}`;
         const type = res.headers.get("content-type") || "";
         const body = await res.text();

@@ -71,6 +71,14 @@
     "agnes": {
       "baseUrl": "https://apihub.agnes-ai.com/v1",
       "apiKey": ""
+    },
+    // xKiro — unified gateway, OpenAI-compatible. Free tier: 5M tokens/day
+    // across 11 free-priced models (Mistral family, GPT-5.3 Codex Spark,
+    // SenseNova 6.7/6.8 flash-lite). Sign up at https://xkiro.com/dashboard.
+    "xkiro": {
+      "baseUrl": "https://api.xkiro.com/v1",
+      "apiKey": "",
+      "reasoningParam": "none"
     }
   },
 
@@ -78,12 +86,21 @@
   // maxTokens is the OUTPUT cap per response (sent as max_tokens).
   // The context window is auto-detected (provider metadata, then a known-family
   // table); pin it explicitly with "contextWindow": 202752 or the /context command.
+  // Models. Optional per-model flags:
+  //   "reasoning": true   send this provider's reasoning-effort parameter
+  //   "vision": true      this model can SEE images — required before
+  //                       read_media_file / read_video_file / a browser
+  //                       screenshot will have its pixels sent. Without it the
+  //                       images are dropped with a warning, because a
+  //                       text-only model given an image_url part either
+  //                       errors or invents a description of what it "saw".
+  //                       Can also be set once on the provider.
   "models": {
     "nvidia/nemotron-3-ultra-550b-a55b": { "provider": "nvidia", "id": "nvidia/nemotron-3-ultra-550b-a55b", "maxTokens": 16384 },
     "nvidia/glm-5.2":       { "provider": "nvidia",     "id": "z-ai/glm-5.2",                "maxTokens": 16384 },
     "nvidia/llama-3.3-70b": { "provider": "nvidia",     "id": "meta/llama-3.3-70b-instruct", "maxTokens": 4096 },
-    "openai/gpt-4.1":       { "provider": "openai",     "id": "gpt-4.1",                     "maxTokens": 16384 },
-    "openai/o4-mini":       { "provider": "openai",     "id": "o4-mini",                     "maxTokens": 16384, "reasoning": true },
+    "openai/gpt-4.1":       { "provider": "openai",     "id": "gpt-4.1",                     "maxTokens": 16384, "vision": true },
+    "openai/o4-mini":       { "provider": "openai",     "id": "o4-mini",                     "maxTokens": 16384, "reasoning": true, "vision": true },
     "openrouter/sonnet":    { "provider": "openrouter", "id": "anthropic/claude-3.5-sonnet", "maxTokens": 8192 },
     "openrouter/llama-3-8b": { "provider": "openrouter", "id": "meta-llama/llama-3-8b-instruct:free", "maxTokens": 8192, "free": true },
     "openrouter/mistral-7b": { "provider": "openrouter", "id": "mistralai/mistral-7b-instruct:free", "maxTokens": 8192, "free": true },
@@ -91,6 +108,17 @@
     "agnes/2.5-flash":      { "provider": "agnes",      "id": "agnes-2.5-flash",            "maxTokens": 16384, "free": true },
     "agnes/2.5-pro-alpha":  { "provider": "agnes",      "id": "agnes-2.5-pro-alpha",        "maxTokens": 16384 },
     "agnes/2.0-flash":      { "provider": "agnes",      "id": "agnes-2.0-flash",            "maxTokens": 8192, "free": true },
+    "xkiro/mistral-large":            { "provider": "xkiro", "id": "mistralai/mistral-large-2512",         "maxTokens": 16384, "free": true },
+    "xkiro/mistral-medium-3.5":       { "provider": "xkiro", "id": "mistralai/mistral-medium-3.5",         "maxTokens": 16384, "free": true },
+    "xkiro/mistral-small":            { "provider": "xkiro", "id": "mistralai/mistral-small-2603",         "maxTokens": 16384, "free": true },
+    "xkiro/codestral":                { "provider": "xkiro", "id": "mistralai/codestral-2508",             "maxTokens": 16384, "free": true },
+    "xkiro/devstral-medium":          { "provider": "xkiro", "id": "mistralai/devstral-medium",            "maxTokens": 16384, "free": true },
+    "xkiro/ministral-14b":            { "provider": "xkiro", "id": "mistralai/ministral-14b",              "maxTokens": 16384, "free": true },
+    "xkiro/ministral-8b":             { "provider": "xkiro", "id": "mistralai/ministral-8b",               "maxTokens": 16384, "free": true },
+    "xkiro/ministral-3b":             { "provider": "xkiro", "id": "mistralai/ministral-3b",               "maxTokens": 16384, "free": true },
+    "xkiro/gpt-5.3-codex-spark":      { "provider": "xkiro", "id": "openai/gpt-5.3-codex-spark",           "maxTokens": 16384, "free": true },
+    "xkiro/sensenova-6.8-flash-lite": { "provider": "xkiro", "id": "sensenova/sensenova-6.8-flash-lite",   "maxTokens": 16384, "free": true },
+    "xkiro/sensenova-6.7-flash-lite": { "provider": "xkiro", "id": "sensenova/sensenova-6.7-flash-lite",   "maxTokens": 16384, "free": true },
     "local/coder":          { "provider": "local",      "id": "your-model-name",             "maxTokens": 8192 }
   },
 

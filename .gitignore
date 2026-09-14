@@ -67,3 +67,6 @@ evil.com.png
 agent/
 # Same for the legacy per-user install location.
 omni-home/
+
+# Scratch sub-project — an abandoned experiment, kept on disk but not shipped.
+buddy/
