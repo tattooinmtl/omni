@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runTool } from "../src/tools/index.mjs";
 import { resolvePackage } from "../src/integrations/registry.mjs";
-import { loadSettings, resolveModel } from "../src/core/config.mjs";
+import { loadSettings, resolveModel, DEFAULT_SETTINGS } from "../src/core/config.mjs";
 import { buildChatBody } from "../src/core/provider.mjs";
 
 let pass = 0, fail = 0;
@@ -238,9 +238,24 @@ await assert("resolveModel carries configured reasoning tier",
 );
 
 const loadedSettings = await loadSettings();
-await assert("NVIDIA Nemotron Ultra 3 550B is the built-in default model",
+await assert("NVIDIA Nemotron Ultra 3 550B still resolves under the nvidia provider",
   resolveModel(loadedSettings, "nvidia/nemotron-3-ultra-550b-a55b"),
-  r => r.id === "nvidia/nemotron-3-ultra-550b-a55b" && loadedSettings.defaultModel === "nvidia/nemotron-3-ultra-550b-a55b"
+  r => r.id === "nvidia/nemotron-3-ultra-550b-a55b"
+);
+
+await assert("xkiro provider is registered with qwen3.8-max-free entry pointing at qwen/qwen3.8-max:free",
+  loadedSettings.models?.["xkiro/qwen3.8-max-free"],
+  m => m && m.provider === "xkiro" && m.id === "qwen/qwen3.8-max:free" && m.free === true
+);
+
+await assert("xKiro + qwen3.8-max-free is the shipped built-in default provider/model",
+  { provider: DEFAULT_SETTINGS.defaultProvider, model: DEFAULT_SETTINGS.defaultModel },
+  r => r.provider === "xkiro" && r.model === "xkiro/qwen3.8-max-free"
+);
+
+await assert("resolveModel wires xkiro/qwen3.8-max-free to the xkiro provider and the qwen:free id",
+  resolveModel(loadedSettings, "xkiro/qwen3.8-max-free"),
+  r => r.id === "qwen/qwen3.8-max:free" && r.providerName === "xkiro" && r.provider?.baseUrl === "https://api.xkiro.com/v1"
 );
 
 await assert("NVIDIA uses Pi-style text tools, not native provider functions",

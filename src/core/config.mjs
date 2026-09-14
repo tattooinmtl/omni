@@ -29,9 +29,9 @@ export const SESSIONS_DIR = path.join(HOME, "sessions");
 // settings.json, or via environment variables:
 //   OMNI_NVIDIA_KEY, OMNI_OPENAI_KEY, OMNI_<PROVIDER>_KEY, …
 // See settings.example.json for a fully-commented template.
-const DEFAULT_SETTINGS = {
-  defaultProvider: "nvidia",
-  defaultModel: "nvidia/nemotron-3-ultra-550b-a55b",
+export const DEFAULT_SETTINGS = {
+  defaultProvider: "xkiro",
+  defaultModel: "xkiro/qwen3.8-max-free",
   reasoning: "medium",
   maxToolIterations: 30,
   diffPreview: true,
@@ -272,6 +272,7 @@ const DEFAULT_SETTINGS = {
     "xkiro/gpt-5.3-codex-spark":    { provider: "xkiro", id: "openai/gpt-5.3-codex-spark",       maxTokens: 16384, contextWindow: 131072, free: true },
     "xkiro/sensenova-6.8-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.8-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
     "xkiro/sensenova-6.7-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.7-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
+    "xkiro/qwen3.8-max-free": { provider: "xkiro", id: "qwen/qwen3.8-max:free", maxTokens: 16384, contextWindow: 131072, free: true },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
   // warm Python sidecar + local ML (sub-ms, free, no network).
