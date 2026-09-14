@@ -8,6 +8,7 @@ import { setLastProvider } from "../core/last-provider.mjs";
 import { listProviderModels, probeModel } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
+import { restoreLineEditing } from "./term.mjs";
 
 // Provider presets shown by /addprovider and `/provider presets`. Order is
 // significant — /addprovider's arrow picker uses this exact order, with
@@ -364,7 +365,9 @@ export async function pickModelWithArrows(ctx, providerName = ctx.model.provider
       renderModelPicker(ctx, rows, selected, providerName);
     });
     process.stdout.write("\x1b[?25h");
-    process.stdin.setRawMode(false);
+    // Back to the REPL's line editing — NOT cooked mode, which would leave the
+    // prompt without keypress events for the rest of the session (term.mjs).
+    restoreLineEditing(ctx.rl);
     console.log("");
     if (!chosen) {
       infoLine("model selection canceled");
@@ -373,7 +376,7 @@ export async function pickModelWithArrows(ctx, providerName = ctx.model.provider
     await switchModel(ctx, chosen.key);
   } finally {
     process.stdout.write("\x1b[?25h");
-    if (ctx.canRaw) process.stdin.setRawMode(false);
+    if (ctx.canRaw) restoreLineEditing(ctx.rl);
     ctx.rl.resume();
   }
 }
@@ -484,7 +487,7 @@ export async function pickProviderWithArrows(ctx) {
     infoLine(`switched to ${label} — model: ${modelKey}`);
   } finally {
     process.stdout.write("\x1b[?25h\x1b[?1000l\x1b[?1006l");
-    if (ctx.canRaw) process.stdin.setRawMode(false);
+    if (ctx.canRaw) restoreLineEditing(ctx.rl);
     ctx.rl.resume();
   }
 }
@@ -591,9 +594,9 @@ export async function runArrowPicker(rows, opts = {}) {
     });
   } finally {
     process.stdout.write("\x1b[?25h\x1b[?1000l\x1b[?1006l");
-    if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
-      process.stdin.setRawMode(false);
-    }
+    // With a REPL behind us this restores its raw-mode line editing; without
+    // one (one-shot / piped) it falls back to cooked mode as before.
+    restoreLineEditing(ctx?.rl);
     if (ctx?.rl) ctx.rl.resume();
   }
 }
