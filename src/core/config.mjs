@@ -31,7 +31,7 @@ export const SESSIONS_DIR = path.join(HOME, "sessions");
 // See settings.example.json for a fully-commented template.
 export const DEFAULT_SETTINGS = {
   defaultProvider: "xkiro",
-  defaultModel: "xkiro/qwen3.8-max-free",
+  defaultModel: "xkiro/mistral-medium-3.5",
   reasoning: "medium",
   maxToolIterations: 30,
   diffPreview: true,
@@ -260,19 +260,23 @@ export const DEFAULT_SETTINGS = {
     "nvidia/qwen3.5-397b": { provider: "nvidia", id: "qwen/qwen3.5-397b-a17b", maxTokens: 16384, contextWindow: 262144 },
     "nvidia/deepseek-v4-pro": { provider: "nvidia", id: "deepseek-ai/deepseek-v4-pro", maxTokens: 16384, contextWindow: 163840 },
     "local/coder": { provider: "local", id: "Qwopus3.5-9B-Coder.i1-Q6_K", maxTokens: 8192 },
-    // xKiro free tier — 11 models at $0/token, 5M tokens/day shared cap.
-    "xkiro/mistral-large":          { provider: "xkiro", id: "mistralai/mistral-large-2512",     maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/mistral-medium-3.5":     { provider: "xkiro", id: "mistralai/mistral-medium-3.5",     maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/mistral-small":          { provider: "xkiro", id: "mistralai/mistral-small-2603",     maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/codestral":              { provider: "xkiro", id: "mistralai/codestral-2508",         maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/devstral-medium":        { provider: "xkiro", id: "mistralai/devstral-medium",        maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/ministral-14b":          { provider: "xkiro", id: "mistralai/ministral-14b",          maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/ministral-8b":           { provider: "xkiro", id: "mistralai/ministral-8b",           maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/ministral-3b":           { provider: "xkiro", id: "mistralai/ministral-3b",           maxTokens: 16384, contextWindow: 131072, free: true },
+    // xKiro free tier — 12 models at $0/token. The cap is 500K tokens/day
+    // shared across every free model on the account (not 5M, and not per
+    // model): burn it on Mistral and Qwen 429s too. `/v1/usage` reports
+    // free_tokens.remaining, and a 429 carries retry-after + x-ratelimit-scope.
+    // Limits below are what /v1/models advertises, not copy-paste boilerplate.
+    "xkiro/mistral-large":          { provider: "xkiro", id: "mistralai/mistral-large-2512",     maxTokens: 16384, contextWindow: 256000, free: true, vision: true },
+    "xkiro/mistral-medium-3.5":     { provider: "xkiro", id: "mistralai/mistral-medium-3.5",     maxTokens: 65536, contextWindow: 256000, free: true, vision: true, reasoning: true },
+    "xkiro/mistral-small":          { provider: "xkiro", id: "mistralai/mistral-small-2603",     maxTokens: 65536, contextWindow: 256000, free: true, vision: true, reasoning: true },
+    "xkiro/codestral":              { provider: "xkiro", id: "mistralai/codestral-2508",         maxTokens: 16384, contextWindow: 256000, free: true },
+    "xkiro/devstral-medium":        { provider: "xkiro", id: "mistralai/devstral-medium",        maxTokens: 16384, contextWindow: 256000, free: true },
+    "xkiro/ministral-14b":          { provider: "xkiro", id: "mistralai/ministral-14b",          maxTokens: 8192,  contextWindow: 256000, free: true, vision: true },
+    "xkiro/ministral-8b":           { provider: "xkiro", id: "mistralai/ministral-8b",           maxTokens: 8192,  contextWindow: 256000, free: true, vision: true },
+    "xkiro/ministral-3b":           { provider: "xkiro", id: "mistralai/ministral-3b",           maxTokens: 8192,  contextWindow: 128000, free: true, vision: true },
     "xkiro/gpt-5.3-codex-spark":    { provider: "xkiro", id: "openai/gpt-5.3-codex-spark",       maxTokens: 16384, contextWindow: 131072, free: true },
     "xkiro/sensenova-6.8-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.8-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
     "xkiro/sensenova-6.7-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.7-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
-    "xkiro/qwen3.8-max-free": { provider: "xkiro", id: "qwen/qwen3.8-max:free", maxTokens: 16384, contextWindow: 131072, free: true },
+    "xkiro/qwen3.8-max-free":       { provider: "xkiro", id: "qwen/qwen3.8-max:free",          maxTokens: 65536, contextWindow: 1000000, free: true, vision: true },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
   // warm Python sidecar + local ML (sub-ms, free, no network).
@@ -843,6 +847,15 @@ const SECRET_PATTERNS = [
   /sk-[a-zA-Z0-9_-]{16,}/g,
   /gh[pousr]_[A-Za-z0-9]{20,}/g,
   /AKIA[0-9A-Z]{16}/g,
+  // Provider key formats that `sk-` never covered. Their absence was not
+  // theoretical: NVIDIA and Groq keys were the only ones found sitting in
+  // plaintext in session logs and memory-atoms.jsonl, precisely because every
+  // other provider here issues an `sk-` key and got redacted for free. Note
+  // gsk_ (Groq) is NOT matched by the gh[pousr]_ GitHub rule above.
+  /nvapi-[A-Za-z0-9_-]{20,}/g,
+  /gsk_[A-Za-z0-9]{40,}/g,
+  /AIza[0-9A-Za-z_-]{30,}/g,
+  /xai-[A-Za-z0-9]{20,}/g,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g,
   // Generic "key=value" catch-all. Tightened (TODO #4) — the old regex matched
   // ANY string after a key-word + `:`/`=`, so a sentence like "Use the API

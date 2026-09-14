@@ -103,6 +103,39 @@ await ok("a long credential in 'secret: ...' form is redacted", async () => {
   assert.ok(!got.includes("7f3b9c2a1e8d4f6b5a0c9e2d1f4b7a8c"), `secret: value was NOT redacted:\n${got}`);
 });
 
+// ---- bare provider keys: no 'api_key=' prefix to lean on ----
+//
+// These four formats were unredacted until now, and it was not hypothetical:
+// NVIDIA and Groq keys were found in plaintext in three session logs and in
+// memory-atoms.jsonl, while every sk- provider on the same account came out
+// clean. The keyword catch-all does NOT save these — a bare key pasted as a
+// `/model` argument or an `add provider` line has no `key=` in front of it.
+
+await ok("a bare NVIDIA nvapi- key is redacted with no keyword in front of it", async () => {
+  const got = await appendAndRead("add provider nvidia nvapi-AbCdEf1234567890GhIjKlMnOpQrStUvWxYz0123456789");
+  assert.ok(!got.includes("nvapi-AbCdEf1234567890"), `nvapi- key was NOT redacted:\n${got}`);
+});
+
+await ok("a bare Groq gsk_ key is redacted (gh[pousr]_ never covered it)", async () => {
+  const got = await appendAndRead("add provider groq gsk_Abcdefghij1234567890Klmnopqrst0987654321Uvwxyz");
+  assert.ok(!got.includes("gsk_Abcdefghij1234567890"), `gsk_ key was NOT redacted:\n${got}`);
+});
+
+await ok("a bare Google AIza key is redacted", async () => {
+  const got = await appendAndRead("google key AIzaSyDdE1234567890abcdefghijklmnopqrs");
+  assert.ok(!got.includes("AIzaSyDdE1234567890"), `AIza key was NOT redacted:\n${got}`);
+});
+
+await ok("a bare xAI xai- key is redacted", async () => {
+  const got = await appendAndRead("xai-1234567890abcdefghijklmnopqrstuvwxyz");
+  assert.ok(!got.includes("xai-1234567890abcdefghij"), `xai- key was NOT redacted:\n${got}`);
+});
+
+await ok("the nvidia-glm-5.2 model name is still NOT mistaken for an nvapi- key", async () => {
+  const got = await appendAndRead("switch to nvidia-glm-5.2 please");
+  assert.ok(got.includes("nvidia-glm-5.2"), `model name was over-redacted:\n${got}`);
+});
+
 fs.rmSync(tmpHome, { recursive: true, force: true });
 
 console.log(`\n${pass} passed, ${fail} failed`);
