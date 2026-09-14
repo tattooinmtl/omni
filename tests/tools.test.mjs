@@ -248,9 +248,27 @@ await assert("xkiro provider is registered with qwen3.8-max-free entry pointing 
   m => m && m.provider === "xkiro" && m.id === "qwen/qwen3.8-max:free" && m.free === true
 );
 
-await assert("xKiro + qwen3.8-max-free is the shipped built-in default provider/model",
+// The limits below are what xKiro's own /v1/models endpoint reports for this
+// model — not the 16384/131072 boilerplate the neighbouring free-tier entries
+// carry. It also advertises image input, and vision is only auto-stamped for
+// OpenAI ids, so the flag has to be explicit or the model silently goes blind.
+await assert("xkiro/qwen3.8-max-free carries the limits xKiro actually advertises",
+  loadedSettings.models?.["xkiro/qwen3.8-max-free"],
+  m => m && m.contextWindow === 1000000 && m.maxTokens === 65536 && m.vision === true
+);
+
+// Mistral Medium 3.5 is the free-tier pick for the agentic loop: the only
+// $0 xKiro model carrying tools + vision + reasoning with a 65K output
+// budget. The shipped default must stay pointed at a model that can drive
+// the whole loop, not just chat.
+await assert("xKiro + Mistral Medium 3.5 is the shipped built-in default provider/model",
   { provider: DEFAULT_SETTINGS.defaultProvider, model: DEFAULT_SETTINGS.defaultModel },
-  r => r.provider === "xkiro" && r.model === "xkiro/qwen3.8-max-free"
+  r => r.provider === "xkiro" && r.model === "xkiro/mistral-medium-3.5"
+);
+
+await assert("the shipped default model can actually drive the agentic loop (tools + vision + reasoning)",
+  DEFAULT_SETTINGS.models?.[DEFAULT_SETTINGS.defaultModel],
+  m => m && m.free === true && m.vision === true && m.reasoning === true && m.maxTokens === 65536
 );
 
 await assert("resolveModel wires xkiro/qwen3.8-max-free to the xkiro provider and the qwen:free id",
