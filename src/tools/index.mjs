@@ -417,13 +417,13 @@ export const tools = [
     function: {
       name: "edit_lines",
       description:
-        "Replace a 1-based, inclusive line range of a file with new content (new_string may be empty to delete the lines). To INSERT without replacing, pass end_line < start_line — the new lines go in before start_line. Use when edit_file's exact-match replacement is awkward (old_string missing or repeated).",
+        "Replace a 1-based, inclusive line range of a file with new content (new_string may be empty to delete the lines). To INSERT without replacing, pass end_line < start_line — the new lines go in before start_line. To APPEND to the end, pass start_line = (number of lines + 1); the existing last line is kept. Use when edit_file's exact-match replacement is awkward (old_string missing or repeated).",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "File path (relative to cwd or absolute)" },
-          start_line: { type: "integer", description: "First line to replace (1-based)" },
-          end_line: { type: "integer", description: "Last line to replace (inclusive). Pass a value < start_line to insert before start_line instead." },
+          start_line: { type: "integer", description: "First line to replace (1-based). One past the last line appends to the end of the file." },
+          end_line: { type: "integer", description: "Last line to replace (inclusive); past the last line means through the end of the file. Pass a value < start_line to insert before start_line instead." },
           new_string: { type: "string", description: "Replacement lines; empty string deletes the range. A single trailing newline is a line terminator, not an extra line." },
         },
         required: ["path", "start_line", "end_line", "new_string"],
@@ -1444,10 +1444,22 @@ export const impl = {
   },
 
   write_file({ path: p, content }) {
+    // Without this, a missing or non-string body reached fs.writeFileSync and
+    // came back as a TypeError about "the data argument" — which names nothing
+    // the model can act on, so it retries the same broken call. Say what's
+    // wrong instead. Numbers/booleans are a harmless stringify; an object is
+    // not (String(obj) would quietly write "[object Object]").
+    if (content === undefined || content === null) {
+      throw new Error("content is required — pass the full file body as a string");
+    }
+    if (typeof content === "object") {
+      throw new Error("content must be a string (the file body), not an object — serialize it first");
+    }
+    const text = typeof content === "string" ? content : String(content);
     const full = resolveForCreate(p);
-    atomicWriteFileSync(full, content);
-    const lines = content.split("\n").length;
-    return `Wrote ${content.length} bytes (${lines} lines) to ${p}`;
+    atomicWriteFileSync(full, text);
+    const lines = text.split("\n").length;
+    return `Wrote ${text.length} bytes (${lines} lines) to ${p}`;
   },
 
   edit_file({ path: p, old_string, new_string }) {
@@ -1482,12 +1494,27 @@ export const impl = {
     const lines = text === "" ? [] : text.split("\n");
     if (hadFinalNewline) lines.pop();
     const total = lines.length;
-    const inserting = end_line < start_line;
+    // Two ways to land past the last line, and both mean "add to the end":
+    //   - the explicit insert form, end_line < start_line
+    //   - start_line === total + 1, which names the first line that doesn't
+    //     exist yet — what every model reaches for when it wants to append.
+    // The second one used to be a hard error, and the model's reflex on that
+    // error is to retry with start_line = total, which REPLACES the last line.
+    // So an append was a failed write followed by a silent deletion of the
+    // line it was trying to write after. Treat it as the append it is.
+    const appending = start_line === total + 1;
+    const inserting = appending || end_line < start_line;
     if (inserting) {
-      if (start_line > total + 1) throw new Error(`cannot insert before line ${start_line}: ${p} has ${total} line(s) (valid insert range is 1-${total + 1})`);
+      if (start_line > total + 1) {
+        throw new Error(`cannot insert before line ${start_line}: ${p} has ${total} line(s) (valid insert range is 1-${total + 1})`);
+      }
     } else {
-      if (start_line > total) throw new Error(`start_line ${start_line} out of range: ${p} has ${total} line(s)`);
-      if (end_line > total) throw new Error(`end_line ${end_line} out of range: ${p} has ${total} line(s)`);
+      if (start_line > total) {
+        throw new Error(`start_line ${start_line} out of range: ${p} has ${total} line(s) (use start_line ${total + 1} to append to the end)`);
+      }
+      // An end_line past the last line can only mean "through the end of the
+      // file" — the old hard error just made the model retry with `total`.
+      if (end_line > total) end_line = total;
     }
     // A single trailing newline in new_string terminates the last replacement
     // line; it does not add an empty line after it.
@@ -1498,6 +1525,7 @@ export const impl = {
     let out = lines.join("\n");
     if (hadFinalNewline && out !== "") out += "\n"; // preserve trailing-newline state
     atomicWriteFileSync(full, out);
+    if (appending) return `Edited ${p}: appended ${newLines.length} line(s) (${total} → ${lines.length} lines)`;
     if (inserting) return `Edited ${p}: inserted ${newLines.length} line(s) before line ${start_line} (${total} → ${lines.length} lines)`;
     if (!newLines.length) return `Edited ${p}: deleted lines ${start_line}-${end_line} (${total} → ${lines.length} lines)`;
     return `Edited ${p}: replaced lines ${start_line}-${end_line} with ${newLines.length} line(s) (${total} → ${lines.length} lines)`;
@@ -2681,17 +2709,43 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
 
   // Gather the artifact under review.
   let diff = "";
+  let artifactLabel = "Diff produced";
+  let artifactFence = "diff";
   const scope = Array.isArray(paths) && paths.length ? paths : [null];
-  for (const p of scope) {
-    const args = ["diff"];
-    if (diff_from === "staged") args.push("--staged");
-    else if (diff_from === "head") args.push("HEAD");
-    if (p) {
-      if (String(p).startsWith("-")) throw new Error(`path "${p}" starts with '-'`);
-      args.push("--", p);
+  try {
+    for (const p of scope) {
+      const args = ["diff"];
+      if (diff_from === "staged") args.push("--staged");
+      else if (diff_from === "head") args.push("HEAD");
+      if (p) {
+        if (String(p).startsWith("-")) throw new Error(`path "${p}" starts with '-'`);
+        args.push("--", p);
+      }
+      const out = runGit(args);
+      if (out) diff += (diff ? "\n" : "") + out;
     }
-    const out = runGit(args);
-    if (out) diff += (diff ? "\n" : "") + out;
+  } catch (e) {
+    // Plenty of real work happens in folders that were never `git init`ed. The
+    // critic doesn't need version control — it needs the artifact. Without a
+    // repo there is no diff to take, so review the named files as they stand.
+    // (This used to surface git's usage dump as the tool's error, which told
+    // the model nothing and simply made it retry the same call.)
+    if (!/not a git repository/i.test(e?.message || "")) throw e;
+    if (!(Array.isArray(paths) && paths.length)) {
+      return "(nothing to review — this folder is not a git repository, so there is no diff to take. Re-run self_review with paths:[…] naming the files you changed and they will be reviewed as they stand.)";
+    }
+    artifactLabel = "Files under review (full current contents — this folder is not a git repository, so no diff is available)";
+    artifactFence = "";
+    diff = "";
+    for (const p of paths) {
+      let body;
+      try {
+        body = fs.readFileSync(resolve(p), "utf8");
+      } catch (readErr) {
+        body = `(could not read: ${readErr.message})`;
+      }
+      diff += (diff ? "\n\n" : "") + `--- ${p} ---\n${body}`;
+    }
   }
   if (!diff.trim()) {
     return "(nothing to review — no diff found. If the work is uncommitted new files, `git add -N <path>` first so they appear in the diff; if it was already committed, pass diff_from:\"head\".)";
@@ -2700,7 +2754,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
   const MAX_DIFF = 60000;
   let noteTruncated = "";
   if (diff.length > MAX_DIFF) {
-    noteTruncated = `\n\n[diff truncated at ${MAX_DIFF} of ${diff.length} chars — review what is shown and say so if you need the rest]`;
+    noteTruncated = `\n\n[truncated at ${MAX_DIFF} of ${diff.length} chars — review what is shown and say so if you need the rest]`;
     diff = diff.slice(0, MAX_DIFF);
   }
 
@@ -2715,8 +2769,8 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
         "## Task that was requested",
         String(task).trim(),
         focus ? `\n## The author specifically wants scrutiny on\n${String(focus).trim()}` : "",
-        "\n## Diff produced",
-        "```diff",
+        `\n## ${artifactLabel}`,
+        "```" + artifactFence,
         diff,
         "```" + noteTruncated,
       ].filter(Boolean).join("\n"),
@@ -2751,7 +2805,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
     return `(the critic on ${resolved.key} returned nothing — treat the change as UNREVIEWED rather than approved.)`;
   }
   return [
-    `Independent review of your change by ${resolved.key} (it saw only the task and the diff, not your reasoning):`,
+    `Independent review of your change by ${resolved.key} (it saw only the task and the work itself, not your reasoning):`,
     "",
     verdict,
     "",

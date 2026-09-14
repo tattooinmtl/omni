@@ -68,14 +68,30 @@ try {
     r => r.includes("replaced lines 1-1") && fs.readFileSync("noeol.txt", "utf8") === "z\nb"
   );
 
-  await assert("start_line past EOF is a clear bounds error",
+  await assert("start_line well past EOF is still a clear bounds error, and says how to append",
     await resultOf(() => runTool("edit_lines", { path: "lines.txt", start_line: 99, end_line: 99, new_string: "x" })),
-    r => r.startsWith("ERROR:") && r.includes("out of range") && r.includes("5 line(s)")
+    r => r.startsWith("ERROR:") && r.includes("out of range") && r.includes("5 line(s)") && r.includes("to append")
   );
 
-  await assert("end_line past EOF is a clear bounds error",
-    await resultOf(() => runTool("edit_lines", { path: "lines.txt", start_line: 1, end_line: 99, new_string: "x" })),
-    r => r.startsWith("ERROR:") && r.includes("end_line 99 out of range")
+  // Appending is the write models attempt constantly, and it used to be the
+  // one that failed: start_line = (lines + 1) threw "out of range", the model
+  // retried with start_line = lines, and that REPLACED the last line — a
+  // failed write followed by silent data loss, over and over in one session.
+  fs.writeFileSync("append.txt", "a\nb\nc\n");
+  await assert("start_line one past the last line appends and keeps that line",
+    await runTool("edit_lines", { path: "append.txt", start_line: 4, end_line: 4, new_string: "d\ne" }),
+    r => r.includes("appended 2 line(s)") && fs.readFileSync("append.txt", "utf8") === "a\nb\nc\nd\ne\n"
+  );
+
+  fs.writeFileSync("empty.txt", "");
+  await assert("appending to an empty file works",
+    await runTool("edit_lines", { path: "empty.txt", start_line: 1, end_line: 1, new_string: "first" }),
+    r => r.includes("appended 1 line(s)") && fs.readFileSync("empty.txt", "utf8") === "first"
+  );
+
+  await assert("end_line past EOF means through the end of the file",
+    await runTool("edit_lines", { path: "lines.txt", start_line: 4, end_line: 99, new_string: "tail" }),
+    r => r.includes("replaced lines 4-5") && fs.readFileSync("lines.txt", "utf8") === "l1\nX\nY\ntail\n"
   );
 
   await assert("insert past line N+1 is a clear bounds error",
@@ -91,6 +107,31 @@ try {
   await assert("missing file is a clear error",
     await resultOf(() => runTool("edit_lines", { path: "nope.txt", start_line: 1, end_line: 1, new_string: "x" })),
     r => r.startsWith("ERROR: File not found: nope.txt")
+  );
+
+  // ── Test 1b: write_file ──────────────────────────────────────────
+  console.log("\nTest 1b: write_file — normal write / bad content arguments");
+
+  await assert("writes a file, creating parent directories",
+    await runTool("write_file", { path: "deep/nested/w.txt", content: "hi\nthere\n" }),
+    r => r.includes("Wrote 9 bytes") && fs.readFileSync("deep/nested/w.txt", "utf8") === "hi\nthere\n"
+  );
+
+  // These used to surface as a TypeError about "the data argument", which
+  // names nothing the model can fix, so it retries the same broken call.
+  await assert("missing content says what is missing",
+    await resultOf(() => runTool("write_file", { path: "w2.txt" })),
+    r => r.startsWith("ERROR:") && r.includes("content is required")
+  );
+
+  await assert("an object body is refused instead of writing [object Object]",
+    await resultOf(() => runTool("write_file", { path: "w3.txt", content: { a: 1 } })),
+    r => r.startsWith("ERROR:") && r.includes("must be a string") && !fs.existsSync("w3.txt")
+  );
+
+  await assert("a numeric body is written as its text",
+    await runTool("write_file", { path: "w4.txt", content: 42 }),
+    r => r.includes("Wrote 2 bytes") && fs.readFileSync("w4.txt", "utf8") === "42"
   );
 
   // ── Test 2: diff_files ───────────────────────────────────────────

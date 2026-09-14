@@ -66,6 +66,42 @@ await ok("self_review reports 'nothing to review' rather than approving an empty
     "an empty diff must never read as a pass");
 });
 
+// Plenty of real work happens in folders that were never `git init`ed. There,
+// `git diff` exits non-zero and self_review used to surface git's usage dump as
+// its error — which names nothing the model can act on, so it just retried the
+// same call and the work went unreviewed.
+await ok("outside a git repo, self_review asks for paths instead of dumping git usage", async () => {
+  const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-norepo-"));
+  const cwd = process.cwd();
+  try {
+    process.chdir(nonRepo);
+    const out = String(await impl.self_review({ task: "audit this game" }));
+    assert.ok(!/usage: git|--no-index/i.test(out), `leaked git's usage dump: ${out.slice(0, 120)}`);
+    assert.match(out, /paths/i, "it must tell the model how to get a review here");
+    assert.ok(!/CLEAN|approved|looks good/i.test(out), "and it must never read as a pass");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+await ok("outside a git repo, named paths are reviewed as they stand", async () => {
+  const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-norepo2-"));
+  fs.writeFileSync(path.join(nonRepo, "audit.md"), "# Audit\n\nfindings\n");
+  const cwd = process.cwd();
+  try {
+    process.chdir(nonRepo);
+    // No model call: point it at a model key that cannot resolve, and assert it
+    // got PAST diff collection (i.e. it found the artifact) before failing.
+    await assert.rejects(
+      () => impl.self_review({ task: "audit", paths: ["audit.md"], model: "no-such-provider/no-such-model" }),
+      (e) => !/not a git repository|nothing to review/i.test(e.message),
+      "a missing repo must not stop the file itself from being reviewable"
+    );
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
 // The critic runs with a deny-by-default allowlist. A critic that can edit is
 // not a check — and its edits would land with nobody reviewing them.
 const srcText = fs.readFileSync(path.join(root, "src", "tools", "index.mjs"), "utf8");
