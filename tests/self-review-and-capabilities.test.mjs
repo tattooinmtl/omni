@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 let pass = 0, fail = 0;
@@ -60,10 +61,66 @@ await ok("self_review refuses to run without the original task", async () => {
 });
 
 await ok("self_review reports 'nothing to review' rather than approving an empty diff", async () => {
-  const out = await impl.self_review({ task: "anything", paths: ["package.json"] });
-  assert.match(String(out), /nothing to review/i);
-  assert.ok(!/CLEAN|approved|looks good/i.test(String(out)),
-    "an empty diff must never read as a pass");
+  // In a throwaway repo with one committed, untouched file — NOT this repo's
+  // own package.json, which this suite used to point at. That only read as an
+  // empty diff while the working tree happened to be clean; the moment anyone
+  // edited it (a version bump, say) the assertion flipped and the test fired a
+  // real model call to find out.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cleanrepo-"));
+  fs.writeFileSync(path.join(repo, "clean.txt"), "committed and untouched\n");
+  const git = (...args) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  if (git("init", "-q").status !== 0) {
+    console.log("    (skipped — git unavailable)");
+    return;
+  }
+  git("add", "clean.txt");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed");
+
+  const cwd = process.cwd();
+  try {
+    process.chdir(repo);
+    const out = String(await impl.self_review({ task: "anything", paths: ["clean.txt"] }));
+    assert.match(out, /nothing to review/i);
+    assert.ok(!/CLEAN|approved|looks good/i.test(out), "an empty diff must never read as a pass");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+// Plenty of real work happens in folders that were never `git init`ed. There,
+// `git diff` exits non-zero and self_review used to surface git's usage dump as
+// its error — which names nothing the model can act on, so it just retried the
+// same call and the work went unreviewed.
+await ok("outside a git repo, self_review asks for paths instead of dumping git usage", async () => {
+  const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-norepo-"));
+  const cwd = process.cwd();
+  try {
+    process.chdir(nonRepo);
+    const out = String(await impl.self_review({ task: "audit this game" }));
+    assert.ok(!/usage: git|--no-index/i.test(out), `leaked git's usage dump: ${out.slice(0, 120)}`);
+    assert.match(out, /paths/i, "it must tell the model how to get a review here");
+    assert.ok(!/CLEAN|approved|looks good/i.test(out), "and it must never read as a pass");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+await ok("outside a git repo, named paths are reviewed as they stand", async () => {
+  const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "omni-norepo2-"));
+  fs.writeFileSync(path.join(nonRepo, "audit.md"), "# Audit\n\nfindings\n");
+  const cwd = process.cwd();
+  try {
+    process.chdir(nonRepo);
+    // No model call: point it at a model key that cannot resolve, and assert it
+    // got PAST diff collection (i.e. it found the artifact) before failing.
+    await assert.rejects(
+      () => impl.self_review({ task: "audit", paths: ["audit.md"], model: "no-such-provider/no-such-model" }),
+      (e) => !/not a git repository|nothing to review/i.test(e.message),
+      "a missing repo must not stop the file itself from being reviewable"
+    );
+  } finally {
+    process.chdir(cwd);
+  }
 });
 
 // The critic runs with a deny-by-default allowlist. A critic that can edit is

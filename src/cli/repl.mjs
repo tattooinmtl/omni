@@ -19,6 +19,53 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
+import { restoreLineEditing } from "./term.mjs";
+
+// Rows of the live "/" menu visible at once (plus one hint line below them).
+export const MENU_MAX = 12;
+
+// Format the visible slice of the "/" command menu. Pure and exported so the
+// geometry that keeps the list on screen is testable without a terminal.
+//
+// The width rule matters more than it looks: renderMenu() draws the rows BELOW
+// the input line and then hops back up with "\x1b[<lines>A", so every row has
+// to occupy exactly one screen row. A row printed to the terminal's very last
+// column wraps immediately on Windows consoles (they wrap eagerly instead of
+// deferring the wrap to the next printed character), which makes each row eat
+// two screen rows — the hop back up then lands in the middle of the menu and
+// the following keystroke erases the list from there. That's what made the
+// whole command list look like it had been removed. Leave a spare column.
+export function formatMenuRows(rows, { width = 80, selected = 0, max = MENU_MAX } = {}) {
+  if (!rows?.length) return [];
+  const sel = Math.min(Math.max(0, selected), rows.length - 1);
+  const rowWidth = Math.max(24, width - 1);
+  const usageCol = Math.min(34, Math.max(16, rowWidth - 30));
+
+  // Scroll the visible window with the selection instead of always showing
+  // rows[0..max) — otherwise ↑/↓ past the first page moves the selection but
+  // the screen never shows it (same windowing models.mjs's arrow pickers
+  // already use for /model, /provider).
+  const half = Math.floor(max / 2);
+  let start = Math.max(0, sel - half);
+  start = Math.min(start, Math.max(0, rows.length - max));
+  const shown = rows.slice(start, start + max);
+
+  const lines = shown.map((r, i) => {
+    const rowIndex = start + i;
+    const raw = String(r.usage || "");
+    const usage = raw.length > usageCol ? raw.slice(0, usageCol - 1) + "…" : raw.padEnd(usageCol);
+    const summary = String(r.summary || "").slice(0, Math.max(0, rowWidth - usageCol - 4));
+    const pointer = rowIndex === sel ? c.cyan("›") : " ";
+    const row = ` ${pointer} ${c.cyan(usage)} ${c.dim(summary)}`;
+    return rowIndex === sel ? c.bold(row) : row;
+  });
+
+  const hint = rows.length > max
+    ? `  ${sel + 1}/${rows.length} — ↑/↓ select · Enter run · keep typing to filter`
+    : "  ↑/↓ select · Enter run · keep typing to filter";
+  lines.push(c.dim(hint.slice(0, rowWidth)));
+  return lines;
+}
 
 // How long a gap between consecutive plain (non-slash, non-continuation)
 // readline "line" events is still considered "the same paste" rather than
@@ -166,8 +213,18 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       }
     });
   }
+  // Set on rl "close"; a line handler that was still awaiting a turn when the
+  // REPL closed (burst/piped input) must not touch the closed readline —
+  // rl.prompt() after close throws ERR_USE_AFTER_CLOSE and kills the process.
+  // Declared up here because the interrupt-watch helpers below read it.
+  let replClosed = false;
+
   const startInterruptWatch = () => { if (canRaw) { process.stdin.setRawMode(true); process.stdin.resume(); } };
-  const stopInterruptWatch = () => { if (canRaw) { process.stdin.setRawMode(false); } };
+  // Give the keyboard back to readline, not to the shell: the ESC/Ctrl-C
+  // watcher above is gated on ctx.currentAbort, so nothing here needs cooked
+  // mode — and dropping to it used to kill every per-keystroke feature of the
+  // prompt for the rest of the session (see term.mjs).
+  const stopInterruptWatch = () => { if (canRaw) restoreLineEditing(replClosed ? null : rl); };
 
   // Permission "ask" confirmation: hand the terminal back to readline
   // mid-turn, ask, then restore the generation interrupt watch.
@@ -215,7 +272,6 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   // highlighted (not literally whatever text was typed — see the "line"
   // handler below, which substitutes the selected row's command). Cleared on
   // submit or when the "/" is deleted.
-  const MENU_MAX = 12;
   let menuLines = 0;      // rows the menu currently occupies below the input
   let menuSelected = 0;   // index into the current menu rows, highlighted row
   let menuLastLine = "";  // rl.line as of the last non-arrow keystroke — see
@@ -244,26 +300,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     if (menuSelected >= rows.length) menuSelected = Math.max(0, rows.length - 1);
     if (menuSelected < 0) menuSelected = 0;
 
-    const width = process.stdout.columns || 80;
-    const usageCol = Math.min(34, Math.max(16, width - 30));
-    // Scroll the visible window with the selection instead of always
-    // showing rows[0..MENU_MAX) — otherwise Up/Down past the first page
-    // moves menuSelected but the screen never shows it (same windowing
-    // models.mjs's arrow pickers already use for /model, /provider).
-    const half = Math.floor(MENU_MAX / 2);
-    let start = Math.max(0, menuSelected - half);
-    start = Math.min(start, Math.max(0, rows.length - MENU_MAX));
-    const shown = rows.slice(start, start + MENU_MAX);
-    const lines = shown.map((r, i) => {
-      const rowIndex = start + i;
-      const usage = r.usage.length > usageCol ? r.usage.slice(0, usageCol - 1) + "…" : r.usage.padEnd(usageCol);
-      const summary = String(r.summary || "").slice(0, Math.max(0, width - usageCol - 4));
-      const pointer = rowIndex === menuSelected ? c.cyan("›") : " ";
-      const row = ` ${pointer} ${c.cyan(usage)} ${c.dim(summary)}`;
-      return rowIndex === menuSelected ? c.bold(row) : row;
+    const lines = formatMenuRows(rows, {
+      width: process.stdout.columns || 80,
+      selected: menuSelected,
+      max: MENU_MAX,
     });
-    if (rows.length > MENU_MAX) lines.push(c.dim(`  ${menuSelected + 1}/${rows.length} — ↑/↓ select · Enter run · keep typing to filter`));
-    else if (rows.length) lines.push(c.dim("  ↑/↓ select · Enter run · keep typing to filter"));
 
     let cols = 2 + (rl.cursor ?? line.length); // fallback: "› " + cursor offset
     try { cols = rl.getCursorPos().cols; } catch { /* older readline */ }
@@ -328,11 +369,6 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     menuSelected = 0;
     setImmediate(renderMenu);
   });
-
-  // Set on rl "close"; a line handler that was still awaiting a turn when the
-  // REPL closed (burst/piped input) must not touch the closed readline —
-  // rl.prompt() after close throws ERR_USE_AFTER_CLOSE and kills the process.
-  let replClosed = false;
 
   function showPrompt() {
     if (replClosed) return;
@@ -415,6 +451,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     if (!fromPaste && line.endsWith("\\") && !line.startsWith("/")) {
       multiLine += line.slice(0, -1) + "\n";
       process.stdout.write(c.dim("… "));
+      // We're prompting again (just without the full frame), so the menu and
+      // the rest of the keypress handling stay live for the continuation line.
+      promptActive = true;
       return;
     }
 
