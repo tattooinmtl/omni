@@ -636,12 +636,15 @@ export const tools = [
     function: {
       name: "run_shell",
       description:
-        "Run a shell command (PowerShell on Windows) in the cwd and return stdout/stderr. Use for build, test, git, etc.",
+        "Run a shell command (PowerShell on Windows) in the cwd and return stdout/stderr. Use for build, test, git, etc. " +
+        "The default timeout is 120s — raise timeout_ms for scaffolding and dependency installs " +
+        "(npx create-*, npm/pnpm install, cargo build, docker build routinely exceed it); a timeout kills the " +
+        "command mid-run and can leave a half-written project directory.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string" },
-          timeout_ms: { type: "integer", description: "Optional timeout, default 120000" },
+          timeout_ms: { type: "integer", description: "Timeout in ms, default 120000. Use 300000-600000 for scaffolding or dependency installs." },
           allow_unsafe: {
             type: "boolean",
             description: "Set true only when the user explicitly authorized a destructive or irreversible command.",
@@ -659,12 +662,14 @@ export const tools = [
     type: "function",
     function: {
       name: "run_test",
-      description: "Run a test command (e.g., npm test, vitest, jest) in the cwd and return output.",
+      description:
+        "Run a test command (e.g., npm test, vitest, jest) in the cwd and return output. " +
+        "Default timeout is 120s — raise timeout_ms for a slow or full suite.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "Test command to run (default: npm test)" },
-          timeout_ms: { type: "integer", description: "Optional timeout, default 120000" },
+          timeout_ms: { type: "integer", description: "Timeout in ms, default 120000. Raise it for a slow suite." },
           allow_unsafe: {
             type: "boolean",
             description: "Set true only when the user explicitly authorized a destructive or irreversible command.",

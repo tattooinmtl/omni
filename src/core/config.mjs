@@ -577,8 +577,33 @@ export async function loadSettings() {
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
-  } catch {
+  } catch (e) {
+    // An unreadable settings.json used to fall back to bare defaults in
+    // silence. Every provider key vanished with no message, and the next
+    // saveSettings() wrote those defaults straight over the file — turning a
+    // one-character typo in a hand-edited config into permanent key loss that
+    // presents as "I added my API key, restarted, and it wasn't saved".
+    //
+    // Now: say so loudly, keep a copy of whatever was there, and mark the
+    // settings so saveSettings refuses to overwrite the original.
     const settings = { ...DEFAULT_SETTINGS };
+    const missing = e?.code === "ENOENT";
+    if (!missing) {
+      let backup = null;
+      try {
+        backup = `${SETTINGS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+        fs.copyFileSync(SETTINGS_PATH, backup);
+      } catch { backup = null; }
+      settings._loadError = { message: e?.message || String(e), backup };
+      process.stderr.write(
+        `\n!! Could not read ${SETTINGS_PATH}\n` +
+        `   ${e?.message || e}\n` +
+        `   Running on built-in defaults for this session — your providers, API keys and models are NOT loaded.\n` +
+        (backup ? `   A copy of the unreadable file is at:\n     ${backup}\n` : "") +
+        `   Fix the JSON (a trailing comma or an unescaped quote is the usual cause) and restart.\n` +
+        `   Settings will NOT be saved over while in this state, so nothing further is lost.\n\n`,
+      );
+    }
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
     return settings;
@@ -589,7 +614,19 @@ export async function loadSettings() {
 // Note: env-var key overrides always win on next load (see applyEnvKeyOverrides).
 export async function saveSettings(settings) {
   ensureHome();
-  const { _env, ...clean } = settings; // drop any runtime-only fields
+  // Refuse to write when this session booted on defaults because the real
+  // settings.json could not be parsed. Saving here would replace a file that
+  // is still fully recoverable by hand with a stripped-down default — the
+  // user's keys would go from "temporarily unreadable" to actually gone.
+  if (settings?._loadError) {
+    process.stderr.write(
+      `\n!! Not saving settings — ${SETTINGS_PATH} could not be read at startup.\n` +
+      `   Overwriting it now would discard the providers and keys still in that file.\n` +
+      `   Fix its JSON and restart, then re-apply this change.\n\n`,
+    );
+    return;
+  }
+  const { _env, _loadError, ...clean } = settings; // drop any runtime-only fields
   // Providers whose key came from the environment keep their original on-disk
   // value — unless the user changed the key this session (e.g. /apikey), in
   // which case the new value is intentional and persists.
