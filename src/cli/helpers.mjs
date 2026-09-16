@@ -1,7 +1,7 @@
 // Small shared CLI utilities — no state, no side effects beyond printing.
 
 import { infoLine, warnLine } from "../ui.mjs";
-import { providerKeyMissing, providerKeyEnvVar, SETTINGS_PATH } from "../core/config.mjs";
+import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
 
 // Split a SKILL.md body into heading-anchored chunks so lean mode can BM25-rank
@@ -181,7 +181,11 @@ export function reportMissingKey(model) {
   warnLine(`No API key configured for provider "${prov}".`);
   infoLine("Set one of:");
   infoLine(`  • in the REPL:   /apikey ${prov} <your-key>`);
-  infoLine(`  • env variable:  ${providerKeyEnvVar(prov)}=<your-key>`);
+  const [canonicalEnv, ...aliasEnv] = providerKeyEnvVars(prov);
+  infoLine(
+    `  • env variable:  ${canonicalEnv}=<your-key>` +
+      (aliasEnv.length ? ` (or ${aliasEnv.join(", ")})` : ""),
+  );
   infoLine(`  • edit:          ${SETTINGS_PATH}`);
   if (prov === "nvidia") infoLine("Get a free NVIDIA NIM key at https://build.nvidia.com");
   return true;

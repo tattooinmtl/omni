@@ -25,13 +25,14 @@ const KEY_VARS = [
   "OMNI_NVIDIA_KEY", "OMNI_NVIDIA1_KEY", "OMNI_NVIDIA2_KEY",
   "OMNI_AGNES_KEY", "OMNI_AGNES1_KEY", "OMNI_AGNES2_KEY", "OMNI_AGNES_KEY2",
   "OMNI_MINIMAX_IO_KEY", "OMNI_MINIMAX_KEY",
+  "OMNI_ATRIA_KEY", "ATRIA_API_KEY",
 ];
 function clearEnvKeys() {
   for (const k of KEY_VARS) process.env[k] = "";
 }
 clearEnvKeys();
 
-const { loadSettings, saveSettings, setProviderKey, SETTINGS_PATH } =
+const { loadSettings, saveSettings, setProviderKey, resolveModel, providerKeyEnvVars, SETTINGS_PATH } =
   await import("../src/core/config.mjs");
 
 let pass = 0;
@@ -198,6 +199,55 @@ async function main() {
     ok("env key does not leak into settings.json, settings.json key persists", () => {
       assert.equal(json.providers["minimax.io"].apiKey, "SETTINGS-JSON-KEY");
       assert.ok(!raw.includes("ENV-OVERRIDE-KEY"), "env key leaked into settings.json");
+    });
+  }
+
+  // 8. Atria ships as a first-class provider, and its key can come from the
+  //    vendor's own ATRIA_API_KEY as well as OMNI_ATRIA_KEY. The alias has to
+  //    be honoured on BOTH sides: filled in on load, stripped back out on save.
+  //    (Only the canonical name used to be stripped, so a key supplied under a
+  //    vendor-native name would have been written into settings.json.)
+  reset();
+  {
+    const settings = await loadSettings();
+    ok("/provider atria has an endpoint and a model to switch to", () => {
+      assert.equal(settings.providers.atria.baseUrl, "https://api.atria-asi.ai/v1");
+      const m = resolveModel(settings, "atria/dawn-preview");
+      assert.equal(m.id, "Atria-Dawn-Preview");
+      assert.equal(m.providerName, "atria");
+    });
+    ok("ATRIA_API_KEY is an accepted alias, after the canonical name", () => {
+      assert.deepEqual(providerKeyEnvVars("atria"), ["OMNI_ATRIA_KEY", "ATRIA_API_KEY"]);
+    });
+  }
+
+  reset();
+  {
+    process.env.ATRIA_API_KEY = "ENV-SECRET-atr_alias";
+    const settings = await loadSettings();
+    const runtime = settings.providers.atria.apiKey;
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("ATRIA_API_KEY is live at runtime but never lands in settings.json", () => {
+      assert.equal(runtime, "ENV-SECRET-atr_alias");
+      assert.ok(!raw.includes("ENV-SECRET"), "settings.json contains the alias-sourced secret");
+      assert.equal(json.providers.atria.apiKey, "");
+    });
+  }
+
+  // 9. /apikey atria <key> still wins over the alias and persists.
+  reset();
+  {
+    process.env.ATRIA_API_KEY = "ENV-SECRET-atr_alias";
+    const settings = await loadSettings();
+    setProviderKey(settings.providers.atria, "atr_user-typed");
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("/apikey atria overrides the ATRIA_API_KEY alias and persists", () => {
+      assert.equal(json.providers.atria.apiKey, "atr_user-typed");
+      assert.ok(!raw.includes("ENV-SECRET"));
     });
   }
 
