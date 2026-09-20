@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
+import { jqLite, formatJqResult, JqLiteError } from "./jq-lite.mjs";
 import { HOME, loadSettings, saveSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
 import {
@@ -154,6 +155,28 @@ function resolve(p = ".") {
 
 function resolveForCreate(p) {
   return assertInsideWorkspace(path.resolve(process.cwd(), p));
+}
+
+// jq_query's no-binary path. Evaluates the filter with the built-in subset
+// (src/tools/jq-lite.mjs) so reading a JSON file structurally still works on
+// a machine with no jq. A filter outside the subset reports that plainly,
+// along with why the real jq wasn't used, so the cause is never ambiguous.
+function jqFallback(filter, full, raw, spawnError) {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(full, "utf8"));
+  } catch (e) {
+    return `jq error: ${full} is not valid JSON — ${e.message}`;
+  }
+  try {
+    const out = formatJqResult(jqLite(filter, data), { raw });
+    return clip(out || "(null or empty result)");
+  } catch (e) {
+    if (e instanceof JqLiteError) {
+      return `jq error: ${e.message}\n(the jq binary is unavailable — ${spawnError} — so the built-in subset was used)`;
+    }
+    throw e;
+  }
 }
 
 // Each entry maps a pattern to a short, specific reason (shown to the human
@@ -524,7 +547,7 @@ export const tools = [
     type: "function",
     function: {
       name: "jq_query",
-      description: "Query or transform JSON data using jq. Runs a jq filter on a JSON file and returns the result.",
+      description: "Query or transform JSON data using jq. Runs a jq filter on a JSON file and returns the result. When the jq binary isn't installed, a built-in subset handles paths, pipes, select() and the common builtins (keys, length, type, add, sort, unique, first, last, …); a filter outside that subset says so rather than guessing.",
       parameters: {
         type: "object",
         properties: {
@@ -1934,7 +1957,11 @@ export const impl = {
       maxBuffer: 1024 * 1024 * 16,
       cwd: process.cwd(),
     });
-    if (r.error) return "jq unavailable: " + r.error.message;
+    // No jq binary (not bundled in vendor/, not on PATH — the normal state of
+    // a stock Windows box). Fall back to the built-in evaluator rather than
+    // handing back "jq unavailable", which left the model with no structural
+    // way to read a JSON file at all.
+    if (r.error) return jqFallback(filter, full, raw, r.error.message);
     if (r.status !== 0) return clip(r.stderr || `jq exited with code ${r.status}`);
     const out = (r.stdout || "").trimEnd();
     return clip(out || "(null or empty result)");

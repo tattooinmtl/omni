@@ -87,11 +87,15 @@ ok("project_inspect top-level scan lists real/file.md exactly once (loop is skip
 });
 
 // ---- galaxy-graph walk (local/galaxy-graph.mjs) ----
-// The galaxy walk uses OKF_DIR = <HOME>/knowledge. Point OMNI_HOME at a
-// controlled dir, drop a knowledge layout with a self-loop, and run buildGraph.
+// The galaxy walk reads OKF_DIR, falling back to <HOME>/knowledge. Set
+// OKF_DIR rather than OMNI_HOME: config.mjs resolves HOME into a module-level
+// const, and tools/index.mjs above already pulled it in, so OMNI_HOME set
+// here would arrive too late and the walk would scan the real knowledge dir —
+// finding no cards, and passing the timing assertion while testing nothing.
+// Both consts are read when galaxy-graph.mjs is imported, which is below.
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-galaxy-home-"));
-process.env.OMNI_HOME = tmpHome;
 const okfDir = path.join(tmpHome, "knowledge");
+process.env.OKF_DIR = okfDir;
 fs.mkdirSync(okfDir, { recursive: true });
 fs.mkdirSync(path.join(okfDir, "real"));
 fs.writeFileSync(path.join(okfDir, "real", "card.md"), "---\ntype: reference\n---\nbody\n");
