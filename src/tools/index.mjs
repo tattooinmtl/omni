@@ -348,6 +348,15 @@ const SECRET_RULES = [
   ["GitHub token", "\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\\b|github_pat_[A-Za-z0-9_]{22,}"],
   ["Slack token", "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b"],
   ["OpenAI-style key", "\\bsk-[A-Za-z0-9_-]{32,}\\b"],
+  // The non-`sk-` provider formats. These were already in config.mjs's
+  // SECRET_PATTERNS (the session-log redactor) precisely because NVIDIA and
+  // Groq keys turned up in plaintext there — but the file scanner never
+  // learned them, so `security_scan` reported "clean" on a file holding an
+  // nvapi-/gsk_/xai-/AIza key. Kept in sync with that list deliberately.
+  ["NVIDIA key", "\\bnvapi-[A-Za-z0-9_-]{20,}\\b"],
+  ["Groq key", "\\bgsk_[A-Za-z0-9]{40,}\\b"],
+  ["xAI key", "\\bxai-[A-Za-z0-9]{20,}\\b"],
+  ["Google API key", "\\bAIza[0-9A-Za-z_-]{30,}\\b"],
   ["Private key block", "-----BEGIN [A-Z ]*PRIVATE KEY-----"],
   ["Hardcoded credential", "(?i)(?:api[_-]?key|secret|token|password|passwd)[\"']?\\s*[:=]\\s*[\"'][^\"'\\s]{8,}[\"']"],
 ];
