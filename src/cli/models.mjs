@@ -52,6 +52,64 @@ export const PROVIDER_PRESETS = {
   local:     { baseUrl: "http://localhost:8080/v1", label: "Local llama.cpp", apiKey: "not-needed", reasoningParam: "none" },
 };
 
+// Names people actually type → the canonical settings key. The picker shows
+// "minimax.io", but the product is called MiniMax and that is what gets typed;
+// since the duplicate "minimax" provider was folded into it, `minimax` has to
+// resolve here instead of dead-ending on "unknown provider".
+const PROVIDER_ALIASES = {
+  minimax: "minimax.io",
+  moonshot: "kimi",
+  anthropic: "claude",
+  gemini: "google",
+  "x.ai": "xai",
+  llamacpp: "local",
+  "llama.cpp": "local",
+};
+
+// Resolve a typed provider name against what is actually configured: exact
+// key, then alias, then a unique prefix match ("openr" → "openrouter").
+// Falls back to the normalized input so callers still emit their own
+// "unknown provider" error for a genuine typo.
+export function resolveProviderAlias(settings, name) {
+  const raw = normalizeProviderKey(name);
+  if (!raw) return raw;
+  const providers = settings?.providers || {};
+  if (providers[raw]) return raw;
+  const alias = PROVIDER_ALIASES[raw];
+  if (alias && providers[alias]) return alias;
+  const names = Object.keys(providers);
+  const exact = names.find((n) => n.toLowerCase() === raw);
+  if (exact) return exact;
+  const prefixed = names.filter((n) => n.toLowerCase().startsWith(raw));
+  if (prefixed.length === 1) return prefixed[0];
+  return alias || raw;
+}
+
+// Per-response output cap stamped on a newly fetched model. 8192 is the safe
+// floor for an endpoint we know nothing about, but it silently truncates long
+// edits on providers that allow far more — so providers with a verified
+// ceiling get theirs. Never exceed the provider's documented maximum: MiniMax
+// 400s the request outright when max_tokens is too large (see config.mjs).
+const PROVIDER_DEFAULT_MAX_TOKENS = {
+  "minimax.io": 128000,
+};
+export const FALLBACK_MAX_TOKENS = 8192;
+
+export function defaultMaxTokensFor(providerKey) {
+  return PROVIDER_DEFAULT_MAX_TOKENS[providerKey] || FALLBACK_MAX_TOKENS;
+}
+
+// The maxTokens a fetched model should end up with. A stored value is kept —
+// unless it is the generic 8192 floor an earlier fetch stamped on for lack of
+// anything better. That value was never a choice, and on a provider with a
+// known ceiling it silently truncates long edits, so a re-fetch lifts it.
+// Set a deliberate cap with /addmodel <key> <provider> <id> <maxTokens>.
+export function maxTokensForFetched(providerKey, storedMaxTokens) {
+  const stamped = storedMaxTokens === FALLBACK_MAX_TOKENS;
+  if (!storedMaxTokens || stamped) return defaultMaxTokensFor(providerKey);
+  return storedMaxTokens;
+}
+
 export const EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh"];
 
 export function printEffortChoices(ctx) {
@@ -80,7 +138,10 @@ export async function setEffortTier(ctx, tier) {
 }
 
 export function installProviderPreset(ctx, name, key = "") {
-  const prov = normalizeProviderKey(name);
+  const typed = normalizeProviderKey(name);
+  // `/addprovider minimax <key>` should install the minimax.io preset rather
+  // than reporting an unknown preset.
+  const prov = PROVIDER_PRESETS[typed] ? typed : (PROVIDER_ALIASES[typed] || typed);
   const preset = PROVIDER_PRESETS[prov];
   if (!preset) throw new Error(`unknown provider preset "${name}"`);
   ctx.settings.providers[prov] = {
@@ -110,7 +171,7 @@ export function modelHealthLabel(ctx, key) {
 }
 
 export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "" } = {}) {
-  const provKey = normalizeProviderKey(providerName || ctx.model.providerName);
+  const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
   const provider = ctx.settings.providers[provKey];
   if (!provider) throw new Error(`unknown provider "${provKey}"`);
   if (providerKeyMissing({ provider }) && provider.apiKey !== "not-needed") {
@@ -139,7 +200,7 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
         ...existing,
         provider: row.provider,
         id: row.id,
-        maxTokens: existing.maxTokens || 8192,
+        maxTokens: maxTokensForFetched(row.provider, existing.maxTokens),
       };
     }
     await saveSettings(ctx.settings);
@@ -300,7 +361,7 @@ function renderModelPicker(ctx, rows, selected, providerName) {
 }
 
 export async function pickModelWithArrows(ctx, providerName = ctx.model.providerName, filter = "") {
-  const provKey = normalizeProviderKey(providerName || ctx.model.providerName);
+  const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
   // Auto-filter to free models for openrouter if no explicit filter given
   let autoFilter = filter;
   if (!filter && provKey === "openrouter") {

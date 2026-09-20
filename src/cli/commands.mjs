@@ -28,13 +28,13 @@ import { installPackage, uninstallPackage, listInstalled, DEFAULT_REGISTRY } fro
 import { mcpStatus, reconnectServer } from "../integrations/mcp.mjs";
 import { bridgeStatus } from "../integrations/bridge.mjs";
 import { PERSONAS } from "../integrations/router.mjs";
-import { maskKey, normalizeProviderKey, restoreSessionMessages, getFullSkillBody } from "./helpers.mjs";
+import { maskKey, restoreSessionMessages, getFullSkillBody } from "./helpers.mjs";
 import { writeProjectContextMode, readMetrics, toolBodyPath } from "../core/context-mode.mjs";
 import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
   addProviderInteractive, connectInteractive, disconnectInteractive,
-  PROVIDER_PRESETS,
+  resolveProviderAlias, PROVIDER_PRESETS,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
@@ -523,8 +523,12 @@ export const COMMANDS = [
     summary: "arrow-select a model, or switch by key/number",
     handler: async (ctx, arg) => {
       const wanted = arg.trim();
+      // A bare provider name opens that provider's picker; anything else is a
+      // model key or a fetched-list index. Resolved through the alias table so
+      // "/model minimax" reaches minimax.io instead of being read as a key.
+      const asProvider = resolveProviderAlias(ctx.settings, wanted);
       if (!wanted) await pickModelWithArrows(ctx, ctx.model.providerName);
-      else if (ctx.settings.providers[normalizeProviderKey(wanted)]) await pickModelWithArrows(ctx, normalizeProviderKey(wanted));
+      else if (!wanted.includes("/") && ctx.settings.providers[asProvider]) await pickModelWithArrows(ctx, asProvider);
       else await switchModel(ctx, wanted);
     },
   },
@@ -545,6 +549,35 @@ export const COMMANDS = [
         }
         infoLine(`fetch live models with /models <provider>; current provider: ${ctx.model.providerName}`);
       }
+    },
+  },
+  {
+    name: "getmodel", aliases: ["getmodels"], usage: "/getmodel <provider> [filter]", category: "Models & Providers",
+    summary: "fetch a provider's live model list and save it (e.g. /getmodel minimax)",
+    handler: async (ctx, arg) => {
+      const [providerArg, ...filterParts] = arg.trim().split(/\s+/).filter(Boolean);
+      if (!providerArg) {
+        errorLine("usage: /getmodel <provider> [filter]   e.g. /getmodel minimax");
+        infoLine(`configured: ${Object.keys(ctx.settings.providers).join(", ")}`);
+        return;
+      }
+      const prov = resolveProviderAlias(ctx.settings, providerArg);
+      const provider = ctx.settings.providers[prov];
+      if (!provider) {
+        errorLine(`unknown provider "${providerArg}" — add it with /addprovider, or see /providers`);
+        return;
+      }
+      // The key check lives here rather than in fetchModelsForProvider so the
+      // message names the exact commands to run — this is the first thing you
+      // hit after adding a brand-new provider.
+      if (!String(provider.apiKey || "").trim()) {
+        errorLine(`no API key configured for ${prov} — the model list can't be fetched without one.`);
+        infoLine(`  /apikey ${prov} <your-key>`);
+        infoLine(`  or set ${providerKeyEnvVar(prov)} in your .env`);
+        return;
+      }
+      const rows = await fetchModelsForProvider(ctx, prov, { save: true, filter: filterParts.join(" ") });
+      if (rows?.length) infoLine(`switch with /model ${rows[0].key}, or /model ${prov} for the picker`);
     },
   },
   {
@@ -725,8 +758,8 @@ export const COMMANDS = [
     name: "apikey", aliases: [], usage: "/apikey <provider|account> [key]", category: "Models & Providers",
     summary: "show or set a provider/account API key (persisted)",
     handler: async (ctx, arg) => {
-      const [prov, ...rest] = arg.split(/\s+/).filter(Boolean);
-      if (!prov) {
+      const [typed, ...rest] = arg.split(/\s+/).filter(Boolean);
+      if (!typed) {
         for (const [name, p] of Object.entries(ctx.settings.providers)) {
           infoLine(`${name}: ${maskKey(p.apiKey)}`);
           for (const [acct, key] of Object.entries(p.accounts || {})) infoLine(`  ${acct}: ${maskKey(key)}`);
@@ -736,7 +769,10 @@ export const COMMANDS = [
       }
       const key = rest.join(" ").trim();
       // Account names (nvidia1, nvidia2, …) resolve to their owning provider.
-      const owner = ctx.settings.providers[prov] ? null : findAccountProvider(ctx.settings, prov);
+      const owner = ctx.settings.providers[typed] ? null : findAccountProvider(ctx.settings, typed);
+      // Not an account either — accept the names people type ("minimax" for
+      // minimax.io) rather than rejecting them as unknown providers.
+      const prov = owner ? typed : resolveProviderAlias(ctx.settings, typed);
       if (owner) {
         const p = ctx.settings.providers[owner];
         if (!key) { infoLine(`${prov} (${owner}): ${maskKey(p.accounts[prov])}`); return; }
@@ -861,8 +897,8 @@ async function providerCommand(ctx, arg) {
   const knownSubcmds = new Set(["", "list", "presets", "setup", "add", "edit", "login", "logout", "apikey", "llama", "models"]);
 
   // "/provider <name>" — switch directly to a provider's first model.
-  if (sub && !knownSubcmds.has(sub) && ctx.settings.providers[sub.toLowerCase()]) {
-    const provKey = sub.toLowerCase();
+  if (sub && !knownSubcmds.has(sub) && ctx.settings.providers[resolveProviderAlias(ctx.settings, sub)]) {
+    const provKey = resolveProviderAlias(ctx.settings, sub);
     const modelKey = Object.keys(ctx.settings.models).find((k) => ctx.settings.models[k].provider === provKey);
     if (!modelKey) { errorLine(`provider "${provKey}" has no models configured — add one with /addmodel`); return; }
     ctx.model = resolveModel(ctx.settings, modelKey);

@@ -144,9 +144,7 @@ export const DEFAULT_SETTINGS = {
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
       reasoningParam: "none",
       // MiniMax allows 200 calls per 5 hours. Setting it on the provider
-      // means every minimax.io model gets the cap automatically; the
-      // name-based fallback (knownProviderMaxIterations) covers the user's
-      // saved "minimax" provider name which isn't this canonical key.
+      // means every minimax.io model gets the cap automatically.
       maxToolIterations: 200,
     },
     kimi: {
@@ -239,10 +237,14 @@ export const DEFAULT_SETTINGS = {
     "minimax.io/m3": {
       provider: "minimax.io",
       id: "MiniMax-M3",
-      // MiniMax-M3 advertises a ~1M-token conversation context. Send a
-      // matching max_tokens ceiling on every request; lower it (or override
-      // via /context maxTokens) if the API rejects a value this large.
-      maxTokens: 977000,
+      // max_tokens is the OUTPUT cap, and MiniMax hard-rejects anything above
+      // MINIMAX_MAX_OUTPUT_TOKENS with a 400 on *every* request:
+      //   "invalid params, model[MiniMax-M3] does not support max tokens > 524288"
+      // This used to ship as 977000 (the conversation context minus change),
+      // which made the model unusable out of the box — and invisible to
+      // /doctor, whose health probe sends its own max_tokens: 8. 128000 is a
+      // verified-good output ceiling across the M2/M3 line.
+      maxTokens: 128000,
       contextWindow: 1000000,
       // MiniMax's rate-limit window is 200 calls / 5 hours — well above the
       // 30 default most providers use. Letting the loop run that long is
@@ -397,6 +399,12 @@ function applyEnvKeyOverrides(settings) {
   if (!process.env.OMNI_AGNES2_KEY && process.env.OMNI_AGNES_KEY2) {
     process.env.OMNI_AGNES2_KEY = process.env.OMNI_AGNES_KEY2;
   }
+  // The "minimax" provider is gone (folded into "minimax.io" by
+  // migrateMiniMax), so OMNI_MINIMAX_KEY no longer maps to any provider name.
+  // Keep it working for .env files written before the fold.
+  if (!process.env.OMNI_MINIMAX_IO_KEY && process.env.OMNI_MINIMAX_KEY) {
+    process.env.OMNI_MINIMAX_IO_KEY = process.env.OMNI_MINIMAX_KEY;
+  }
 
   const savedKeys = {};
   // Per-account bookkeeping: { provider: { account: { was, imposed } } }.
@@ -544,27 +552,77 @@ function migrateSettings(settings) {
     if (settings.defaultModel === "gwn/mythos") settings.defaultModel = "nvidia/glm-5.2";
   }
 
-  // Older installs carried a "minimax/m3" model pointing at the non-canonical
-  // "minimax" provider. Migrate to "minimax.io/m3" and drop the stray entry
-  // so the model picker doesn't show two near-duplicates.
-  if (settings.models?.["minimax/m3"]) {
-    if (!settings.models?.["minimax.io/m3"]) {
-      settings.models["minimax.io/m3"] = { ...settings.models["minimax/m3"], provider: "minimax.io" };
-    }
-    delete settings.models["minimax/m3"];
-    if (settings.defaultModel === "minimax/m3") settings.defaultModel = "minimax.io/m3";
-  }
-
-  // Both minimax.io and minimax used to ship with the same "MiniMax" label,
-  // making /connect, /disconnect, and /provider pickers visually identical.
-  // Split them so users can tell the two providers apart. Only refreshes
-  // labels that still match the old ambiguous value — a custom label the
-  // user typed is preserved.
-  if (settings.providers?.["minimax.io"]?.label === "MiniMax") {
-    settings.providers["minimax.io"].label = "MiniMax (api.minimax.io)";
-  }
+  migrateMiniMax(settings);
 
   return settings;
+}
+
+// ---------------------------------------------------------------------------
+// MiniMax: one provider, one working output cap
+// ---------------------------------------------------------------------------
+
+export const MINIMAX_PROVIDER = "minimax.io";
+const MINIMAX_LEGACY_PROVIDER = "minimax";
+
+// The API refuses max_tokens above this on every model in the line, with a 400
+// on the actual chat request. Verified against api.minimax.io:
+//   "invalid params, model[MiniMax-M3] does not support max tokens > 524288"
+export const MINIMAX_MAX_OUTPUT_TOKENS = 524288;
+// What an over-cap entry gets repaired to. Verified good for M2 / M2.1 / M2.7 / M3.
+const MINIMAX_SAFE_OUTPUT_TOKENS = 128000;
+
+// Model keys that are really credentials. These get created by typing the API
+// key into the <key> slot — `/addmodel <api-key> minimax M3` — and then sit in
+// settings.json as an object key forever. Migrating one would just relocate
+// the secret, so it is dropped instead.
+const SECRET_SHAPED_KEY = /^(sk-|nvapi-|gsk_|xai-|hf_)|^[A-Za-z0-9_-]{48,}$/;
+
+// Fold the legacy "minimax" provider into the canonical "minimax.io".
+//
+// They were the same https://api.minimax.io/v1 endpoint under two names: two
+// identical rows in /connect, /providers and /disconnect, two places to paste
+// the same key, and models bound to whichever one happened to be selected.
+// Everything moves to "minimax.io" and the alias is deleted.
+function migrateMiniMax(settings) {
+  const providers = settings.providers || {};
+  const models = settings.models || {};
+
+  for (const [key, entry] of Object.entries(models)) {
+    if (entry?.provider !== MINIMAX_LEGACY_PROVIDER) continue;
+    delete models[key];
+    if (SECRET_SHAPED_KEY.test(key)) continue; // never re-save a key-shaped key
+    const suffix = key.startsWith(`${MINIMAX_LEGACY_PROVIDER}/`)
+      ? key.slice(MINIMAX_LEGACY_PROVIDER.length + 1)
+      : String(entry.id || key);
+    const moved = `${MINIMAX_PROVIDER}/${suffix}`;
+    if (!models[moved]) models[moved] = { ...entry, provider: MINIMAX_PROVIDER };
+    if (settings.defaultModel === key) settings.defaultModel = moved;
+  }
+
+  const legacy = providers[MINIMAX_LEGACY_PROVIDER];
+  if (legacy) {
+    const canonical = (providers[MINIMAX_PROVIDER] ||= { ...DEFAULT_SETTINGS.providers[MINIMAX_PROVIDER] });
+    // A key already on minimax.io is the one the user meant to keep; only
+    // adopt the alias's key when the canonical provider has none.
+    if (!String(canonical.apiKey || "").trim() && String(legacy.apiKey || "").trim()) {
+      canonical.apiKey = legacy.apiKey;
+    }
+    delete providers[MINIMAX_LEGACY_PROVIDER];
+  }
+  if (settings.defaultProvider === MINIMAX_LEGACY_PROVIDER) settings.defaultProvider = MINIMAX_PROVIDER;
+
+  // Repair the shipped-then-saved 977000 output cap (and anything else past
+  // the ceiling). Left alone, every MiniMax request 400s before it is sent.
+  for (const entry of Object.values(models)) {
+    if (entry?.provider !== MINIMAX_PROVIDER) continue;
+    if (Number(entry.maxTokens) > MINIMAX_MAX_OUTPUT_TOKENS) entry.maxTokens = MINIMAX_SAFE_OUTPUT_TOKENS;
+  }
+
+  // minimax.io used to ship with the bare "MiniMax" label it shared with the
+  // alias. A custom label the user typed is preserved.
+  if (providers[MINIMAX_PROVIDER]?.label === "MiniMax") {
+    providers[MINIMAX_PROVIDER].label = "MiniMax (api.minimax.io)";
+  }
 }
 
 function mergeProviders(savedProviders = {}) {
