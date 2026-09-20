@@ -104,8 +104,19 @@ await ok("skills-master stub stays small — one-line category summary, not a wa
 await ok("the default system prompt includes a concise 'Skill invocation' dispatcher blurb", () => {
   const out = buildSystemPrompt({}, []);
   assert.ok(/Skill invocation/i.test(out), `output missing 'Skill invocation' blurb:\n${out.slice(0, 800)}…`);
-  const blurbSlice = out.slice(out.indexOf("# Skill invocation"), out.indexOf("# Skills") >= 0 ? out.indexOf("# Skills") : undefined);
-  assert.ok(blurbSlice.length < 600, `dispatcher blurb is too verbose: ${blurbSlice.length} chars — should be < 600`);
+  // Bound the slice at the next top-level heading or the session-context
+  // marker — NOT at "# Skills", which isn't emitted when there are no skills.
+  // That left the slice running to the end of the prompt, so it measured the
+  // appended "# Environment" block too and reported the blurb as ~618 chars
+  // when the blurb itself is under 300.
+  const start = out.indexOf("# Skill invocation");
+  const rest = out.slice(start + 1);
+  const ends = [rest.indexOf("\n# "), rest.indexOf("<!-- omni:session-context:start -->")]
+    .filter((i) => i >= 0);
+  const blurbSlice = ends.length ? out.slice(start, start + 1 + Math.min(...ends)) : out.slice(start);
+  assert.ok(blurbSlice.length < 600, `dispatcher blurb is too verbose: ${blurbSlice.length} chars — should be < 600:\n${blurbSlice}`);
+  assert.match(blurbSlice, /find_skill/, "blurb should point at find_skill");
+  assert.match(blurbSlice, /invoke_skill/, "blurb should name invoke_skill");
 });
 
 fs.rmSync(tmpHome, { recursive: true, force: true });

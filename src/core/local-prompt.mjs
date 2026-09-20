@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isLocalModel } from "./okfnav.mjs";
+import { parseFrontmatter } from "./frontmatter.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
@@ -27,15 +28,6 @@ const DEFAULT_LOCAL_PROMPT_FILE = "skills/agent-orchestration/local-llama-instru
 // mid-session. mtime check would burn a syscall per turn for no benefit.
 let _cache = null;
 
-function stripFrontmatter(text) {
-  // Strip a leading YAML frontmatter block — the model doesn't need to see
-  // the loaded_by/audience metadata, it just adds tokens.
-  if (!text.startsWith("---\n")) return text;
-  const end = text.indexOf("\n---\n", 4);
-  if (end < 0) return text;
-  return text.slice(end + 5).replace(/^\s+/, "");
-}
-
 // Read the configured prompt file and cache it. Returns "" when the file
 // is missing, the config points at nothing, or the config explicitly
 // disables the feature (localPromptFile: "").
@@ -48,7 +40,11 @@ export function loadLocalPromptBody(config) {
   const abs = path.isAbsolute(rel) ? rel : path.join(INSTALL_ROOT, rel);
   try {
     const raw = fs.readFileSync(abs, "utf8");
-    _cache = stripFrontmatter(raw).trim();
+    // The model doesn't need the loaded_by/audience metadata, it just adds
+    // tokens. Uses the shared parser rather than a local `startsWith("---\n")`
+    // check, which silently did nothing on a Windows checkout — .md files come
+    // off the wire CRLF, so every local-model turn shipped the raw YAML.
+    _cache = parseFrontmatter(raw).body.trim();
   } catch {
     _cache = "";
   }
