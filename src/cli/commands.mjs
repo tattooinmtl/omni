@@ -735,7 +735,7 @@ export const COMMANDS = [
       if (!provName) { errorLine(`no account "${target}" — /switch-provider lists them`); return; }
       const prov = ctx.settings.providers[provName];
       if (!String(prov.accounts[target] || "").trim()) {
-        warnLine(`account ${target} has no API key yet — set it with /apikey ${target} <key> or OMNI_${target.toUpperCase()}_KEY in .env`);
+        warnLine(`account ${target} has no API key yet — set it with /apikey ${target} <key> or ${providerKeyEnvVar(target)} in .env`);
       }
       activateAccount(prov, target);
       await saveSettings(ctx.settings);

@@ -1,8 +1,14 @@
 // OpenAI-compatible streaming chat client (uses Node's global fetch / undici).
+//
+// Imports only from core/env-keys.mjs, a leaf — core/context.mjs imports
+// authHeaders from here, so anything with its own dependencies would close a
+// cycle back through core/config.mjs.
 // Works with NVIDIA NIM, local llama.cpp, Ollama, OpenRouter, etc.
 //
 // Sends stream:true, parses the SSE response, calls onToken for each text delta,
 // and returns { message, finishReason, usage } once the stream ends.
+import { providerKeyEnvVar } from "./env-keys.mjs";
+
 export function authHeaders(provider) {
   const headers = { "Content-Type": "application/json" };
   const key = String(provider.apiKey || "").trim();
@@ -138,7 +144,7 @@ function formatProviderError(res, text, model) {
       hasKey
         ? `The API key Omni sent for ${where} was rejected — it is wrong, expired, or belongs to a different endpoint (${model.provider?.baseUrl}).`
         : `No API key is configured for ${where}, so the request was sent without an Authorization header.`,
-      `Fix: /apikey ${account || prov} <your-key>  (or set OMNI_${String(account || prov).toUpperCase()}_KEY in .env), then check it with /apikey.`,
+      `Fix: /apikey ${account || prov} <your-key>  (or set ${providerKeyEnvVar(account || prov)} in .env), then check it with /apikey.`,
     ].join("\n");
   }
   if (/DEGRADED function cannot be invoked/i.test(msg)) {

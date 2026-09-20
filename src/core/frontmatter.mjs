@@ -23,8 +23,15 @@ function unquote(val) {
 // (name, command, description, license, maintainer, user-invocable, …) work
 // uniformly — extras we don't consume are simply ignored.
 export function parseFrontmatter(text) {
-  const m = String(text || "").match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-  if (!m) return { meta: {}, body: String(text || "") };
+  // Normalize CRLF first. Git checks .md out with CRLF on Windows
+  // (core.autocrlf=true is the default there), and a trailing \r defeats the
+  // `key: value` match below: JS `.` does not match \r, and `$` will not sit
+  // in front of one either. Every frontmatter line therefore failed to parse,
+  // so a Windows install loaded 200 skills with NO descriptions at all and
+  // find_skill had nothing to rank on. CI is Linux, so it never showed up.
+  const src = String(text || "").replace(/\r\n/g, "\n");
+  const m = src.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!m) return { meta: {}, body: src };
   const meta = {};
   const raw = m[1].split("\n");
   let i = 0;

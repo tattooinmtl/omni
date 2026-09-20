@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { knownContextWindow } from "./context.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
+import { providerKeyEnvVar } from "./env-keys.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
@@ -230,7 +231,7 @@ export const DEFAULT_SETTINGS = {
     "openai/gpt-4.1": { provider: "openai", id: "gpt-4.1", maxTokens: 16384, contextWindow: 1047576, vision: true },
     "openai/gpt-4.1-mini": { provider: "openai", id: "gpt-4.1-mini", maxTokens: 16384, contextWindow: 1047576, vision: true },
     "openai/o4-mini": { provider: "openai", id: "o4-mini", maxTokens: 16384, reasoning: true, contextWindow: 200000, vision: true },
-    "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 8192, contextWindow: 8192 },
+    "openrouter/llama-3-8b": { provider: "openrouter", id: "meta-llama/llama-3-8b-instruct", maxTokens: 2048, contextWindow: 8192 },
     "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
     "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
     "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768, free: true },
@@ -252,8 +253,14 @@ export const DEFAULT_SETTINGS = {
       // on a long edit/refactor session.
       maxToolIterations: 200,
     },
-    "kimi/moonshot-v1-8k":   { provider: "kimi", id: "moonshot-v1-8k",   maxTokens: 8192,  contextWindow: 8192 },
-    "kimi/moonshot-v1-32k":  { provider: "kimi", id: "moonshot-v1-32k",  maxTokens: 32768, contextWindow: 32768 },
+    // maxTokens is the OUTPUT half of the context, not a second budget:
+    // prompt + completion must fit the window. These three shipped with
+    // maxTokens EQUAL to contextWindow, which asks the provider to reserve the
+    // entire window for the reply and leaves nothing for the prompt — the same
+    // shape of mistake as minimax.io/m3's 977000. Each is now a quarter of its
+    // window, matching moonshot-v1-128k below (32768 of 131072).
+    "kimi/moonshot-v1-8k":   { provider: "kimi", id: "moonshot-v1-8k",   maxTokens: 2048,  contextWindow: 8192 },
+    "kimi/moonshot-v1-32k":  { provider: "kimi", id: "moonshot-v1-32k",  maxTokens: 8192,  contextWindow: 32768 },
     "kimi/moonshot-v1-128k": { provider: "kimi", id: "moonshot-v1-128k", maxTokens: 32768, contextWindow: 131072 },
     "nvidia/nemotron-3-ultra-550b-a55b": { provider: "nvidia", id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 16384, contextWindow: 131072 },
     "nvidia/nvidia-nemotron-3-ultra-550b-a55b": { provider: "nvidia", id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 16384, contextWindow: 131072 },
@@ -721,7 +728,14 @@ export async function saveSettings(settings) {
     clean.providers = { ...clean.providers };
     for (const [name, savedKey] of Object.entries(_env.savedKeys)) {
       const prov = clean.providers[name];
-      const envVal = process.env[`OMNI_${name.toUpperCase()}_KEY`];
+      // Must be the SAME derivation applyEnvKeyOverrides used. Building the
+      // name inline gave "OMNI_MINIMAX.IO_KEY" for the minimax.io provider —
+      // not a name any shell can even set, and not the OMNI_MINIMAX_IO_KEY
+      // the key actually came from. The lookup missed, the equality check
+      // failed, and the env-supplied key was written straight into
+      // settings.json: the exact leak this block exists to prevent. Any
+      // provider whose name isn't pure [A-Z0-9] was affected.
+      const envVal = process.env[providerKeyEnvVar(name)];
       if (prov && prov.apiKey === envVal) {
         clean.providers[name] = { ...prov, apiKey: savedKey };
       }
@@ -880,9 +894,9 @@ export function providerKeyMissing(model) {
 }
 
 // The environment variable that overrides a provider's key (see loadSettings).
-export function providerKeyEnvVar(providerName) {
-  return `OMNI_${String(providerName).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_KEY`;
-}
+// Defined in the leaf module so core/provider.mjs can use the same derivation
+// without closing an import cycle; re-exported here for existing callers.
+export { providerKeyEnvVar };
 
 function cwdSlug() {
   return (
