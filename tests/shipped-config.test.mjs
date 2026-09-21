@@ -139,5 +139,60 @@ ok("every model resolves without throwing", () => {
   assert.deepEqual(bad, []);
 });
 
+console.log("\nExisting installs get repaired, not just fresh ones:");
+
+// loadSettings merges saved models OVER the defaults, so fixing
+// DEFAULT_SETTINGS alone leaves every existing install broken.
+const { loadSettings } = await import(u("core/config.mjs"));
+const repairHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-repair-"));
+
+async function loadWith(models) {
+  fs.writeFileSync(path.join(repairHome, "settings.json"), JSON.stringify({
+    providers: { kimi: { baseUrl: "https://api.moonshot.cn/v1", apiKey: "" } },
+    models,
+  }));
+  const prev = process.env.OMNI_HOME;
+  process.env.OMNI_HOME = repairHome;
+  try {
+    const mod = await import(`${u("core/config.mjs")}?repair${Math.random()}`);
+    return await mod.loadSettings();
+  } finally {
+    process.env.OMNI_HOME = prev;
+  }
+}
+
+const repaired = await loadWith({
+  "kimi/moonshot-v1-8k": { provider: "kimi", id: "moonshot-v1-8k", maxTokens: 8192, contextWindow: 8192 },
+  "kimi/over": { provider: "kimi", id: "moonshot-v1-32k", maxTokens: 99999, contextWindow: 32768 },
+  "kimi/healthy": { provider: "kimi", id: "moonshot-v1-32k", maxTokens: 8192, contextWindow: 32768 },
+  "kimi/aggressive": { provider: "kimi", id: "moonshot-v1-32k", maxTokens: 20000, contextWindow: 32768 },
+});
+
+ok("a saved maxTokens equal to the window is repaired", () => {
+  const m = repaired.models["kimi/moonshot-v1-8k"];
+  assert.ok(m.maxTokens < 8192, `still ${m.maxTokens} of an 8192 window`);
+  assert.equal(m.maxTokens, 2048);
+});
+
+ok("a saved maxTokens above the window is repaired", () => {
+  assert.ok(repaired.models["kimi/over"].maxTokens < 32768);
+});
+
+ok("a healthy saved maxTokens is untouched", () => {
+  assert.equal(repaired.models["kimi/healthy"].maxTokens, 8192);
+});
+
+ok("an aggressive-but-workable cap stays the user's choice", () => {
+  // Only >= the full window is unambiguously broken; don't second-guess the rest.
+  assert.equal(repaired.models["kimi/aggressive"].maxTokens, 20000);
+});
+
+ok("repair never produces a nonsensical cap", () => {
+  const tiny = Object.values(repaired.models).map((m) => m.maxTokens);
+  for (const n of tiny) assert.ok(Number.isInteger(n) && n >= 1024, `bad repaired cap ${n}`);
+});
+
+fs.rmSync(repairHome, { recursive: true, force: true });
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

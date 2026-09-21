@@ -73,6 +73,36 @@ bothLineEndings(
 );
 
 bothLineEndings(
+  "single-quoted values decode the YAML '' escape",
+  "---\ndescription: 'Differentiator: gaps in David''s knowledge.'\nname: demo\n---\nbody\n",
+  ({ meta }) => {
+    // skills/skill-authoring/effective-agent-skills tells authors to write a
+    // description this way when it needs a mid-sentence colon, so the parser
+    // has to decode what the guide asks for.
+    assert.equal(meta.description, "Differentiator: gaps in David's knowledge.");
+    assert.ok(!meta.description.includes("''"), "the doubled apostrophe must be decoded");
+  },
+);
+
+bothLineEndings(
+  "double-quoted values decode backslash escapes",
+  '---\ndescription: "say \\"hi\\" then a backslash \\\\ here"\nname: demo\n---\nbody\n',
+  ({ meta }) => {
+    assert.equal(meta.description, 'say "hi" then a backslash \\ here');
+  },
+);
+
+ok("an unknown backslash escape keeps its character rather than vanishing", () => {
+  const { meta } = parseFrontmatter('---\nname: "a\\zb"\n---\nbody\n');
+  assert.equal(meta.name, "azb");
+});
+
+ok("an apostrophe inside double quotes is left alone", () => {
+  const { meta } = parseFrontmatter("---\nname: \"the user's level\"\n---\nbody\n");
+  assert.equal(meta.name, "the user's level");
+});
+
+bothLineEndings(
   "hyphenated keys parse",
   '---\nuser-invocable: true\nname: demo\n---\nbody\n',
   ({ meta }) => {
@@ -120,6 +150,19 @@ ok("every bundled SKILL.md yields a non-empty description", () => {
     broken.slice(0, 10), [],
     `${broken.length}/${skillFiles.length} SKILL.md parsed with no description — find_skill ranks on this field`,
   );
+});
+
+ok("no bundled skill carries an undecoded YAML escape into its metadata", () => {
+  const leaky = [];
+  for (const f of skillFiles) {
+    const { meta } = parseFrontmatter(fs.readFileSync(f, "utf8"));
+    for (const [k, v] of Object.entries(meta)) {
+      if (typeof v === "string" && (v.includes("''") || v.includes('\\"'))) {
+        leaky.push(`${path.relative(root, f)} [${k}]`);
+      }
+    }
+  }
+  assert.deepEqual(leaky.slice(0, 10), [], `${leaky.length} skill(s) show a raw escape in the text the model reads`);
 });
 
 ok("no bundled SKILL.md parses to entirely empty metadata", () => {
