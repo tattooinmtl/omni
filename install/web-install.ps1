@@ -1,4 +1,4 @@
-# Omni public installer shim — deployed as:
+# Omni public installer shim - deployed as:
 #
 #   https://omni.globalwarningnetworks.com/install.ps1
 #   irm https://omni.globalwarningnetworks.com/install.ps1 | iex
@@ -23,7 +23,7 @@ try {
   $script = Invoke-RestMethod -Uri $src -Headers @{ "User-Agent" = "omni-installer" }
 }
 catch {
-  Write-Host "[Omni Installer] ERROR: could not fetch the installer from GitHub — $($_.Exception.Message)"
+  Write-Host "[Omni Installer] ERROR: could not fetch the installer from GitHub - $($_.Exception.Message)"
   exit 1
 }
 
