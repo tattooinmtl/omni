@@ -19,6 +19,7 @@ import path from "node:path";
 import { HOME } from "../core/config.mjs";
 import { tools, impl } from "../tools/index.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 
 const CACHE_PATH = path.join(HOME, "mcp-cache.json");
 const TRUST_PATH = path.join(HOME, "mcp-trust.json");
@@ -69,7 +70,9 @@ function markTrusted(name, def) {
   trust[trustKey(name)] = defFingerprint(def);
   try {
     fs.mkdirSync(path.dirname(TRUST_PATH), { recursive: true });
-    fs.writeFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
+    // Atomic: a truncated trust file parses as "nothing trusted", which
+    // would re-prompt for every project MCP server the user approved.
+    atomicWriteFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
   } catch {
     /* best effort */
   }
@@ -107,7 +110,7 @@ function cacheTools(name, toolList) {
   cache[name] = { tools: toolList, cachedAt: new Date().toISOString() };
   try {
     fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
+    atomicWriteFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
   } catch {
     /* cache is best-effort */
   }
@@ -153,6 +156,20 @@ function quoteForCmdExe(arg) {
 // Exported for testing — call `quoteForCmdExe("foo & calc.exe")` directly.
 export { quoteForCmdExe };
 
+// True when `command` is a path with a space that must be quoted before it is
+// concatenated into the cmd.exe command string. A space-free command never
+// needs it, and a string that doesn't name an existing file is left alone so
+// configs that put a whole command line in `command` aren't broken by quoting.
+export function needsCommandQuoting(command) {
+  const s = String(command ?? "");
+  if (!s.includes(" ")) return false;
+  try {
+    return fs.statSync(s).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function connectStdio(name, def) {
   const env = { ...(def.inheritEnv ? process.env : baseEnv()), ...(def.env || {}) };
   const opts = { env, cwd: def.cwd || process.cwd(), stdio: ["pipe", "pipe", "pipe"] };
@@ -168,6 +185,13 @@ function connectStdio(name, def) {
   let args = (def.args || []).map(substituteInstallRoot);
   if (process.platform === "win32") {
     const escapedArgs = args.map(quoteForCmdExe);
+    // The command itself needs quoting too when it's a real path containing a
+    // space (`C:\Program Files\...\server.exe`, or an {{INSTALL_ROOT}} that
+    // expanded into one) — otherwise cmd.exe splits it at the space and the
+    // server never starts. We only quote when the string actually resolves to
+    // a file on disk, so a bare shim name (`npx`, still resolved via PATHEXT)
+    // and the "whole command line in `command`" style both keep working.
+    command = needsCommandQuoting(command) ? quoteForCmdExe(command) : command;
     command = escapedArgs.length ? `${command} ${escapedArgs.join(" ")}` : command;
     args = [];
     opts.shell = true;
@@ -253,9 +277,16 @@ function rpc(conn, method, params) {
   const id = conn.nextId++;
   return new Promise((resolve, reject) => {
     if (conn.dead) return reject(new Error("MCP server not running"));
-    conn.pending.set(id, { resolve, reject });
+    // The timer is cleared by whichever of the two settles first, so a busy
+    // session doesn't accumulate a 30s timer per RPC.
+    let timer;
+    const settle = (fn) => (v) => {
+      clearTimeout(timer);
+      fn(v);
+    };
+    conn.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
     conn.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       if (conn.pending.has(id)) {
         conn.pending.delete(id);
         reject(new Error(`MCP "${method}" timed out`));
@@ -311,12 +342,31 @@ function touch(conn) {
   }
 }
 
-async function ensureConnected(name) {
-  let conn = connections.get(name);
-  if (conn && !conn.dead) {
+// In-flight connects, keyed by server name. The agent runs a batch of tool
+// calls through Promise.all, so two calls to the same server land here
+// concurrently: without this, the second caller saw the connection the first
+// had already put in `connections` but whose initialize/tools-list were still
+// in flight, and came back with an empty `conn.tools` — surfacing as a bogus
+// `tool "x" not found`. Everyone now awaits the same fully-initialized conn.
+const connecting = new Map(); // name -> Promise<conn>
+
+function ensureConnected(name) {
+  const conn = connections.get(name);
+  if (conn && !conn.dead && conn.ready) {
     touch(conn);
-    return conn;
+    return Promise.resolve(conn);
   }
+  const inflight = connecting.get(name);
+  if (inflight) return inflight;
+
+  const p = openConnection(name).finally(() => {
+    if (connecting.get(name) === p) connecting.delete(name);
+  });
+  connecting.set(name, p);
+  return p;
+}
+
+async function openConnection(name) {
   const def = servers[name];
   if (!def) throw new Error(`unknown MCP server: ${name}`);
 
@@ -333,30 +383,77 @@ async function ensureConnected(name) {
     markTrusted(name, def);
   }
 
-  conn = def.url ? connectHttp(name, def) : connectStdio(name, def);
+  const conn = def.url ? connectHttp(name, def) : connectStdio(name, def);
   connections.set(name, conn);
-  await rpc(conn, "initialize", {
-    protocolVersion: "2024-11-05",
-    capabilities: {},
-    clientInfo: { name: "Omni Agent", version: "0.1.0" },
-  });
-  await notify(conn, "notifications/initialized", {});
-  const list = await rpc(conn, "tools/list", {});
-  conn.tools = list?.tools || [];
+  try {
+    await rpc(conn, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "Omni Agent", version: "0.1.0" },
+    });
+    await notify(conn, "notifications/initialized", {});
+    const list = await rpc(conn, "tools/list", {});
+    conn.tools = list?.tools || [];
+  } catch (e) {
+    // A handshake that fails partway leaves a live child process behind and a
+    // connection object that would be reused by the next caller. Tear both
+    // down so the next attempt starts clean.
+    disconnect(name);
+    throw e;
+  }
+  conn.ready = true;
   cacheTools(name, conn.tools);
   touch(conn);
   return conn;
+}
+
+// `proc.kill()` on Windows only kills the cmd.exe we spawn through (shell:true
+// is required for .cmd shims like npx) — the actual server process is its
+// child and survives, so every idle timeout, /mcp reconnect and exit leaked a
+// running server. taskkill /T walks the tree.
+function killProc(proc) {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  if (process.platform === "win32" && proc.pid) {
+    try {
+      const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+      killer.on("error", () => { try { proc.kill(); } catch { /* already gone */ } });
+      killer.unref?.();
+      return;
+    } catch {
+      /* fall through to the plain kill below */
+    }
+  }
+  try {
+    proc.kill();
+  } catch {
+    /* already gone */
+  }
+}
+
+// StreamableHTTP servers keep per-session state keyed by Mcp-Session-Id and
+// only release it when the client says it's done. We never said, so every
+// idle timeout and every exit left a session allocated on the far side.
+function endHttpSession(conn) {
+  if (conn.transport !== "http" || !conn.sessionId) return;
+  fetch(conn.url, {
+    method: "DELETE",
+    headers: { ...conn.headers, "Mcp-Session-Id": conn.sessionId },
+  }).catch(() => { /* best effort — we're tearing down either way */ });
 }
 
 function disconnect(name) {
   const conn = connections.get(name);
   if (!conn) return;
   if (conn.idleTimer) clearTimeout(conn.idleTimer);
+  conn.dead = true;
+  conn.ready = false;
+  endHttpSession(conn);
   try {
-    conn.proc?.kill();
+    conn.rl?.close();
   } catch {
-    /* already gone */
+    /* already closed */
   }
+  killProc(conn.proc);
   connections.delete(name);
 }
 
@@ -378,12 +475,20 @@ export async function reconnectServer(name) {
 // that reads the same whether it's a typo or a security refusal.
 const lastConnectError = new Map(); // name -> message
 
+// A connection that has completed its handshake. A conn that exists but isn't
+// `ready` is mid-handshake (its `tools` is still empty), so callers must await
+// ensureConnected instead of reading it.
+function liveConn(name) {
+  const conn = connections.get(name);
+  return conn && !conn.dead && conn.ready ? conn : null;
+}
+
 // Tools for a server, preferring a live connection, then the disk cache, then a
 // one-time connect to populate the cache.
 async function toolsForServer(name) {
   if (!servers[name]) return null;
-  const conn = connections.get(name);
-  if (conn && !conn.dead) return conn.tools;
+  const conn = liveConn(name);
+  if (conn) return conn.tools;
   const cached = cachedTools(name);
   if (cached) return cached;
   try {
@@ -517,7 +622,7 @@ async function mcpProxy(a = {}) {
   if (a.server) {
     if (!servers[a.server]) return `unknown server "${a.server}". Configured: ${names.join(", ")}`;
     const list = (await toolsForServer(a.server)) || [];
-    const state = connections.get(a.server) && !connections.get(a.server).dead ? "connected" : "cached/idle";
+    const state = liveConn(a.server) ? "connected" : "cached/idle";
     return (
       `${a.server} (${state}):\n` +
       (list.length ? list.map((t) => `  ${t.name} — ${oneline(t.description)}`).join("\n") : "  (no tools)")
@@ -540,10 +645,10 @@ async function mcpProxy(a = {}) {
 
   // default: status
   const lines = names.map((n) => {
-    const conn = connections.get(n);
+    const conn = liveConn(n);
     const cached = cachedTools(n);
-    const state = conn && !conn.dead ? "connected" : cached ? "idle (cached)" : "not connected";
-    const count = conn && !conn.dead ? conn.tools.length : cached ? cached.length : "?";
+    const state = conn ? "connected" : cached ? "idle (cached)" : "not connected";
+    const count = conn ? conn.tools.length : cached ? cached.length : "?";
     return `  ${n}: ${state}, ${count} tool(s)`;
   });
   return (

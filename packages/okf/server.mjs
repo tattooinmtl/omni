@@ -166,19 +166,28 @@ function resolveFolder(folder, { force = false } = {}) {
 
 // ---- card storage -------------------------------------------------------------
 
+// Frontmatter is one key per LINE, so any newline inside a scalar value ends
+// that field early and the remainder is re-parsed as frontmatter keys or
+// leaks into the body. A title like "Broken\n---\nid: other" corrupted the
+// card (and could restate `id`, pointing two cards at one identity). Values
+// are flattened to a single line before they are written.
+function fmValue(v) {
+  return String(v ?? "").replace(/[\r\n]+/g, " ").trim();
+}
+
 function serialize(card) {
   const fm = [
     "---",
     "okf: 1",
-    `id: ${card.id}`,
-    `title: ${card.title}`,
-    `type: ${card.type}`,
-    `tags: ${(card.tags || []).join(", ")}`,
-    `language: ${card.language || ""}`,
-    `source: ${card.source || ""}`,
-    `created: ${card.created}`,
-    `updated: ${card.updated}`,
-    `links: ${(card.links || []).join(", ")}`,
+    `id: ${fmValue(card.id)}`,
+    `title: ${fmValue(card.title)}`,
+    `type: ${fmValue(card.type)}`,
+    `tags: ${(card.tags || []).map(fmValue).join(", ")}`,
+    `language: ${fmValue(card.language)}`,
+    `source: ${fmValue(card.source)}`,
+    `created: ${fmValue(card.created)}`,
+    `updated: ${fmValue(card.updated)}`,
+    `links: ${(card.links || []).map(fmValue).join(", ")}`,
     "---",
     "",
   ].join("\n");
@@ -249,10 +258,24 @@ function findCard(id) {
   return null;
 }
 
+// Write to a tmp file in the same directory, then rename over the target, so
+// a crash or Ctrl-C mid-write can't leave a truncated card (or index) on
+// disk. Knowledge cards are user data — a half-written one is lost work.
+function atomicWrite(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+  try {
+    fs.writeFileSync(tmp, content, "utf8");
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
 function writeCard(card) {
   const file = cardFile(card.folder || "", card.id);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, serialize(card), "utf8");
+  atomicWrite(file, serialize(card));
 }
 
 // ---- similarity + "did you mean" guards ----------------------------------------
@@ -452,7 +475,7 @@ function reindexAll() {
       /* new index */
     }
     if (prev !== next) {
-      fs.writeFileSync(file, next, "utf8");
+      atomicWrite(file, next);
       written++;
     }
   }
@@ -860,6 +883,13 @@ rl.on("line", (line) => {
     req = JSON.parse(trimmed);
   } catch {
     return send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+  }
+  if (req === null || typeof req !== "object" || Array.isArray(req)) {
+    // A bare `null` or a JSON scalar used to reach handle(), throw, and then
+    // throw AGAIN inside the catch below (`req.id` on null) — an uncaught
+    // exception that killed the whole server and took the knowledge base
+    // offline until the client reconnected.
+    return send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request" } });
   }
   try {
     handle(req);

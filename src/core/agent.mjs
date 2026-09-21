@@ -20,6 +20,7 @@ import {
 } from "../local/graph-ids.mjs";
 import crypto from "node:crypto";
 import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider.mjs";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
@@ -687,7 +688,9 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
     const hash = hashToolBody(raw);
     const p = toolBodyPath(session, hash);
     try {
-      if (p && !fs.existsSync(p)) fs.writeFileSync(p, raw, "utf8");
+      // Atomic: /expand reads this body back later, and a truncated one
+      // would silently hand the model a cut-off tool result.
+      if (p && !fs.existsSync(p)) atomicWriteFileSync(p, raw);
     } catch { /* best-effort — fall through to unshrunk */ }
     const lines = raw.split(/\r?\n/).length;
     const bytes = Buffer.byteLength(raw, "utf8");

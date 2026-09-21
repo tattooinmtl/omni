@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { knownContextWindow } from "./context.mjs";
@@ -677,7 +678,9 @@ export function ensureHome() {
   fs.mkdirSync(HOME, { recursive: true });
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
   if (!fs.existsSync(SETTINGS_PATH)) {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(DEFAULT_SETTINGS, null, 2));
+    // Atomic: a crash while seeding settings must not leave a truncated
+    // settings.json, which is the one file the CLI cannot boot without.
+    atomicWriteFileSync(SETTINGS_PATH, JSON.stringify(DEFAULT_SETTINGS, null, 2));
   }
 }
 

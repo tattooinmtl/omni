@@ -201,6 +201,8 @@ def handle(line: str) -> dict:
         req = json.loads(line)
     except json.JSONDecodeError as e:
         return {"error": f"bad JSON: {e}"}
+    if not isinstance(req, dict):
+        return {"error": "request must be a JSON object"}
 
     t = req.get("type")
 
@@ -228,8 +230,13 @@ def handle(line: str) -> dict:
 
 
 def main() -> None:
-    # Flush stdout after every write so Node sees each response immediately.
-    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    # Flush stdout after every write so Node sees each response immediately,
+    # and pin both pipes to UTF-8. On Windows a pipe defaults to the ANSI
+    # codepage (cp1252) with surrogateescape, so every non-ASCII character
+    # Node sent came back mangled — "déjà" became "dÃ©jÃ ". That corruption
+    # reached the model through trim/render_template, not just the router.
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)  # type: ignore[attr-defined]
 
     # Pre-load the model so the first classify call is fast.
     _load_model()
@@ -238,8 +245,25 @@ def main() -> None:
         raw = raw.strip()
         if not raw:
             continue
-        resp = handle(raw)
+        try:
+            resp = handle(raw)
+        except Exception as e:  # one bad request must not kill the sidecar
+            resp = {"error": f"sidecar error: {e}"}
+        # Echo the request id when the caller sent one so responses can be
+        # matched to requests instead of to whatever is next in line.
+        req_id = _request_id(raw)
+        if req_id is not None and isinstance(resp, dict):
+            resp = {**resp, "_id": req_id}
         print(json.dumps(resp), flush=True)
+
+
+def _request_id(raw: str):
+    """The `_id` of a request line, or None if it has none / is malformed."""
+    try:
+        req = json.loads(raw)
+    except Exception:
+        return None
+    return req.get("_id") if isinstance(req, dict) else None
 
 
 if __name__ == "__main__":

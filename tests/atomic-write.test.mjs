@@ -88,6 +88,51 @@ await ok("project_todo persists the todo list with no tmp leftover", async () =>
   assert.deepEqual(stragglers, [], `stray tmp files: ${stragglers.join(", ")}`);
 });
 
+// ---- every state file in the app is written atomically ----
+//
+// The tool layer was converted first; the stores under core/, integrations/
+// and local/ were still using a raw fs.writeFileSync — settings.json, the
+// folder-trust file, the MCP trust file and tool cache, omni.config.json, the
+// RAG index, the installed-packages manifest, the session state files, the
+// offloaded tool bodies, the downloaded package zip. Each one is a full-file
+// rewrite, so a crash mid-write truncated it. This pins the invariant instead
+// of the individual call sites: a new raw write anywhere in src/ or packages/
+// fails this test unless it is deliberately listed here.
+
+await ok("no module writes a state file with a raw fs.writeFileSync", () => {
+  // Writes that are intentionally NOT atomic, with the reason:
+  const ALLOWED = new Map([
+    // The helper itself — this IS the tmp write that makes the rest atomic.
+    ["src/core/atomic-write.mjs", 1],
+    // A throwaway probe file that is written, read, and deleted immediately
+    // to test whether the folder is writable at all.
+    ["src/core/workspace.mjs", 1],
+    // The tmp-file write INSIDE okf's own atomic write helper.
+    ["packages/okf/server.mjs", 1],
+  ]);
+
+  const roots = [path.join(root, "src"), path.join(root, "packages")];
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.name.endsWith(".mjs") && !e.name.endsWith(".js")) continue;
+      const rel = path.relative(root, full).split(path.sep).join("/");
+      const src = fs.readFileSync(full, "utf8");
+      let count = 0;
+      for (const line of src.split(/\r?\n/)) {
+        if (/^\s*(\/\/|\*)/.test(line)) continue;       // comments don't count
+        if (/\bfs\.writeFileSync\s*\(/.test(line)) count++;
+      }
+      const allowed = ALLOWED.get(rel) || 0;
+      if (count > allowed) offenders.push(`${rel}: ${count} raw write(s), ${allowed} allowed`);
+    }
+  };
+  for (const r of roots) if (fs.existsSync(r)) walk(r);
+  assert.deepEqual(offenders, [], `raw fs.writeFileSync found:\n  ${offenders.join("\n  ")}`);
+});
+
 // ---- cleanup ----
 
 process.chdir(origCwd);

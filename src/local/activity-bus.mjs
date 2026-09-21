@@ -22,9 +22,18 @@ const history = [];
 // Live-graph registry — session/project/tool-call/file nodes announced by the
 // agent loop as it works. Kept here (not in the client) so /api/graph merges
 // them into every response and a browser refresh doesn't wipe the session's
-// history off the map. Unbounded on purpose within a process — a single
-// session's dynamic nodes are cheap (tens to a few hundred); the process
-// exits when omni exits so nothing leaks between runs.
+// history off the map.
+//
+// Bounded, oldest-first. One node and one edge are published per tool call,
+// so a long-lived session (Omni is meant to stay open for days) grows these
+// forever, and every /api/graph response serializes all of them — the page
+// gets slower the longer you work. The caps are far above a normal session's
+// node count, so in practice nothing is dropped; they exist so a marathon
+// session degrades by forgetting its oldest tool calls instead of by growing
+// without limit. buildGraph() already drops edges whose endpoints it doesn't
+// know, so evicting a node can't leave a dangling edge in the rendered graph.
+const MAX_LIVE_NODES = 4000;
+const MAX_LIVE_EDGES = 8000;
 const liveNodes = new Map(); // id -> node payload
 const liveEdges = [];        // { source, target, kind }
 
@@ -36,9 +45,14 @@ export function publishActivity(event) {
         id: event.nodeId, parent: event.parent, label: event.label,
         detail: event.detail, nodeKind: event.nodeKind, meta: event.meta || {},
       });
+      // Map iteration is insertion-ordered, so the first key is the oldest.
+      while (liveNodes.size > MAX_LIVE_NODES) {
+        liveNodes.delete(liveNodes.keys().next().value);
+      }
     }
   } else if (event.kind === "live_edge" && event.source && event.target) {
     liveEdges.push({ source: event.source, target: event.target, kind: event.edgeKind || "live" });
+    if (liveEdges.length > MAX_LIVE_EDGES) liveEdges.splice(0, liveEdges.length - MAX_LIVE_EDGES);
   }
   history.push(stamped);
   if (history.length > HISTORY_LIMIT) history.shift();
