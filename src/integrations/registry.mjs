@@ -104,8 +104,16 @@ export async function fetchRegistry(baseUrl) {
     // local path / file:// — used by the test loop
     raw = fs.readFileSync(url.replace(/^file:\/\//, ""), "utf8");
   }
-  const reg = JSON.parse(raw);
-  if (!Array.isArray(reg.packages)) throw new Error("registry.json has no packages array");
+  // A remote registry that serves an error page (or HTML from a captive
+  // portal) otherwise surfaces as a bare "Unexpected token <", which says
+  // nothing about where the bad data came from.
+  let reg;
+  try {
+    reg = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`registry at ${url} did not return valid JSON: ${e.message}`);
+  }
+  if (!Array.isArray(reg.packages)) throw new Error(`registry at ${url} has no packages array`);
   return reg;
 }
 

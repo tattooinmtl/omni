@@ -22,12 +22,20 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Read HOME dynamically (per call) so tests that change process.env.OMNI_HOME
 // between cases still work, and so an `omni --home <path>` style flag (if
 // added later) takes effect without re-importing this module.
 function filePath() {
-  const home = process.env.OMNI_HOME || path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z]:)/, "$1")), "..", "..", "agent");
+  // fileURLToPath, not `new URL(...).pathname` — a URL pathname is
+  // percent-encoded, so an install under "C:\Program Files\..." resolved to
+  // "C:/Program%20Files/...", a directory that does not exist. Every read and
+  // write here is wrapped in try/catch, so the failure was silent: the last
+  // provider simply never persisted for anyone whose path had a space or a
+  // non-ASCII character.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const home = process.env.OMNI_HOME || path.join(here, "..", "..", "agent");
   return path.join(home, "last-provider.json");
 }
 
