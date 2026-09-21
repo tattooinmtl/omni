@@ -50,7 +50,8 @@ with `git pull`, anything else resyncs from the branch zip), and re-running is
 always safe — your `.env` and `agent/settings.json` are never overwritten.
 
 ```powershell
-.\install\install.ps1 -AutoUpdate   # update in place without prompting
+.\install\install.ps1              # update in place (this is the default)
+.\install\install.ps1 -NoUpdate    # just report whether an update exists
 .\install\install.ps1 -Force        # resync every file from GitHub
 ```
 

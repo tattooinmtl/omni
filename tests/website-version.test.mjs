@@ -67,6 +67,71 @@ ok("the deployed shim hands off to the real installer on the same repo/branch", 
   assert.equal(branch[1], "main", "shim branch must match the installer's");
 });
 
+// -- the installer has to actually run, and actually update ----------------
+//
+// Two bugs kept every existing install pinned to its original version:
+//
+//  1. The .ps1 files contained em dashes. Windows PowerShell 5.1 (what
+//     `powershell.exe` is) reads a BOM-less script as the ANSI codepage, and
+//     one of those bytes decodes to a double quote — which terminates a string
+//     early and turns the whole file into a parse error. So
+//     `powershell -File .\install\install.ps1` (README, and both npm
+//     install:* scripts) could not run AT ALL. Only the web one-liner worked,
+//     because Invoke-RestMethod decodes UTF-8 before the parser sees it.
+//  2. In git mode the update was gated behind -AutoUpdate, which the public
+//     one-liner physically cannot pass (`irm | iex` takes no arguments). It
+//     printed "update available", declined, and then reported
+//     "Install complete — Omni v<old> is ready".
+
+for (const rel of ["install/install.ps1", "install/web-install.ps1"]) {
+  ok(`${rel} is pure ASCII so Windows PowerShell 5.1 can parse it from a file`, () => {
+    const text = fs.readFileSync(path.join(root, rel), "utf8");
+    const offenders = [];
+    text.split(/\r?\n/).forEach((line, i) => {
+      for (const ch of line) {
+        if (ch.codePointAt(0) > 127) {
+          offenders.push(`line ${i + 1}: U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} in ${line.trim().slice(0, 60)}`);
+          break;
+        }
+      }
+    });
+    assert.deepEqual(offenders, [],
+      `non-ASCII in a BOM-less .ps1 breaks 'powershell -File' on 5.1:\n    ${offenders.join("\n    ")}`);
+  });
+}
+
+ok("git-mode updating is the default, not gated behind a flag the one-liner can't pass", () => {
+  assert.ok(!/Re-run with -AutoUpdate/.test(installer),
+    "the installer must not tell the user to re-run with a flag `irm | iex` cannot pass");
+  assert.match(installer, /\[switch\]\$NoUpdate/,
+    "opting OUT of the update is the flag that should exist, not opting in");
+});
+
+ok("the update fast-forwards and checks whether git actually succeeded", () => {
+  assert.match(installer, /merge --ff-only/,
+    "a plain `git pull` can create a merge commit in a user's install dir");
+  assert.match(installer, /git fetch[\s\S]{0,200}LASTEXITCODE/,
+    "a failed fetch must not be treated as a successful update");
+});
+
+ok("a declined or failed update is never reported as a finished install", () => {
+  // The success line must be reachable only when the installed version is the
+  // latest one; an unconditional "Install complete" is what made a no-op
+  // install look like a successful upgrade.
+  const successLine = /Info "Install complete/.exec(installer);
+  assert.ok(successLine, "installer should still report success somewhere");
+  const before = installer.slice(0, successLine.index);
+  assert.match(before.slice(-600), /\$installed -ne \$latest/,
+    "the success message must be guarded by a comparison against the latest version");
+});
+
+ok("the install dir is moved onto the release branch, not left on whatever it was", () => {
+  assert.match(installer, /currentBranch -ne \$Branch/,
+    "an install parked on another branch can never reach the latest version");
+  assert.match(installer, /\$remoteRef\.\.HEAD/,
+    "before switching branches it must check for commits that exist nowhere on the remote");
+});
+
 // -- optional: the local deploy folder (gitignored) ------------------------
 
 const indexPath = path.join(root, "website", "index.html");
