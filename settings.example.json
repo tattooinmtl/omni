@@ -79,6 +79,14 @@
       "baseUrl": "https://api.xkiro.com/v1",
       "apiKey": "",
       "reasoningParam": "none"
+    },
+    // Atria ASI — OpenAI-compatible chat/completions, Bearer auth, keys look
+    // like atr_… Set with /apikey atria <key>, OMNI_ATRIA_KEY, or Atria's own
+    // ATRIA_API_KEY. Switch to it with /provider atria.
+    "atria": {
+      "baseUrl": "https://api.atria-asi.ai/v1",
+      "apiKey": "",
+      "reasoningParam": "none"
     }
   },
 
@@ -119,6 +127,7 @@
     "xkiro/gpt-5.3-codex-spark":      { "provider": "xkiro", "id": "openai/gpt-5.3-codex-spark",           "maxTokens": 16384, "free": true },
     "xkiro/sensenova-6.8-flash-lite": { "provider": "xkiro", "id": "sensenova/sensenova-6.8-flash-lite",   "maxTokens": 16384, "free": true },
     "xkiro/sensenova-6.7-flash-lite": { "provider": "xkiro", "id": "sensenova/sensenova-6.7-flash-lite",   "maxTokens": 16384, "free": true },
+    "atria/dawn-preview":             { "provider": "atria", "id": "Atria-Dawn-Preview",                  "maxTokens": 8192 },
     "local/coder":          { "provider": "local",      "id": "your-model-name",             "maxTokens": 8192 }
   },
 

@@ -131,6 +131,11 @@ await ok("a bare xAI xai- key is redacted", async () => {
   assert.ok(!got.includes("xai-1234567890abcdefghij"), `xai- key was NOT redacted:\n${got}`);
 });
 
+await ok("a bare Atria atr_ key is redacted", async () => {
+  const got = await appendAndRead("/apikey atria atr_1234567890abcdefghijklmnopqrstuvwxyz");
+  assert.ok(!got.includes("atr_1234567890abcdef"), `atr_ key was NOT redacted:\n${got}`);
+});
+
 await ok("the nvidia-glm-5.2 model name is still NOT mistaken for an nvapi- key", async () => {
   const got = await appendAndRead("switch to nvidia-glm-5.2 please");
   assert.ok(got.includes("nvidia-glm-5.2"), `model name was over-redacted:\n${got}`);
