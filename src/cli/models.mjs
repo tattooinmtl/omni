@@ -23,6 +23,9 @@ export const PROVIDER_PRESETS = {
   // xKiro — unified gateway (OpenAI-compatible), 11 free-tier models under
   // 5M tokens/day. Get a key at https://xkiro.com/dashboard.
   xkiro:   { baseUrl: "https://api.xkiro.com/v1", label: "xKiro", reasoningParam: "none" },
+  // Atria ASI — OpenAI-compatible chat/completions with Bearer auth.
+  // Keys (atr_…) also read from the vendor's own ATRIA_API_KEY env var.
+  atria:   { baseUrl: "https://api.atria-asi.ai/v1", label: "Atria ASI", reasoningParam: "none" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",

@@ -137,6 +137,17 @@ export const DEFAULT_SETTINGS = {
       label: "xKiro",
       reasoningParam: "none",
     },
+    atria: {
+      // Atria ASI — OpenAI-compatible /chat/completions (Bearer auth). The same
+      // host also speaks Anthropic Messages (/v1/messages, x-api-key) and the
+      // OpenAI Responses API; Omni uses the chat-completions path.
+      // Keys look like atr_… — set with `/apikey atria <key>`, OMNI_ATRIA_KEY,
+      // or the vendor's own ATRIA_API_KEY (see PROVIDER_ENV_ALIASES).
+      baseUrl: "https://api.atria-asi.ai/v1",
+      apiKey: "",
+      label: "Atria ASI",
+      reasoningParam: "none",
+    },
     "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
@@ -287,6 +298,11 @@ export const DEFAULT_SETTINGS = {
     "xkiro/sensenova-6.8-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.8-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
     "xkiro/sensenova-6.7-flash-lite": { provider: "xkiro", id: "sensenova/sensenova-6.7-flash-lite", maxTokens: 16384, contextWindow: 262144, free: true },
     "xkiro/qwen3.8-max-free":       { provider: "xkiro", id: "qwen/qwen3.8-max:free",          maxTokens: 65536, contextWindow: 1000000, free: true, vision: true },
+    // Atria publishes no limits and its /v1/models is key-gated, so nothing is
+    // pinned here that wasn't verified: contextWindow is left off (auto-detected
+    // from provider metadata on first use, see core/context.mjs) and maxTokens
+    // stays conservative. Raise either with /context once you have a key.
+    "atria/dawn-preview": { provider: "atria", id: "Atria-Dawn-Preview", maxTokens: 8192 },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
   // warm Python sidecar + local ML (sub-ms, free, no network).
@@ -421,8 +437,7 @@ function applyEnvKeyOverrides(settings) {
   // (e.g. /apikey nvidia1 <key>), the change is the user's and persists.
   const savedAccounts = {};
   for (const [name, prov] of Object.entries(settings.providers)) {
-    const envKey = providerKeyEnvVar(name);
-    const envVal = process.env[envKey];
+    const envVal = providerKeyFromEnv(name);
     const onDisk = String(prov.apiKey || "").trim();
     const envFilled = envVal && !onDisk;
     if (envFilled) {
@@ -764,14 +779,17 @@ export async function saveSettings(settings) {
     clean.providers = { ...clean.providers };
     for (const [name, savedKey] of Object.entries(_env.savedKeys)) {
       const prov = clean.providers[name];
-      // Must be the SAME derivation applyEnvKeyOverrides used. Building the
-      // name inline gave "OMNI_MINIMAX.IO_KEY" for the minimax.io provider —
-      // not a name any shell can even set, and not the OMNI_MINIMAX_IO_KEY
-      // the key actually came from. The lookup missed, the equality check
-      // failed, and the env-supplied key was written straight into
-      // settings.json: the exact leak this block exists to prevent. Any
-      // provider whose name isn't pure [A-Z0-9] was affected.
-      const envVal = process.env[providerKeyEnvVar(name)];
+      // Must be the SAME derivation applyEnvKeyOverrides used, aliases and
+      // all. Two separate bugs live here:
+      //  - building the name inline gave "OMNI_MINIMAX.IO_KEY" for the
+      //    minimax.io provider - not a name any shell can set, and not the
+      //    OMNI_MINIMAX_IO_KEY the key actually came from;
+      //  - a provider with a vendor-native alias (ATRIA_API_KEY) supplies its
+      //    key under that name, which an OMNI_<NAME>_KEY lookup never sees.
+      // Either miss makes the equality check below fail and writes the
+      // env-supplied key straight into settings.json - the exact leak this
+      // block exists to prevent. providerKeyFromEnv covers both.
+      const envVal = providerKeyFromEnv(name);
       if (prov && prov.apiKey === envVal) {
         clean.providers[name] = { ...prov, apiKey: savedKey };
       }
@@ -810,7 +828,7 @@ export async function saveSettings(settings) {
     const own = String(prov.apiKey || "").trim();
     const fromEnv =
       own &&
-      (own === process.env[providerKeyEnvVar(name)] ||
+      (own === providerKeyFromEnv(name) ||
         Object.values(_env?.savedAccounts?.[name] || {}).some((rec) => rec.imposed === own));
     clean.providers[name] = own && !fromEnv
       ? { ...prov, accounts: { ...prov.accounts, [active]: prov.apiKey } }
@@ -934,6 +952,32 @@ export function providerKeyMissing(model) {
 // without closing an import cycle; re-exported here for existing callers.
 export { providerKeyEnvVar };
 
+// Vendor-native env var names accepted in addition to OMNI_<PROVIDER>_KEY.
+// Opt-in per provider on purpose: a bare OPENAI_API_KEY sitting in a shell for
+// some other tool should not silently become Omni's key. Listed here only for
+// providers whose own docs tell you to export that exact name.
+const PROVIDER_ENV_ALIASES = {
+  atria: ["ATRIA_API_KEY"],
+};
+
+// Every env var that can supply this provider's key, canonical name first.
+export function providerKeyEnvVars(providerName) {
+  const name = String(providerName || "").toLowerCase();
+  return [providerKeyEnvVar(providerName), ...(PROVIDER_ENV_ALIASES[name] || [])];
+}
+
+// The key the environment currently supplies for a provider, or undefined.
+// Used both to fill an empty slot on load and to strip that same value back
+// out on save — the two must agree, or an env-sourced key lands in
+// settings.json (see saveSettings).
+export function providerKeyFromEnv(providerName) {
+  for (const v of providerKeyEnvVars(providerName)) {
+    const val = process.env[v];
+    if (val && String(val).trim()) return val;
+  }
+  return undefined;
+}
+
 function cwdSlug() {
   return (
     "--" +
@@ -964,6 +1008,7 @@ const SECRET_PATTERNS = [
   /gsk_[A-Za-z0-9]{40,}/g,
   /AIza[0-9A-Za-z_-]{30,}/g,
   /xai-[A-Za-z0-9]{20,}/g,
+  /\batr_[A-Za-z0-9_-]{16,}/g,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g,
   // Generic "key=value" catch-all. Tightened (TODO #4) — the old regex matched
   // ANY string after a key-word + `:`/`=`, so a sentence like "Use the API
