@@ -56,6 +56,59 @@ await ok("config.mjs re-exports the same function, not a second copy", async () 
   assert.equal(fromConfig, providerKeyEnvVar, "two derivations is what caused the leak");
 });
 
+await ok("no module hand-rolls the env var name any more", () => {
+  // The leak came from a second, subtly different copy of this expression.
+  // env-keys.mjs is the one place allowed to build the string.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.name.endsWith(".mjs") || full.endsWith("env-keys.mjs")) continue;
+      const src = fs.readFileSync(full, "utf8");
+      for (const line of src.split("\n")) {
+        // Ignore comments — several reference the old form to explain the bug.
+        if (/^\s*(\/\/|\*)/.test(line)) continue;
+        if (/`OMNI_\$\{/.test(line)) offenders.push(`${path.relative(root, full)}: ${line.trim()}`);
+      }
+    }
+  };
+  walk(path.join(root, "src"));
+  assert.deepEqual(offenders, [], "use providerKeyEnvVar() instead");
+});
+
+await ok("an account name with a hyphen resolves to a usable env var", async () => {
+  // applyEnvKeyOverrides had its own copy of the derivation, so an account
+  // named "nvidia-eu" was read from OMNI_NVIDIA-EU_KEY — unsettable — while
+  // /apikey told the user to set OMNI_NVIDIA_EU_KEY.
+  const acctHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-acct-"));
+  fs.writeFileSync(path.join(acctHome, "settings.json"), JSON.stringify({
+    providers: {
+      nvidia: {
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        apiKey: "",
+        accounts: { "nvidia-eu": "", nvidia1: "" },
+        activeAccount: "nvidia-eu",
+      },
+    },
+    models: {},
+  }));
+  const prevHome = process.env.OMNI_HOME;
+  process.env.OMNI_HOME = acctHome;
+  process.env[providerKeyEnvVar("nvidia-eu")] = "EU-ACCOUNT-KEY";
+  try {
+    // Re-import under the new HOME — config caches SETTINGS_PATH at module load.
+    const mod = await import(`${u("core/config.mjs")}?acct`);
+    const accounts = (await mod.loadSettings()).providers.nvidia.accounts;
+    assert.equal(accounts["nvidia-eu"], "EU-ACCOUNT-KEY",
+      "the hyphenated account never picked up its env key");
+  } finally {
+    delete process.env[providerKeyEnvVar("nvidia-eu")];
+    process.env.OMNI_HOME = prevHome;
+    fs.rmSync(acctHome, { recursive: true, force: true });
+  }
+});
+
 console.log("\nAn env-supplied key never reaches settings.json:");
 
 // Covers a dotted provider name (the bug) alongside a plain one (the control).

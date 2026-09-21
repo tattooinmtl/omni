@@ -6,13 +6,31 @@
 // extras -> agent -> tools cycle. Importing it from a module with no
 // imports of its own keeps that cycle from closing.
 
-// Strip one layer of matched surrounding quotes. Plenty of SKILL.md authors
-// write `description: "…"`, and without this the quote leaks into every
-// rendered catalog line.
+// Strip one layer of matched surrounding quotes and decode the escapes that
+// layer implies. Plenty of SKILL.md authors write `description: "…"`, and
+// without this the quote leaks into every rendered catalog line.
+//
+// The escapes matter because skills/skill-authoring/effective-agent-skills
+// tells authors to reach for them: a description needing a mid-sentence colon
+// must be single-quoted with inner apostrophes doubled (`David''s`). Stripping
+// the quotes without undoing that doubling put a literal `''` into the
+// description the model reads. Four bundled skills were already affected.
 function unquote(val) {
   const s = String(val).trim();
-  if (s.length >= 2 && ((s[0] === '"' && s.endsWith('"')) || (s[0] === "'" && s.endsWith("'")))) {
-    return s.slice(1, -1).trim();
+  if (s.length >= 2 && s[0] === "'" && s.endsWith("'")) {
+    // YAML single-quoted: the only escape is '' for a literal apostrophe.
+    return s.slice(1, -1).replace(/''/g, "'").trim();
+  }
+  if (s.length >= 2 && s[0] === '"' && s.endsWith('"')) {
+    // YAML double-quoted: backslash escapes. Only the ones that plausibly
+    // appear in a one-line description — an unknown escape keeps its literal
+    // character rather than being silently dropped.
+    return s.slice(1, -1).replace(/\\(.)/g, (_, ch) => {
+      if (ch === "n") return "\n";
+      if (ch === "t") return "\t";
+      if (ch === "r") return "\r";
+      return ch; // covers \" and \\, and leaves anything else as-is
+    }).trim();
   }
   return s;
 }

@@ -430,7 +430,12 @@ function applyEnvKeyOverrides(settings) {
     }
     const acctNames = Object.keys(prov.accounts || {});
     for (const acct of acctNames) {
-      const acctEnv = `OMNI_${acct.toUpperCase()}_KEY`;
+      // Same derivation as providers. Hand-rolling it here meant an account
+      // named "nvidia-eu" was read from OMNI_NVIDIA-EU_KEY — a name no shell
+      // can set — while /apikey and the 401 advice both told the user to set
+      // OMNI_NVIDIA_EU_KEY. The app instructed users to set a variable it
+      // would never read.
+      const acctEnv = providerKeyEnvVar(acct);
       const acctEnvVal = process.env[acctEnv];
       const acctOnDisk = String(prov.accounts[acct] || "").trim();
       if (acctEnvVal && !acctOnDisk) {
@@ -560,8 +565,36 @@ function migrateSettings(settings) {
   }
 
   migrateMiniMax(settings);
+  repairOutputCaps(settings);
 
   return settings;
+}
+
+// max_tokens is the OUTPUT half of the context window, not a second budget:
+// prompt and completion share the window. An entry asking for the whole thing
+// (or more) leaves nothing for the prompt, and providers reject it outright —
+// that is what made minimax.io/m3 400 on every request.
+//
+// Fixing DEFAULT_SETTINGS only helps a fresh install: loadSettings merges
+// saved models OVER the defaults, so an install that already has the entry
+// keeps the broken value forever. This repairs those in place.
+//
+// Deliberately stricter than the invariant the shipped defaults are held to
+// (a quarter of the window). Only `maxTokens >= contextWindow` is repaired —
+// unambiguously broken. A merely aggressive-but-workable cap is left as the
+// user's choice.
+function repairOutputCaps(settings) {
+  for (const [key, entry] of Object.entries(settings.models || {})) {
+    if (!entry || typeof entry !== "object") continue;
+    const maxTokens = Number(entry.maxTokens);
+    if (!Number.isFinite(maxTokens) || maxTokens <= 0) continue;
+    const window = knownContextWindow(entry, entry.id).size;
+    if (!Number.isFinite(window) || window <= 0) continue;
+    if (maxTokens < window) continue;
+    // A quarter of the window — the ratio the healthy shipped entries use
+    // (moonshot-v1-128k is 32768 of 131072).
+    settings.models[key] = { ...entry, maxTokens: Math.max(1024, Math.floor(window / 4)) };
+  }
 }
 
 // ---------------------------------------------------------------------------
