@@ -12,6 +12,7 @@ import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
 import { jqLite, formatJqResult, JqLiteError } from "./jq-lite.mjs";
 import { HOME, loadSettings, saveSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import {
   activeProviderFromDisk, layeredProvider, currentAtoms, formatMemoryRecord, explainAtomText,
 } from "../core/memory-provider.mjs";
@@ -39,23 +40,9 @@ function clip(s) {
   return s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n…[truncated]" : s;
 }
 
-// Write `content` to `file` atomically: write to a tmp file in the same
-// directory, then rename over the destination. A crash mid-write leaves the
-// destination untouched (its previous content is still there) instead of a
-// truncated/corrupt file. Same pattern as saveSettings in core/config.mjs.
-// The tmp name is uniquified (pid + timestamp + random) so two concurrent
-// writes to the same file don't collide on the tmp path.
-function atomicWriteFileSync(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    fs.writeFileSync(tmp, content);
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
-    throw e;
-  }
-}
+// Atomic file write — see core/atomic-write.mjs. Re-exported here because
+// the memory store in core/ needs the same helper and cannot import this
+// module (tools/index.mjs imports core/, not the other way round).
 
 // Cheap ReDoS heuristic: a quantifier (?, *, +, {n,m}) immediately inside a
 // group that's itself quantified is the textbook shape for catastrophic

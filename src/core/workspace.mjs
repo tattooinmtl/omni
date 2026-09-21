@@ -21,6 +21,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import readline from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import { INSTALL_ROOT } from "../paths.mjs";
@@ -112,7 +113,10 @@ export function trustFolder(dir) {
   const trust = readTrust();
   trust[trustKey(dir)] = { trustedAt: new Date().toISOString() };
   fs.mkdirSync(HOME, { recursive: true });
-  fs.writeFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
+  // Atomic: a half-written trust file reads back as invalid JSON, which
+  // readTrust() treats as "nothing is trusted" — silently dropping every
+  // folder the user has approved.
+  atomicWriteFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
 }
 
 export function untrustFolder(dir) {
@@ -120,7 +124,7 @@ export function untrustFolder(dir) {
   const key = trustKey(dir);
   if (!(key in trust)) return false;
   delete trust[key];
-  fs.writeFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
+  atomicWriteFileSync(TRUST_PATH, JSON.stringify(trust, null, 2));
   return true;
 }
 

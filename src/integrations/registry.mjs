@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -77,7 +78,9 @@ function readInstalled() {
 
 function writeInstalled(obj) {
   fs.mkdirSync(path.dirname(PACKAGES_PATH), { recursive: true });
-  fs.writeFileSync(PACKAGES_PATH, JSON.stringify(obj, null, 2));
+  // Atomic: this is the record of what is installed — losing it makes
+  // every installed package un-uninstallable.
+  atomicWriteFileSync(PACKAGES_PATH, JSON.stringify(obj, null, 2));
 }
 
 export function listInstalled() {
@@ -140,7 +143,9 @@ async function downloadZip(url, dest) {
     assertSecureUrl(url, "package download URL");
     const res = await fetch(url);
     if (!res.ok) throw new Error(`download failed: HTTP ${res.status} (${url})`);
-    fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+    // Atomic: an interrupted download must not leave a half-written zip
+    // that the extract step then reads as a corrupt archive.
+    atomicWriteFileSync(dest, Buffer.from(await res.arrayBuffer()));
   } else {
     fs.copyFileSync(url.replace(/^file:\/\//, ""), dest);
   }

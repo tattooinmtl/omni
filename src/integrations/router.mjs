@@ -104,8 +104,9 @@ export function jsHeuristic(message) {
 // ---------------------------------------------------------------------------
 let _proc = null;       // the Python sidecar child process
 let _rl   = null;       // readline on its stdout
-let _pending = null;    // single in-flight promise (one call at a time)
-let _dead  = false;     // true after a fatal crash — stops respawn loops
+let _pending = new Map(); // id -> { resolve, timer } for every in-flight call
+let _nextId = 1;
+let _dead  = false;     // true once the interpreter is known to be missing
 
 const TIMEOUT_MS = 150; // fall back to JS heuristic after this long
 
@@ -116,17 +117,30 @@ function _spawnSidecar(pythonExe) {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    _proc.on("error", _handleDeath);
+    _proc.on("error", (err) => {
+      // ENOENT means the configured interpreter doesn't exist — retrying on
+      // every turn just burns a process spawn each time. Any other failure
+      // may be transient, so the sidecar stays respawnable.
+      if (err?.code === "ENOENT") _dead = true;
+      _handleDeath();
+    });
     _proc.on("exit",  _handleDeath);
+    _proc.stdin.on("error", () => {}); // EPIPE if it died mid-write
     _proc.stderr.on("data", () => {}); // suppress; errors come back as JSON
 
     _rl = createInterface({ input: _proc.stdout });
     _rl.on("line", (line) => {
-      if (_pending) {
-        const { resolve } = _pending;
-        _pending = null;
-        try { resolve(JSON.parse(line)); } catch { resolve(null); }
-      }
+      let msg;
+      try { msg = JSON.parse(line); } catch { return; }
+      // The sidecar echoes `_id`. A response without one (an older sidecar
+      // build) is matched to the oldest in-flight call, which is correct
+      // whenever there is only one — and there usually is.
+      const id = msg?._id ?? _pending.keys().next().value;
+      const entry = _pending.get(id);
+      if (!entry) return;
+      _pending.delete(id);
+      clearTimeout(entry.timer);
+      entry.resolve(msg);
     });
   } catch {
     _proc = null;
@@ -137,21 +151,35 @@ function _spawnSidecar(pythonExe) {
 function _handleDeath() {
   _proc = null;
   _rl   = null;
-  if (_pending) {
-    _pending.reject(new Error("sidecar died"));
-    _pending = null;
+  for (const { resolve, timer } of _pending.values()) {
+    clearTimeout(timer);
+    resolve(null); // callers all treat null as "fall back"
   }
+  _pending.clear();
 }
 
-function _send(req) {
-  if (!_proc || _proc.exitCode !== null) return null;
-  return new Promise((resolve, reject) => {
-    _pending = { resolve, reject };
+// Resolves with the sidecar's reply, or null on timeout / write failure /
+// death. Every caller falls back to a local path when it gets null, so this
+// never rejects.
+function _send(req, timeoutMs) {
+  if (!_proc || _proc.exitCode !== null) return Promise.resolve(null);
+  const id = _nextId++;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      // Drop the slot so a late reply isn't handed to the NEXT caller — the
+      // old single-slot channel did exactly that, so a slow classify could
+      // resolve a later render_template call with the wrong payload.
+      _pending.delete(id);
+      resolve(null);
+    }, timeoutMs);
+    timer.unref?.();
+    _pending.set(id, { resolve, timer });
     try {
-      _proc.stdin.write(JSON.stringify(req) + "\n");
+      _proc.stdin.write(JSON.stringify({ ...req, _id: id }) + "\n");
     } catch {
-      _pending = null;
-      reject(new Error("sidecar write failed"));
+      _pending.delete(id);
+      clearTimeout(timer);
+      resolve(null);
     }
   });
 }
@@ -159,13 +187,7 @@ function _send(req) {
 async function _sidecarCall(req, pythonExe, timeoutMs = TIMEOUT_MS) {
   if (!_proc && !_dead) _spawnSidecar(pythonExe);
   if (!_proc) return null;
-
-  return Promise.race([
-    _send(req),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("sidecar timeout")), timeoutMs)
-    ),
-  ]).catch(() => null);
+  return _send(req, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,10 +232,16 @@ export function warmSidecar(settings = {}) {
 /** Kill the sidecar on Omni exit. */
 export function killSidecar() {
   if (_proc) {
-    try { _proc.kill(); } catch { /* already dead */ }
-    _proc = null;
-    _rl   = null;
+    const proc = _proc;
+    _handleDeath(); // settles in-flight calls and clears their timers
+    try { proc.kill(); } catch { /* already dead */ }
   }
+}
+
+// Test hook: how many sidecar calls are still in flight. A timeout must free
+// its slot, otherwise a late reply gets handed to an unrelated later call.
+export function _sidecarPendingForTest() {
+  return _pending.size;
 }
 
 /**

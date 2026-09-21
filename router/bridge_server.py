@@ -101,6 +101,8 @@ def handle(line: str) -> dict:
         req = json.loads(line)
     except json.JSONDecodeError as e:
         return {"error": f"bad JSON: {e}"}
+    if not isinstance(req, dict):
+        return {"error": "request must be a JSON object"}
 
     t = req.get("type")
 
@@ -145,14 +147,38 @@ def handle(line: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    # Both pipes are UTF-8 because that is what Node writes and expects. The
+    # Windows default for a pipe is the ANSI codepage (cp1252) with
+    # surrogateescape, which silently mangles every non-ASCII character —
+    # a search query or file path with an accent reached hermes as mojibake.
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)  # type: ignore[attr-defined]
 
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
             continue
-        resp = handle(raw)
+        try:
+            resp = handle(raw)
+        except Exception as e:  # never let one bad request kill the server
+            resp = {"error": f"bridge error: {e}"}
+        # Echo the caller's request id. src/integrations/bridge.mjs
+        # multiplexes concurrent calls on `_id` and DROPS any response that
+        # doesn't carry one — without this every call hung until its 30s
+        # timeout.
+        req_id = _request_id(raw)
+        if req_id is not None and isinstance(resp, dict):
+            resp = {**resp, "_id": req_id}
         print(json.dumps(resp), flush=True)
+
+
+def _request_id(raw: str):
+    """The `_id` of a request line, or None if it has none / is malformed."""
+    try:
+        req = json.loads(raw)
+    except Exception:
+        return None
+    return req.get("_id") if isinstance(req, dict) else None
 
 
 if __name__ == "__main__":

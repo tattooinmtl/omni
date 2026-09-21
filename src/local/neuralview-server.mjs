@@ -56,8 +56,29 @@ function streamEvents(req, res) {
   });
 }
 
+// The server binds to 127.0.0.1, which stops remote machines from reaching
+// it — but not a web page the user is browsing. DNS rebinding points a
+// hostname the attacker controls at 127.0.0.1, and the browser then treats
+// their script as same-origin with this server: it could read /api/graph,
+// i.e. the entire knowledge base and every memory atom. Requests whose Host
+// isn't a loopback name are refused, which is what breaks the rebinding.
+function hostAllowed(req) {
+  const host = String(req.headers.host || "");
+  if (!host) return false;
+  // Strip the port (and handle the [::1]:port form).
+  const name = host.startsWith("[")
+    ? host.slice(0, host.indexOf("]") + 1)
+    : host.split(":")[0];
+  return name === "localhost" || name === "127.0.0.1" || name === "[::1]" || name === "::1";
+}
+
 function requestHandler(req, res) {
   const url = new URL(req.url, "http://localhost");
+  if (!hostAllowed(req)) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("neuralview only answers requests addressed to localhost\n");
+    return;
+  }
   try {
     if (req.method === "GET" && url.pathname === "/") {
       sendHtml(res, 200, PAGE);
@@ -95,10 +116,20 @@ export function stopNeuralView() {
   return true;
 }
 
+// In-flight start, so two callers share one server. main.mjs kicks this off
+// fire-and-forget at boot and /neuralview can ask for it too; because
+// `activeServer` is only assigned in the listen callback, both calls used to
+// get past the guard and bind TWO servers on two ports — and stopNeuralView
+// could then only ever close the second, leaving the first bound for the
+// life of the process.
+let startInFlight = null;
+
 // Binds to the first free port starting at `startPort` (tries up to 20).
 export function startNeuralView({ port = 5678 } = {}) {
   if (activeServer) return Promise.resolve(neuralViewStatus());
-  return new Promise((resolve, reject) => {
+  if (startInFlight) return startInFlight;
+
+  startInFlight = new Promise((resolve, reject) => {
     const tryPort = (p, attemptsLeft) => {
       const server = http.createServer(requestHandler);
       server.on("error", (err) => {
@@ -115,5 +146,8 @@ export function startNeuralView({ port = 5678 } = {}) {
       });
     };
     tryPort(port, 20);
+  }).finally(() => {
+    startInFlight = null;
   });
+  return startInFlight;
 }

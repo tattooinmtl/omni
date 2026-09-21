@@ -22,6 +22,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { fileURLToPath } from "node:url";
 
 // Read HOME dynamically (per call) so tests that change process.env.OMNI_HOME
@@ -55,10 +56,9 @@ export function setLastProvider(modelKey, reason = "manual") {
   try {
     const file = filePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(
+    atomicWriteFileSync(
       file,
-      JSON.stringify({ modelKey, savedAt: new Date().toISOString(), reason }, null, 2) + "\n",
-      "utf8"
+      JSON.stringify({ modelKey, savedAt: new Date().toISOString(), reason }, null, 2) + "\n"
     );
   } catch {
     /* best effort — never throw from a save path */

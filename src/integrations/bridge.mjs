@@ -38,9 +38,13 @@ let _pending = new Map();  // id → { resolve, reject }
 let _nextId  = 1;
 let _dead    = false;
 
-function _spawnBridge(pythonExe) {
+function _spawnBridge(pythonExe, hermesRoot) {
   if (_dead) return;
+  // bridge_server.py reads OMNI_HERMES_ROOT to find the hermes install. The
+  // config's `bridge.hermesRoot` was never passed through, so setting it had
+  // no effect and the server fell back to its hardcoded C:\hermes-agent.
   const env = { ...process.env };
+  if (hermesRoot) env.OMNI_HERMES_ROOT = hermesRoot;
   try {
     _proc = spawn(pythonExe, [BRIDGE_SCRIPT], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -48,8 +52,14 @@ function _spawnBridge(pythonExe) {
       windowsHide: true,
     });
 
-    _proc.on("error", (err) => _failAll(`NimTools bridge failed to start: ${err.message}`));
+    _proc.on("error", (err) => {
+      // A missing interpreter never fixes itself; stop respawning it on
+      // every call. Other failures stay retryable.
+      if (err?.code === "ENOENT") _dead = true;
+      _failAll(`NimTools bridge failed to start: ${err.message}`);
+    });
     _proc.on("exit",  ()    => _failAll("NimTools bridge exited"));
+    _proc.stdin.on("error", () => {}); // EPIPE if it died mid-write
     _proc.stderr.on("data", () => {}); // bridge errors come back as JSON
 
     _rl = createInterface({ input: _proc.stdout });
@@ -78,8 +88,8 @@ function _failAll(reason) {
   _pending.clear();
 }
 
-function _rpc(req, pythonExe) {
-  if (!_proc && !_dead) _spawnBridge(pythonExe);
+function _rpc(req, pythonExe, hermesRoot) {
+  if (!_proc && !_dead) _spawnBridge(pythonExe, hermesRoot);
   if (!_proc) return Promise.reject(new Error("NimTools bridge unavailable"));
 
   const id = _nextId++;
@@ -109,11 +119,11 @@ function _rpc(req, pythonExe) {
   });
 }
 
-async function rpc(req, pythonExe) {
+async function rpc(req, pythonExe, hermesRoot) {
   // Timeout + cleanup now live inside _rpc (see above), so rpc just awaits
   // the inner promise. Keeping the public surface here in case a caller
   // wants to swap the timeout policy in the future.
-  return _rpc(req, pythonExe);
+  return _rpc(req, pythonExe, hermesRoot);
 }
 
 // Test-only: lets regression tests confirm the timeout path actually clears
@@ -128,20 +138,25 @@ export function _pendingSizeForTest() {
 // ---------------------------------------------------------------------------
 let _toolCache = null; // [{ name, description, toolset }]
 
-async function getToolList(pythonExe) {
+async function getToolList(pythonExe, hermesRoot) {
   if (_toolCache) return _toolCache;
-  const resp = await rpc({ type: "list" }, pythonExe);
-  _toolCache = resp.tools || [];
-  return _toolCache;
+  const resp = await rpc({ type: "list" }, pythonExe, hermesRoot);
+  // Only cache a real list. Caching `[]` from an error response (hermes not
+  // installed yet, bridge still warming) pinned "0 tools" for the whole
+  // session even after the bridge recovered.
+  const list = Array.isArray(resp?.tools) ? resp.tools : null;
+  if (!list) throw new Error(resp?.error || "NimTools bridge returned no tool list");
+  if (list.length) _toolCache = list;
+  return list;
 }
 
 // ---------------------------------------------------------------------------
 // The single "nimtools" proxy tool implementation
 // ---------------------------------------------------------------------------
-async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pythonExe) {
+async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pythonExe, hermesRoot) {
   // --- list / search ---
   if (!describe && !tool) {
-    const list = await getToolList(pythonExe);
+    const list = await getToolList(pythonExe, hermesRoot);
     if (search) {
       const q = search.toLowerCase();
       const matches = list.filter(
@@ -164,7 +179,7 @@ async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pyth
 
   // --- describe ---
   if (describe) {
-    const resp = await rpc({ type: "schema", tool: describe }, pythonExe);
+    const resp = await rpc({ type: "schema", tool: describe }, pythonExe, hermesRoot);
     if (resp.error) return `Error: ${resp.error}`;
     return JSON.stringify(resp.schema, null, 2);
   }
@@ -175,7 +190,7 @@ async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pyth
     try { parsedArgs = typeof argsRaw === "string" ? JSON.parse(argsRaw) : argsRaw; }
     catch { return `Error: args must be a JSON string. Got: ${argsRaw}`; }
   }
-  const resp = await rpc({ type: "call", tool, args: parsedArgs }, pythonExe);
+  const resp = await rpc({ type: "call", tool, args: parsedArgs }, pythonExe, hermesRoot);
   if (resp.error) return `Error: ${resp.error}`;
   return resp.result ?? "(no output)";
 }
@@ -186,9 +201,11 @@ async function nimtoolsImpl({ search, describe, tool, args: argsRaw } = {}, pyth
 // ---------------------------------------------------------------------------
 export function registerNimToolsProxy(bridgeCfg = {}) {
   const pythonExe = bridgeCfg.python?.interpreter || "python";
+  // Config knob, finally wired: bridge_server.py locates hermes via this.
+  const hermesRoot = bridgeCfg.hermesRoot || undefined;
 
   // Pre-warm the bridge process so the first real call is instant.
-  if (!_proc && !_dead) _spawnBridge(pythonExe);
+  if (!_proc && !_dead) _spawnBridge(pythonExe, hermesRoot);
 
   const toolDef = {
     type: "function",
@@ -224,7 +241,7 @@ export function registerNimToolsProxy(bridgeCfg = {}) {
     tools.push(toolDef);
   }
 
-  impl.nimtools = (params) => nimtoolsImpl(params, pythonExe);
+  impl.nimtools = (params) => nimtoolsImpl(params, pythonExe, hermesRoot);
 
   return { registered: true, pythonExe };
 }

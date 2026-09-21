@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { HOME } from "../core/config.mjs";
@@ -52,9 +53,11 @@ export function readCachedProfile() {
 function writeCachedProfile(profile) {
   try {
     fs.mkdirSync(HOME, { recursive: true });
-    const tmp = PROFILE_PATH + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(profile, null, 2));
-    fs.renameSync(tmp, PROFILE_PATH);
+    // Was a hand-rolled tmp+rename with a FIXED tmp name: two Omni
+    // processes writing at once clobbered each other's tmp file, and a
+    // failed rename left it behind. The shared helper uniquifies the tmp
+    // name, cleans up on failure, and retries a transient Windows EPERM.
+    atomicWriteFileSync(PROFILE_PATH, JSON.stringify(profile, null, 2));
   } catch { /* non-fatal — profile stays in memory only */ }
 }
 

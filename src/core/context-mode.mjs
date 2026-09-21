@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import crypto from "node:crypto";
 import { HOME, SESSIONS_DIR } from "./config.mjs";
 
@@ -34,7 +35,7 @@ export function writeProjectContextMode(mode) {
   let current = {};
   try { current = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* start from empty */ }
   current.contextMode = mode === "lean" ? "lean" : "classic";
-  fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n", "utf8");
+  atomicWriteFileSync(file, JSON.stringify(current, null, 2) + "\n");
   return current.contextMode;
 }
 
@@ -77,7 +78,7 @@ export function writeState(session, state) {
   const dir = sessionStateDir(session);
   if (!dir) return;
   try {
-    fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state, null, 2), "utf8");
+    atomicWriteFileSync(path.join(dir, "state.json"), JSON.stringify(state, null, 2));
   } catch { /* silent */ }
 }
 

@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import { HOME } from "../core/config.mjs";
 
 const IGNORE_DIRS = new Set([
@@ -115,7 +116,9 @@ let _index = null;
 function saveIndex(idx) {
   const file = indexFile();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(idx));
+  // Atomic: the index can be large, so the truncation window is real —
+  // and a corrupt index means a silent rebuild of the whole corpus.
+  atomicWriteFileSync(file, JSON.stringify(idx));
 }
 
 function loadIndex() {

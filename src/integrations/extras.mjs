@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fdPath, INSTALL_ROOT } from "../paths.mjs";
@@ -35,7 +36,9 @@ export function writeProjectConfig(patch) {
     /* start from empty if missing/unparseable */
   }
   const next = { ...current, ...patch };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + "\n", "utf8");
+  // Atomic: this file configures MCP servers and the router; a truncated
+  // one reads back as invalid JSON and silently reverts to defaults.
+  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + "\n");
   return next;
 }
 

@@ -13,9 +13,10 @@ import {
 import {
   installPackage, uninstallPackage, listInstalled, searchRegistry, DEFAULT_REGISTRY,
 } from "../integrations/registry.mjs";
-import { registerMcpProxy } from "../integrations/mcp.mjs";
-import { registerNimToolsProxy } from "../integrations/bridge.mjs";
-import { classifyIntent, warmSidecar } from "../integrations/router.mjs";
+import { registerMcpProxy, disconnectAll as disconnectMcpServers } from "../integrations/mcp.mjs";
+import { registerNimToolsProxy, disconnectBridge } from "../integrations/bridge.mjs";
+import { classifyIntent, warmSidecar, killSidecar } from "../integrations/router.mjs";
+import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
 import { applySkill, reportMissingKey, reportInsecureEndpoint, maskKey, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { registerGoalTool } from "./goal.mjs";
@@ -25,6 +26,15 @@ import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView } from "../local/neuralview-server.mjs";
 import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
+
+// Every child process the CLI may have started. Safe to call more than once
+// and safe when nothing was ever started — each teardown is a no-op then.
+function stopBackgroundChildren() {
+  try { disconnectMcpServers(); } catch { /* best effort */ }
+  try { disconnectBridge(); } catch { /* best effort */ }
+  try { killSidecar(); } catch { /* best effort */ }
+  try { shutdownLspServers(); } catch { /* best effort */ }
+}
 
 export async function main(args) {
   // --version / -V before anything else: no settings load, no workspace
@@ -171,8 +181,12 @@ export async function main(args) {
   const { setLastProvider: saveLastProvider } = await import("../core/last-provider.mjs");
   const saveOnExit = () => { try { saveLastProvider(model.key, "exit"); } catch {} };
   process.on("beforeExit", saveOnExit);
-  process.on("SIGINT", () => { saveOnExit(); process.exit(130); });
-  process.on("SIGTERM", () => { saveOnExit(); process.exit(143); });
+  // These fire when stdin isn't a TTY (piped input, one-shot runs). In the
+  // interactive REPL readline keeps stdin in raw mode, so Ctrl-C arrives as a
+  // keypress and is handled there instead — these never pre-empt the REPL's
+  // "abort the turn" behaviour. Kill the children before the hard exit.
+  process.on("SIGINT", () => { saveOnExit(); stopBackgroundChildren(); process.exit(130); });
+  process.on("SIGTERM", () => { saveOnExit(); stopBackgroundChildren(); process.exit(143); });
 
   // The mutable CLI context shared by the REPL and every command handler.
   const ctx = {
@@ -246,6 +260,11 @@ export async function main(args) {
     // so behavior differences never sneak in via an unrun helper.
     evictEphemeralSkillMessages(messages);
     costLine(session);
+    // The REPL tears these down in its rl 'close' handler; one-shot mode had
+    // no equivalent, so `omni "…"` that touched an MCP server, the Python
+    // router sidecar or an LSP left those child processes running after the
+    // CLI exited (shutdown() force-exits after 250ms, orphaning them).
+    stopBackgroundChildren();
     await shutdown(0);
     return;
   }

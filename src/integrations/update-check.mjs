@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import { HOME } from "../core/config.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
 
@@ -22,7 +23,7 @@ function readCache() {
 function writeCache(data) {
   try {
     fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(data));
+    atomicWriteFileSync(CACHE_PATH, JSON.stringify(data));
   } catch { /* best-effort — caching itself must never affect startup */ }
 }
 

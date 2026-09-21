@@ -32,7 +32,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { HOME, SETTINGS_PATH } from "./config.mjs";
+import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { projectSlug } from "./context-mode.mjs";
 
@@ -83,20 +85,35 @@ function readJsonl(file) {
 function appendJsonl(file, record) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, JSON.stringify(record) + "\n");
-  // Invalidate the currentAtoms cache immediately. The mtime-based check
-  // would also catch this on the next read, but invalidating here means a
-  // propose() followed by a search() (without an intervening currentAtoms
-  // call) sees the new atom — the mtime path only works when something
-  // actually calls currentAtoms between the write and the read.
-  if (file === atomsFile()) {
-    currentAtomsCache = null;
-    currentAtomsCacheMtime = -1;
-  }
+  // Fold the new event into the warm cache instead of dropping it. Dropping
+  // it meant the very next currentAtoms() call re-read and re-parsed the
+  // whole append-only store — and a single extraction pass appends several
+  // atoms, each one calling currentAtoms() again through
+  // findContradictions(). That is O(store²) work per turn on a file that
+  // only ever grows. Applying the record keeps the same "last event per id
+  // wins" semantics, and the mtime is re-stamped so a write from ANOTHER
+  // process still invalidates the cache on the next read.
+  if (file === atomsFile()) applyToAtomCache(file, record);
   return record;
 }
 
+// Atom ids must be unique: the store is append-only and "current state" is
+// the LAST event per id, so two atoms sharing an id silently collapse into
+// one — the older text disappears from every read and explainAtom() shows two
+// unrelated claims as one lifecycle. The old suffix was 4 decimal digits of
+// Math.random, and a single extraction pass creates many atoms inside the
+// same millisecond, which is exactly when the timestamp stops separating
+// them. 8 bytes of crypto randomness makes a collision impossible in
+// practice, and a per-process counter keeps ids distinct even if the RNG is
+// ever seeded identically.
+let idCounter = 0;
 function newId(prefix) {
-  return prefix + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+  return (
+    prefix +
+    Date.now().toString(36) +
+    (idCounter++).toString(36) +
+    randomBytes(8).toString("hex")
+  );
 }
 
 function tokenSet(text) {
@@ -133,15 +150,39 @@ function historyFor(id) {
 // etc. all call currentAtoms). The cache key is the atoms file's mtime, so
 // appendJsonl updates invalidate it automatically without any explicit
 // invalidation calls scattered across the providers.
-let currentAtomsCache = null;
+let currentAtomsById = null;   // id -> latest event
+let currentAtomsCache = null;  // the array view, rebuilt only when dirty
 let currentAtomsCacheMtime = -1;
+
+// Apply one just-appended event to the warm cache (see appendJsonl).
+function applyToAtomCache(file, record) {
+  if (!currentAtomsById) return; // cold cache — the next read builds it
+  if (record?.id) {
+    // Copy: the caller keeps a reference to the record it just proposed, and
+    // a cached read must not alias (and follow) their object.
+    currentAtomsById.set(record.id, { ...record });
+    currentAtomsCache = null; // array view is stale; values() is unchanged
+  }
+  try {
+    currentAtomsCacheMtime = fs.statSync(file).mtimeMs;
+  } catch {
+    // Can't confirm the file's state — drop the cache rather than trust it.
+    currentAtomsById = null;
+    currentAtomsCache = null;
+    currentAtomsCacheMtime = -1;
+  }
+}
+
 export function currentAtoms() {
   const file = atomsFile();
   let mtime = -1;
   try { mtime = fs.statSync(file).mtimeMs; } catch { /* file not yet created */ }
-  if (currentAtomsCache && mtime === currentAtomsCacheMtime) return currentAtomsCache;
+  if (currentAtomsById && mtime === currentAtomsCacheMtime) {
+    return (currentAtomsCache ||= [...currentAtomsById.values()]);
+  }
   const byId = new Map();
   for (const ev of readAtomEvents()) if (ev.id) byId.set(ev.id, ev);
+  currentAtomsById = byId;
   currentAtomsCache = [...byId.values()];
   currentAtomsCacheMtime = mtime;
   return currentAtomsCache;
@@ -370,7 +411,9 @@ const legacyProvider = {
     const all = readJsonl(legacyMemoryFile());
     const kept = all.filter((m) => m.id !== id);
     if (kept.length === all.length) throw new Error(`memory not found: ${id}`);
-    fs.writeFileSync(legacyMemoryFile(), kept.map((m) => JSON.stringify(m)).join("\n") + (kept.length ? "\n" : ""));
+    // Full-file rewrite: atomic, or a crash mid-write truncates the store and
+    // takes every remaining memory with it.
+    atomicWriteFileSync(legacyMemoryFile(), kept.map((m) => JSON.stringify(m)).join("\n") + (kept.length ? "\n" : ""));
     publishActivity({ kind: "legacy_memory", action: "deleted", id });
     return { id, status: "deleted" };
   },
