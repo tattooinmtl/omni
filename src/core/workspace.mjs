@@ -73,11 +73,20 @@ export function resolveDocumentsDir() {
 }
 
 export function isOneDrivePath(p) {
-  const norm = String(p).toLowerCase();
+  // Compare on path boundaries, not raw prefixes. A bare startsWith reported
+  // "C:\Users\X\OneDriveBackup" as being inside "C:\Users\X\OneDrive", so a
+  // perfectly ordinary sibling folder was treated as cloud-synced.
+  const norm = String(p).toLowerCase().replace(/[\\/]+$/, "");
   for (const v of ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"]) {
-    const base = process.env[v];
-    if (base && norm.startsWith(base.toLowerCase())) return true;
+    const base = String(process.env[v] || "").toLowerCase().replace(/[\\/]+$/, "");
+    if (!base) continue;
+    if (norm === base) return true;
+    // The next character has to be a separator for `norm` to be *under* base.
+    const next = norm[base.length];
+    if (norm.startsWith(base) && (next === "\\" || next === "/")) return true;
   }
+  // Fallback for an install where the env var isn't set: a path SEGMENT named
+  // "onedrive" (\b keeps this from matching "onedrivebackup").
   return /\bonedrive\b/i.test(norm);
 }
 

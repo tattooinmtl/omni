@@ -693,8 +693,15 @@ export const COMMANDS = [
   },
   {
     name: "providers", aliases: [], usage: "/providers", category: "Models & Providers",
-    summary: "list providers with masked keys",
-    handler: (ctx) => {
+    summary: "pick a provider with arrow keys, or list them with masked keys when non-interactive",
+    // Two commands used to be registered under this name. The registry keeps
+    // the LAST one, so the masked-key listing below was unreachable, and /help
+    // printed "/providers" twice with two different descriptions. Worse, the
+    // entry that won is interactive-only, so a piped or non-TTY session had no
+    // way to list providers at all. One command now, choosing the form the
+    // terminal can actually support.
+    handler: async (ctx) => {
+      if (ctx.canRaw) return pickProviderWithArrows(ctx);
       for (const [name, p] of Object.entries(ctx.settings.providers)) {
         const mark = name === ctx.model.providerName ? c.green("● ") : "  ";
         const display = p.label || p.baseUrl || "(no baseUrl)";
@@ -707,11 +714,6 @@ export const COMMANDS = [
     name: "provider", aliases: [], usage: "/provider [name|list|presets|setup|models|add|edit|login|logout|apikey|llama]", category: "Models & Providers",
     summary: "switch provider or manage provider config",
     handler: (ctx, arg) => providerCommand(ctx, arg),
-  },
-  {
-    name: "providers", aliases: [], usage: "/providers", category: "Models & Providers",
-    summary: "interactive provider picker — arrow keys or click to switch",
-    handler: (ctx) => pickProviderWithArrows(ctx),
   },
   {
     name: "switch-provider", aliases: ["swp"], usage: "/switch-provider [account]", category: "Models & Providers",

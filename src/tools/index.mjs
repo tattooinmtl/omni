@@ -157,6 +157,47 @@ function resolveForCreate(p) {
   return assertInsideWorkspace(path.resolve(process.cwd(), p));
 }
 
+// ---------------------------------------------------------------------------
+// Line endings
+// ---------------------------------------------------------------------------
+// Models emit "\n". Windows checkouts are "\r\n" (git's core.autocrlf defaults
+// to true there). Comparing the two verbatim broke every editing tool on a
+// CRLF file: edit_file threw "old_string not found in file" for any multi-line
+// edit, apply_patch threw "Patch context not found", and edit_lines wrote
+// LF-only lines into a CRLF file, leaving mixed endings that got worse with
+// every edit. None of it reproduces on Linux, where the same files are LF.
+//
+// The rule everywhere below: MATCH on LF-normalized text, WRITE BACK in the
+// file's own convention. An edit never changes a file's line-ending style as
+// a side effect.
+
+// The convention a file already uses. Ties and CRLF-majority go to CRLF;
+// a file with no CRLF at all is LF.
+function detectEol(text) {
+  const s = String(text);
+  const crlf = (s.match(/\r\n/g) || []).length;
+  if (!crlf) return "\n";
+  const bareLf = (s.match(/\n/g) || []).length - crlf;
+  return crlf >= bareLf ? "\r\n" : "\n";
+}
+
+const toLf = (t) => String(t).replace(/\r\n/g, "\n");
+const fromLf = (t, eol) => (eol === "\r\n" ? String(t).replace(/\n/g, "\r\n") : String(t));
+
+// A required argument the model left out should come back as something it can
+// act on. Without this, omitting `path` surfaced as "EISDIR: illegal operation
+// on a directory" (read_file resolved undefined to the cwd), omitting
+// `filename` as 'The "paths[1]" argument must be of type string', and omitting
+// `pattern`/`query` as no error at all — a silent wrong answer, which is worse
+// than either. The tool name and the argument name are what make the message
+// actionable, so both go in.
+function requireArg(tool, name, value) {
+  if (typeof value === "string" ? value.trim() === "" : value === undefined || value === null) {
+    throw new Error(`${tool}: "${name}" is required`);
+  }
+  return value;
+}
+
 // jq_query's no-binary path. Evaluates the filter with the built-in subset
 // (src/tools/jq-lite.mjs) so reading a JSON file structurally still works on
 // a machine with no jq. A filter outside the subset reports that plainly,
@@ -421,8 +462,8 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string" },
-          content: { type: "string" },
+          path: { type: "string", description: "Path to write (relative to cwd or absolute). Parent directories are created as needed." },
+          content: { type: "string", description: "Full file body to write. Replaces any existing content — use edit_file or edit_lines for a partial change." },
         },
         required: ["path", "content"],
       },
@@ -436,9 +477,9 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string" },
-          old_string: { type: "string" },
-          new_string: { type: "string" },
+          path: { type: "string", description: "Path to the file to edit (relative to cwd or absolute)." },
+          old_string: { type: "string", description: "Exact text to replace. Must appear EXACTLY once in the file — include surrounding context to make it unique. Line endings are matched flexibly, so \n works against a CRLF file." },
+          new_string: { type: "string", description: "Replacement text. Written back using the file's existing line-ending convention." },
         },
         required: ["path", "old_string", "new_string"],
       },
@@ -675,7 +716,7 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string" },
+          command: { type: "string", description: "Shell command to run, in the workspace directory. Obviously destructive commands are blocked unless allow_unsafe is set and a human confirms." },
           timeout_ms: { type: "integer", description: "Timeout in ms, default 120000. Use 300000-600000 for scaffolding or dependency installs." },
           allow_unsafe: {
             type: "boolean",
@@ -953,8 +994,8 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          id: { type: "string" },
-          reason: { type: "string" },
+          id: { type: "string", description: "Id of the atom to deprecate (from memory_search or memory_atoms)." },
+          reason: { type: "string", description: "Why this atom no longer holds — kept on the record so the change is auditable." },
         },
         required: ["id"],
       },
@@ -967,7 +1008,7 @@ export const tools = [
       description: "Show the full lifecycle of a memory atom: its status history, sources, and which atoms it contradicts, is contradicted by, or supersedes. Use this before trusting or acting on a surprising recalled memory.",
       parameters: {
         type: "object",
-        properties: { id: { type: "string" } },
+        properties: { id: { type: "string", description: "Id of the atom to explain (from memory_search or memory_atoms)." } },
         required: ["id"],
       },
     },
@@ -980,9 +1021,9 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          status: { type: "string", enum: ["active", "superseded", "deprecated"] },
-          type: { type: "string" },
-          limit: { type: "integer" },
+          status: { type: "string", enum: ["active", "superseded", "deprecated"], description: "Only return atoms in this lifecycle state (default: all)." },
+          type: { type: "string", description: "Only return atoms of this type, e.g. 'reference', 'decision', 'gotcha'." },
+          limit: { type: "integer", description: "Max atoms to return (default 20)." },
         },
       },
     },
@@ -1055,7 +1096,7 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["definition", "references", "hover", "symbols", "diagnostics"] },
+          action: { type: "string", enum: ["definition", "references", "hover", "symbols", "diagnostics"], description: "Which language-server query to run: jump to definition, list references, hover type info, document symbols, or current diagnostics." },
           path: { type: "string", description: "File to query" },
           line: { type: "integer", description: "1-based line (required for definition/references/hover)" },
           character: { type: "integer", description: "1-based column, default 1" },
@@ -1300,6 +1341,7 @@ export const tools = [
 
 export const impl = {
   async read_file({ path: p, offset = 1, limit = 2000 }) {
+    requireArg("read_file", "path", p);
     const full = resolve(p);
     if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
     const stat = fs.statSync(full);
@@ -1389,6 +1431,7 @@ export const impl = {
   },
 
   rag_search({ query, k = 6 }) {
+    requireArg("rag_search", "query", query);
     const hits = ragSearch(query, Math.min(Math.max(k, 1), 20));
     if (!hits.length) return "(no matching chunks — try different keywords, or rag_index to rebuild)";
     return clip(hits
@@ -1499,14 +1542,18 @@ export const impl = {
     if (new_string === undefined) throw new Error("new_string is required");
     const full = resolve(p);
     if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
-    const text = fs.readFileSync(full, "utf8");
-    const count = text.split(old_string).length - 1;
+    const raw = fs.readFileSync(full, "utf8");
+    // Match on LF-normalized text so a model's "\n" finds a file's "\r\n".
+    const eol = detectEol(raw);
+    const text = toLf(raw);
+    const needle = toLf(old_string);
+    const count = text.split(needle).length - 1;
     if (count === 0) throw new Error("old_string not found in file");
     if (count > 1) throw new Error(`old_string matched ${count} times; make it unique`);
     // Use a function replacer so `$&`, `$\``, `$'`, `$1`, `$$` in new_string are
     // inserted literally instead of being interpreted as replacement patterns.
-    const newText = text.replace(old_string, () => new_string);
-    atomicWriteFileSync(full, newText);
+    const newText = text.replace(needle, () => toLf(new_string));
+    atomicWriteFileSync(full, fromLf(newText, eol));
     const diff = new_string.length - old_string.length;
     const sign = diff >= 0 ? "+" : "";
     return `Edited ${p} (${sign}${diff} chars)`;
@@ -1518,10 +1565,15 @@ export const impl = {
     if (!Number.isInteger(end_line)) throw new Error("end_line must be an integer (pass end_line < start_line to insert before start_line)");
     const full = resolve(p);
     if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
-    const text = fs.readFileSync(full, "utf8");
-    // Split on "\n" only: a trailing "\n" is the last line's terminator, not
-    // an extra empty line, and untouched lines stay byte-identical (any "\r"
-    // in a CRLF file rides along on its line and is rejoined as-is).
+    const raw = fs.readFileSync(full, "utf8");
+    // Normalize to LF for the line math, then write back in the file's own
+    // convention. Letting the "\r" ride along on each line (the previous
+    // approach) kept untouched lines byte-identical but spliced the model's
+    // LF-only new_string in beside them, so every edit left the file a bit
+    // more mixed.
+    const eol = detectEol(raw);
+    const text = toLf(raw);
+    // A trailing "\n" is the last line's terminator, not an extra empty line.
     const hadFinalNewline = text.endsWith("\n");
     const lines = text === "" ? [] : text.split("\n");
     if (hadFinalNewline) lines.pop();
@@ -1550,13 +1602,14 @@ export const impl = {
     }
     // A single trailing newline in new_string terminates the last replacement
     // line; it does not add an empty line after it.
-    const body = new_string.endsWith("\n") ? new_string.slice(0, -1) : new_string;
+    const incoming = toLf(new_string);
+    const body = incoming.endsWith("\n") ? incoming.slice(0, -1) : incoming;
     const newLines = body === "" ? [] : body.split("\n");
     const removed = inserting ? 0 : end_line - start_line + 1;
     lines.splice(start_line - 1, removed, ...newLines);
     let out = lines.join("\n");
     if (hadFinalNewline && out !== "") out += "\n"; // preserve trailing-newline state
-    atomicWriteFileSync(full, out);
+    atomicWriteFileSync(full, fromLf(out, eol));
     if (appending) return `Edited ${p}: appended ${newLines.length} line(s) (${total} → ${lines.length} lines)`;
     if (inserting) return `Edited ${p}: inserted ${newLines.length} line(s) before line ${start_line} (${total} → ${lines.length} lines)`;
     if (!newLines.length) return `Edited ${p}: deleted lines ${start_line}-${end_line} (${total} → ${lines.length} lines)`;
@@ -1635,6 +1688,7 @@ export const impl = {
   },
 
   search({ pattern, path: p = ".", glob, case_insensitive = false, context = 0 }) {
+    requireArg("search", "pattern", pattern);
     const args = ["--line-number", "--no-heading", "--color", "never", "-e", pattern];
     if (case_insensitive) args.push("-i");
     if (context > 0) args.push("-C", String(context));
@@ -1956,6 +2010,8 @@ export const impl = {
   },
 
   jq_query({ filter, path: p, raw = false }) {
+    requireArg("jq_query", "filter", filter);
+    requireArg("jq_query", "path", p);
     const full = resolve(p);
     if (!fs.existsSync(full)) throw new Error(`File not found: ${p}`);
     const args = [filter];
@@ -2232,6 +2288,9 @@ export const impl = {
   },
 
   create_markdown_report({ filename, title, content }) {
+    requireArg("create_markdown_report", "filename", filename);
+    requireArg("create_markdown_report", "title", title);
+    requireArg("create_markdown_report", "content", content);
     const full = resolveForCreate(filename);
     const markdown = `# ${title}
 
@@ -2381,11 +2440,15 @@ function applyPatchText(patch) {
         changed.push(`added ${op.rel}`);
       } else if (op.kind === "update") {
         const original = fs.readFileSync(op.full, "utf8");
-        let text = original;
+        // The patch body was normalized to LF when it was parsed, so the file
+        // has to be too or the context never matches on a CRLF checkout.
+        // `original` stays raw — rollback must restore the exact bytes.
+        const eol = detectEol(original);
+        let text = toLf(original);
         for (const chunk of patchChunks(op.body)) {
           text = applyUpdateChunk(text, op.full, chunk);
         }
-        atomicWriteFileSync(op.full, text);
+        atomicWriteFileSync(op.full, fromLf(text, eol));
         journal.push({ kind: "update", full: op.full, rel: op.rel, original });
         changed.push(`updated ${op.rel}`);
       } else if (op.kind === "delete") {
@@ -2706,7 +2769,6 @@ const CRITIC_PERMISSIONS = {
   search: "allow",
   find_files: "allow",
   find_symbol: "allow",
-  grep: "allow",
   git_diff: "allow",
   git_status: "allow",
   rag_search: "allow",

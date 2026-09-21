@@ -51,6 +51,20 @@ function createCtx() {
 
 console.log("\nTesting Command Registry & Resolution:");
 
+await test("no command name or alias is registered twice", () => {
+  // Two entries shared the name "providers". findCommand keeps the LAST, so
+  // the other handler was dead code — and /help printed the command twice,
+  // with two different descriptions.
+  const names = COMMANDS.flatMap((c) => [c.name, ...c.aliases]).filter(Boolean);
+  const dupes = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
+  assert.deepEqual(dupes, [], "a shadowed command is unreachable and appears twice in /help");
+});
+
+await test("every registered command is reachable via findCommand", () => {
+  const unreachable = COMMANDS.filter((c) => findCommand(c.name) !== c).map((c) => c.name);
+  assert.deepEqual(unreachable, []);
+});
+
 await test("All 53 commands have name, summary, category, and handler", () => {
   assert.ok(COMMANDS.length >= 50, `Expected at least 50 commands, got ${COMMANDS.length}`);
   for (const cmd of COMMANDS) {
