@@ -149,13 +149,41 @@ function Update-FromZip([string]$Root) {
   }
 }
 
+# Run an external program and return its exit code. Never throws just because
+# the program wrote to stderr.
+#
+# Windows PowerShell 5.1 (what `powershell.exe` is) turns stderr into a
+# terminating error when $ErrorActionPreference is Stop and the caller merges
+# it with 2>&1. That includes `$output = & git ... 2>&1` and `2>&1 | Out-Host`,
+# and it happens even when the program exits 0. git fetch and git checkout
+# write ordinary progress there ("From github.com...", "Switched to branch
+# main"), so a successful update died before the fast-forward. npm link does
+# the same with its notices. Continue applies only inside this function.
+# Lines are written to the host so the caller receives one integer, not the
+# captured text mixed in with it.
+function Invoke-External([string]$File, [string[]]$ArgList) {
+  $ErrorActionPreference = "Continue"
+  # PS 7 only. Harmless on 5.1. Stops a profile that opted into "stderr is an error".
+  $PSNativeCommandUseErrorActionPreference = $false
+  $output = & $File @ArgList 2>&1
+  $code = $LASTEXITCODE
+  foreach ($line in @($output)) {
+    $text = "$line".TrimEnd()
+    if ($text.Length -gt 0) { Write-Host "  $text" }
+  }
+  if ($null -eq $code) { return 1 }
+  return $code
+}
+
+function Invoke-Git([string[]]$GitArgs) {
+  return (Invoke-External "git" $GitArgs)
+}
 function Update-FromGit([string]$Root) {
   Ensure-Command "git" "Install Git from https://git-scm.com/downloads"
   Push-Location $Root
   try {
     Info "Fetching latest remote refs"
-    git fetch --all --prune | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
+    if ((Invoke-Git @("fetch", "--all", "--prune")) -ne 0) { throw "git fetch failed" }
 
     $remoteRef = "origin/$Branch"
     $remoteHead = (git rev-parse --verify --quiet $remoteRef)
@@ -200,22 +228,21 @@ function Update-FromGit([string]$Root) {
     # another branch can never reach the latest version.
     if ($currentBranch -ne $Branch) {
       Info "Switching install from '$currentBranch' to '$Branch'"
-      git checkout $Branch 2>&1 | Out-Host
-      if ($LASTEXITCODE -ne 0) {
-        git checkout -B $Branch --track $remoteRef 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "could not switch $Root to $Branch" }
+      if ((Invoke-Git @("checkout", $Branch)) -ne 0) {
+        # No local branch of that name yet - create one tracking the remote.
+        if ((Invoke-Git @("checkout", "-B", $Branch, "--track", $remoteRef)) -ne 0) {
+          throw "could not switch $Root to $Branch"
+        }
       }
     }
 
     # --ff-only: advance to the remote or fail loudly. Never a merge commit,
     # never a half-applied update reported as success.
     Info "Updating working tree to latest $remoteRef"
-    git merge --ff-only $remoteRef 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-Git @("merge", "--ff-only", $remoteRef)) -ne 0) {
       if ($Force) {
         Write-Warning "Fast-forward failed - resetting '$Branch' to $remoteRef (-Force)"
-        git reset --hard $remoteRef 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "git reset --hard $remoteRef failed" }
+        if ((Invoke-Git @("reset", "--hard", $remoteRef)) -ne 0) { throw "git reset --hard $remoteRef failed" }
       } else {
         throw "could not fast-forward $Root to $remoteRef - resolve it there, or re-run with -Force."
       }
@@ -271,10 +298,9 @@ function Initialize-Install([string]$Root) {
       return
     }
     Info "Linking the omni command globally"
-    $linkOutput = & npm link 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      Info "WARNING: npm link failed: $linkOutput"
-      Info "You can link it yourself later with: npm link (run from $Root)"
+    # Same stderr trap as git: npm writes notices to stderr on a successful link.
+    if ((Invoke-External "npm" @("link")) -ne 0) {
+      Info "WARNING: npm link failed. You can link it yourself later with: npm link (run from $Root)"
     } else {
       Info "omni command linked"
     }
