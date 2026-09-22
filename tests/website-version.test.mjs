@@ -108,10 +108,27 @@ ok("git-mode updating is the default, not gated behind a flag the one-liner can'
 });
 
 ok("the update fast-forwards and checks whether git actually succeeded", () => {
-  assert.match(installer, /merge --ff-only/,
+  assert.match(installer, /Invoke-Git @\("merge", "--ff-only", \$remoteRef\)/,
     "a plain `git pull` can create a merge commit in a user's install dir");
-  assert.match(installer, /git fetch[\s\S]{0,200}LASTEXITCODE/,
+  assert.match(installer, /Invoke-Git @\("fetch", "--all", "--prune"\)\) -ne 0/,
     "a failed fetch must not be treated as a successful update");
+});
+
+ok("git and npm stderr cannot abort a successful command on Windows PowerShell 5.1", () => {
+  // Comments may name the broken pattern. Only executable lines are policed.
+  const code = installer.split(/\r?\n/).filter((line) => !/^\s*#/.test(line)).join("\n");
+  assert.ok(!/2>&1\s*\|\s*Out-Host/.test(code),
+    "piping merged stderr through Out-Host is a terminating error under ErrorActionPreference=Stop on powershell.exe 5.1");
+  const fn = /function Invoke-External[\s\S]*?\n\}/.exec(code);
+  assert.ok(fn, "external commands must go through Invoke-External");
+  const body = fn[0];
+  const eapAt = body.search(/\$ErrorActionPreference\s*=\s*"Continue"/);
+  const callAt = body.search(/&\s*\$File\s+@ArgList\s+2>&1/);
+  assert.ok(eapAt >= 0 && callAt >= 0 && eapAt < callAt,
+    "ErrorActionPreference must be Continue before the 2>&1 capture; the capture itself throws on 5.1 when Stop is still in effect");
+  assert.match(body, /\$LASTEXITCODE/, "the helper must return the program's exit code, not assume success");
+  assert.equal((code.match(/2>&1/g) || []).length, 1,
+    "every stderr merge has to live inside Invoke-External; a second 2>&1 reintroduces the 5.1 terminating error");
 });
 
 ok("a declined or failed update is never reported as a finished install", () => {
