@@ -116,6 +116,10 @@ box stays usable while the agent works:
 
 - **Enter while the agent works** queues your message (the border shows
   `1 queued`); it runs as soon as the current turn ends.
+- **`/btw <note>` while the agent works** goes straight into the running
+  turn: the agent reads it at its next step and adjusts without stopping.
+  `/help`, `/status`, `/cost` and `/version` also run right away; other
+  commands wait in the queue.
 - **Esc** interrupts the turn. Arrow keys don't: they edit and recall history.
 - **Pasting never sends.** A one-line paste lands in the box as text; a
   multi-line paste shows as `[Pasted text #1 +14 lines]` and is sent in full

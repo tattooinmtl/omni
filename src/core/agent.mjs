@@ -782,7 +782,12 @@ async function checkCreateToolRisk(name, confirmTool) {
   return { allowed: false, message: `DENIED: the user declined to install this extension.` };
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic" }) {
+// How a /btw note reads to the model — a course correction, not a new task.
+export function steeringMessage(note) {
+  return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
+}
+
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null }) {
   // Lean-mode bookkeeping — the goal is the first non-synthesized user turn
   // this session, and the tool trail feeds state.json + the compaction
   // digest. Both live inside runTurn's closure so nothing leaks between
@@ -856,6 +861,17 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           session.setContextTokens(estimateTokens(messages));
         }
       }
+    }
+
+    // Notes the user sent with /btw while this turn was running: hand them to
+    // the model before its next step, so it can steer without being stopped.
+    // Appended here — after the previous step's tool results — where a user
+    // message is always valid.
+    const steering = typeof takeSteering === "function" ? takeSteering() : [];
+    for (const note of steering || []) {
+      const content = steeringMessage(note);
+      messages.push({ role: "user", content });
+      session.append({ type: "user", content });
     }
 
     // Near the iteration budget, tell the model to land the work instead of
@@ -1153,7 +1169,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             // permissions=null (which defaults to "allow" — see
             // checkPermission and TODO #2).
             const lockKey = fileLockKey(name, args);
-            const run = () => runTool(name, args, { permissions, confirmTool });
+            const run = () => runTool(name, args, { permissions, confirmTool, signal });
             if (lockKey) {
               const prev = fileLocks.get(lockKey) || Promise.resolve();
               let release;

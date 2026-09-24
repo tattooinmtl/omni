@@ -15,7 +15,7 @@ import {
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
-import { compactMessages, estimateTokens, getLastThinking } from "../core/agent.mjs";
+import { compactMessages, estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
 import {
   resolveProviderName, providers as memoryProviders, currentAtoms,
   extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
@@ -354,7 +354,9 @@ export const COMMANDS = [
     handler: (ctx, arg) => {
       const note = arg.trim();
       if (!note) { errorLine("usage: /btw <note> — e.g. /btw keep this backwards compatible"); return; }
-      return { startTurn: true, prompt: `(btw — steering note, not a new task; keep working on what you were doing and factor this in): ${note}` };
+      // While a turn is running the REPL delivers /btw straight into it (see
+      // repl.mjs); with nothing running, the note starts a turn of its own.
+      return { startTurn: true, prompt: steeringMessage(note) };
     },
   },
   {

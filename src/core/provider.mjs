@@ -61,11 +61,39 @@ function sanitizeForNativeTools(messages) {
   });
 }
 
+// The harness adds system messages mid-conversation: skill bodies (/<skill>,
+// invoke_skill, /expand-skill), goal directives, compaction notes. Plenty of
+// providers only accept system content at the top — MiniMax 400s with
+// "invalid params (2013)", many llama.cpp chat templates raise, and a system
+// message landing between a tool_call and its result breaks the OpenAI spec
+// everywhere. So on the wire every system message is folded, in order, into
+// one leading system message. The in-memory list is left untouched (the
+// REPL still evicts ephemeral skill messages by identity).
+export function hoistSystemMessages(messages = []) {
+  const systemParts = [];
+  const rest = [];
+  for (const m of messages) {
+    if (m && m.role === "system") {
+      const text = typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((p) => (typeof p === "string" ? p : p?.text || "")).join("")
+          : String(m.content ?? "");
+      if (text) systemParts.push(text);
+    } else {
+      rest.push(m);
+    }
+  }
+  if (systemParts.length <= 1 && (messages[0]?.role === "system" || !systemParts.length)) return messages;
+  return [{ role: "system", content: systemParts.join("\n\n") }, ...rest];
+}
+
 export function buildChatBody({ model, messages, tools }) {
   const nativeTools = providerUsesNativeTools(model);
+  const wire = hoistSystemMessages(messages);
   const body = {
     model: model.id,
-    messages: nativeTools ? sanitizeForNativeTools(messages) : flattenToolMessages(messages),
+    messages: nativeTools ? sanitizeForNativeTools(wire) : flattenToolMessages(wire),
     max_tokens: model.maxTokens,
     temperature: 0.2,
     stream: true,

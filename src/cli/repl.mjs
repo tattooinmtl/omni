@@ -19,7 +19,7 @@ import {
   c, banner, infoLine, warnLine, shutdown,
   promptTop, promptBottom, statusBar, statusBarText, setPersonaIndicator, setStatusSink,
 } from "../ui.mjs";
-import { runTurn } from "../core/agent.mjs";
+import { runTurn, steeringMessage } from "../core/agent.mjs";
 import { Session, turnMaxIterations } from "../core/config.mjs";
 import { disconnectAll, setMcpConfirm } from "../integrations/mcp.mjs";
 import { disconnectBridge } from "../integrations/bridge.mjs";
@@ -102,6 +102,18 @@ export function wantBracketedPaste({ tty, env = process.env } = {}) {
   return Boolean(tty) && env.OMNI_BRACKET_PASTE !== "0";
 }
 
+// Commands that are safe to run right away while the agent is working: they
+// only read state (or, for /btw, hand the running turn a note). Everything
+// else waits in the queue until the turn ends, since e.g. /model or /clear
+// mid-turn would pull the conversation out from under it.
+export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "version", "about"]);
+
+// Pull the note out of a "/btw …" line, or null when it isn't one.
+export function parseBtw(line) {
+  const m = /^\/btw(?:\s+([\s\S]*))?$/.exec(String(line || "").trim());
+  return m ? (m[1] || "").trim() : null;
+}
+
 // Only a lone Esc (or two, from a key-repeat) interrupts a running turn —
 // arrow keys, Home/End and pastes also start with ESC and used to kill it.
 export function isInterruptKey(chunk) {
@@ -151,6 +163,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY && typeof process.stdin.setRawMode === "function");
   const boxMode = chooseBoxMode({ tty, rows: process.stdout.rows });
   ctx.canRaw = tty;
+  // /btw notes waiting for the running turn's next step (see runAgentTurns).
+  ctx.steerQueue = [];
 
   // readline reads from rlInput, which only ever receives what the paste
   // filter lets through. Piped stdin (tests, scripts) goes straight in.
@@ -197,7 +211,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   function idleActivity() {
     if (ctx.currentAbort) {
       return "  " + c.cyan("(•‿•)⌨") + "  " + c.magenta("Omi: on it…") +
-        c.dim("   esc to interrupt · enter queues a message");
+        c.dim("   esc to interrupt · enter queues a message · /btw <note> steers now");
     }
     return "  " + c.cyan("(•‿•)ᕗ") + "  " + c.dim("Omi ready · / for commands · end a line with \\ for more lines");
   }
@@ -534,11 +548,23 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         confirmTool: ctx.confirmToolUse,
         showThinking: ctx.settings.showThinking,
         contextMode: ctx.contextMode,
+        takeSteering: () => ctx.steerQueue.splice(0),
       });
       const aborted = ctx.currentAbort.signal.aborted;
       ctx.currentAbort = null;
 
       keepGoing = false;
+      // A /btw that arrived after the agent's last step (while it was
+      // writing its final answer) would otherwise sit unread — answer it now.
+      if (!aborted && ctx.steerQueue.length) {
+        for (const note of ctx.steerQueue.splice(0)) {
+          const content = steeringMessage(note);
+          ctx.messages.push({ role: "user", content });
+          await ctx.session.append({ type: "user", content });
+        }
+        keepGoing = true;
+        continue;
+      }
       if (!aborted) {
         const continuation = nextGoalStep(ctx);
         if (continuation) {
@@ -671,6 +697,32 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     menuLastLine = "";
     menuShown = [];
     const text = expandPastes(input, pastes);
+
+    // While the agent works: /btw goes straight into the running turn, and a
+    // few read-only commands run right away instead of waiting their turn.
+    if (ctx.currentAbort && !multiLine) {
+      const trimmed = text.trim();
+      const note = parseBtw(trimmed);
+      if (note !== null) {
+        pastes.clear();
+        if (!note) { warnLine("usage: /btw <note> — e.g. /btw keep this backwards compatible"); renderFooter(); return; }
+        ctx.steerQueue.push(note);
+        console.log(c.cyan(PROMPT) + c.bold(input.trim()));
+        infoLine("↳ noted — Omi will read this at its next step");
+        renderFooter();
+        return;
+      }
+      const cmdName = trimmed.startsWith("/") ? trimmed.slice(1).split(/\s+/)[0].toLowerCase() : "";
+      if (cmdName && INSTANT_WHILE_BUSY.has(cmdName)) {
+        pastes.clear();
+        const parts = trimmed.split(/\s+/);
+        console.log(c.cyan(PROMPT) + c.bold(trimmed));
+        Promise.resolve(dispatchCommand(ctx, cmdName, parts.slice(1).join(" "), parts))
+          .catch((e) => warnLine(e?.message || String(e)))
+          .finally(renderFooter);
+        return;
+      }
+    }
     queueSubmittedText(text, { display: input });
   });
 
