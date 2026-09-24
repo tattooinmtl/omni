@@ -23,7 +23,7 @@ import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
 import { readContextMode } from "../core/context-mode.mjs";
-import { startNeuralView } from "../local/neuralview-server.mjs";
+import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
 import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 
@@ -34,6 +34,7 @@ function stopBackgroundChildren() {
   try { disconnectBridge(); } catch { /* best effort */ }
   try { killSidecar(); } catch { /* best effort */ }
   try { shutdownLspServers(); } catch { /* best effort */ }
+  try { stopNeuralView(); } catch { /* best effort */ }
 }
 
 export async function main(args) {
@@ -187,6 +188,10 @@ export async function main(args) {
   // "abort the turn" behaviour. Kill the children before the hard exit.
   process.on("SIGINT", () => { saveOnExit(); stopBackgroundChildren(); process.exit(130); });
   process.on("SIGTERM", () => { saveOnExit(); stopBackgroundChildren(); process.exit(143); });
+  // Windows raises SIGHUP when the terminal window is closed with its X
+  // button; the OS kills the process a few seconds later regardless, so tear
+  // down now (neural view, MCP servers, sidecars) instead of being cut off.
+  process.on("SIGHUP", () => { saveOnExit(); stopBackgroundChildren(); process.exit(129); });
 
   // The mutable CLI context shared by the REPL and every command handler.
   const ctx = {

@@ -410,9 +410,9 @@ export const COMMANDS = [
     },
   },
   {
-    name: "neuralview", aliases: ["neural", "galaxy"], usage: "/neuralview", category: "Agent",
-    summary: "open the live galaxy view of the OKF knowledge base + memory index (always running in the background)",
-    handler: () => neuralViewCommand(),
+    name: "neuralview", aliases: ["neural", "galaxy"], usage: "/neuralview [open|restart|stop|status]", category: "Agent",
+    summary: "live galaxy view of the knowledge base + memory (runs while Omi is open; restart/stop/status)",
+    handler: (_ctx, arg) => neuralViewCommand(arg),
   },
   {
     name: "rag", aliases: [], usage: "/rag [index|search <q>|status|clear]", category: "Agent",

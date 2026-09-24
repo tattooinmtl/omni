@@ -3,9 +3,12 @@
 // plus a Server-Sent-Events stream of agent/memory activity so the page can
 // pulse in real time as tools run and atoms get written (activity-bus.mjs).
 //
-// Started once, automatically, in the background when the interactive CLI
-// boots (src/cli/main.mjs) — it's meant to run for the life of the session,
-// not be started/stopped/port-configured by hand.
+// Started automatically in the background when the interactive CLI boots
+// (src/cli/main.mjs) and tied to that Omi's lifetime: it is stopped whenever
+// Omi closes — /exit, Ctrl-C, the terminal window closing, a kill signal, or
+// a crash (see stopNeuralView and the process "exit" hook below). Open pages
+// are told Omi closed, and reload themselves when a new Omi comes back up.
+// /neuralview restart|stop|status|open manage it by hand.
 //
 // Self-contained on purpose: plain node:http, one inline HTML/CSS/JS page,
 // no CDN assets, no external services, nothing leaves localhost.
@@ -18,6 +21,13 @@ import { PAGE } from "./neuralview-page.mjs";
 
 let activeServer = null;
 let activePort = null;
+// Open SSE streams, i.e. browser tabs showing the view right now.
+const clients = new Set();
+let exitHookInstalled = false;
+
+function sendEvent(res, event) {
+  try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client already gone */ }
+}
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
@@ -45,14 +55,17 @@ function streamEvents(req, res) {
   for (const event of recentActivity()) {
     res.write(`data: ${JSON.stringify({ ...event, replay: true })}\n\n`);
   }
-  res.write(`data: ${JSON.stringify({ kind: "_replay_end" })}\n\n`);
-  const onActivity = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  res.write(`data: ${JSON.stringify({ kind: "_replay_end", pid: process.pid })}\n\n`);
+  const onActivity = (event) => sendEvent(res, event);
   activityBus.on("activity", onActivity);
+  clients.add(res);
   // Keep-alive comment ping so proxies/browsers don't time out an idle stream.
-  const ping = setInterval(() => res.write(": ping\n\n"), 20000);
+  const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* gone */ } }, 20000);
+  ping.unref?.();
   req.on("close", () => {
     clearInterval(ping);
     activityBus.off("activity", onActivity);
+    clients.delete(res);
   });
 }
 
@@ -84,6 +97,10 @@ function requestHandler(req, res) {
       sendHtml(res, 200, PAGE);
     } else if (req.method === "GET" && url.pathname === "/api/graph") {
       sendJson(res, 200, buildGraph());
+    } else if (req.method === "GET" && url.pathname === "/api/whoami") {
+      // Lets a new Omi tell "another live Omi owns this port" apart from
+      // anything else that happens to be listening there.
+      sendJson(res, 200, { app: "omni-neuralview", pid: process.pid, cwd: process.cwd() });
     } else if (req.method === "GET" && url.pathname === "/api/events") {
       streamEvents(req, res);
     } else if (req.method === "GET" && url.pathname.startsWith("/api/explain/")) {
@@ -101,19 +118,69 @@ function requestHandler(req, res) {
   }
 }
 
-export function neuralViewStatus() {
-  if (!activeServer) return { running: false };
-  const graph = buildGraph();
-  return { running: true, port: activePort, url: `http://localhost:${activePort}/`, counts: graph.counts };
+export function neuralViewStatus({ withCounts = true } = {}) {
+  if (!activeServer) return { running: false, clients: 0 };
+  let counts = { cards: 0, atoms: 0, memories: 0 };
+  if (withCounts) {
+    try { counts = buildGraph().counts; } catch { /* a bad memory file must not hide the URL */ }
+  }
+  return { running: true, port: activePort, url: `http://localhost:${activePort}/`, counts, clients: clients.size, pid: process.pid };
 }
 
-export function stopNeuralView() {
+// Browser tabs currently connected.
+export function neuralViewClients() {
+  return clients.size;
+}
+
+// Ask connected pages to bring themselves to the front (best effort — the
+// browser decides).
+export function focusNeuralView() {
+  for (const res of clients) sendEvent(res, { kind: "_focus" });
+  return clients.size;
+}
+
+// Stop the server. Synchronous on purpose so it also works from a process
+// "exit" hook. Connected pages get a "_shutdown" event first, so they can
+// say Omi closed instead of silently going stale.
+export function stopNeuralView({ reason = "closed" } = {}) {
   if (!activeServer) return false;
-  activeServer.close();
-  activeServer.closeAllConnections?.(); // drop any open SSE streams so close() doesn't hang
+  for (const res of clients) {
+    sendEvent(res, { kind: "_shutdown", reason });
+    try { res.end(); } catch { /* gone */ }
+  }
+  clients.clear();
+  try { activeServer.close(); } catch { /* already closing */ }
+  activeServer.closeAllConnections?.(); // drop keep-alive sockets so close() doesn't hang
   activeServer = null;
   activePort = null;
   return true;
+}
+
+// Stop and start again, keeping the same port when it is free so open pages
+// reconnect on their own.
+export async function restartNeuralView() {
+  const port = activePort || 5678;
+  stopNeuralView({ reason: "restart" });
+  return startNeuralView({ port });
+}
+
+// Who is listening on a port we couldn't bind: another live Omi's neural
+// view, or something unrelated. Resolves null when nothing answers.
+export function probeNeuralView(port, timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/api/whoami", headers: { host: "localhost" }, timeout: timeoutMs }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(body);
+          resolve(j && j.app === "omni-neuralview" ? j : { app: "other" });
+        } catch { resolve({ app: "other" }); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
+  });
 }
 
 // In-flight start, so two callers share one server. main.mjs kicks this off
@@ -142,6 +209,12 @@ export function startNeuralView({ port = 5678 } = {}) {
       server.listen(p, "127.0.0.1", () => {
         activeServer = server;
         activePort = p;
+        // Never keep Omi alive just for the view, and never outlive it.
+        server.unref();
+        if (!exitHookInstalled) {
+          exitHookInstalled = true;
+          process.on("exit", () => stopNeuralView());
+        }
         resolve(neuralViewStatus());
       });
     };
