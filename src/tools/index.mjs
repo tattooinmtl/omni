@@ -1411,9 +1411,22 @@ export const impl = {
     // Push the skill body straight into the live conversation. The REPL's
     // post-turn eviction (evictEphemeralSkillMessages) will drop it once
     // this turn's loop returns to plain-text.
+    //
+    // This runs WHILE the model's tool call is in flight: the last message is
+    // the assistant turn carrying this very tool_call, and the agent loop
+    // appends the tool result after we return. Appending here would wedge a
+    // system message between a tool_call and its result, which OpenAI-
+    // compatible APIs reject (MiniMax: "400 invalid params (2013)"). Slot it
+    // in just before that assistant turn instead.
     const sysMsg = { role: "system", content: `# Skill: ${skill.name}\n${skill.body}` };
     markSkillEphemeral(sysMsg);
-    ctx.messages.push(sysMsg);
+    const msgs = ctx.messages;
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === "assistant" && Array.isArray(last.tool_calls) && last.tool_calls.length) {
+      msgs.splice(msgs.length - 1, 0, sysMsg);
+    } else {
+      msgs.push(sysMsg);
+    }
     return `Loaded skill "${skill.name}" for this turn (${(skill.body || "").length} chars). Follow its instructions${args ? ` with these arguments: ${args}` : ""}.`;
   },
 
