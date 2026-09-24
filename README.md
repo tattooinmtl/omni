@@ -108,6 +108,25 @@ Tab completes `/commands`. `/help` shows this grouped menu with usage strings.
 Unknown commands get a nearest-match suggestion. Multi-line input: end a line
 with `\`.
 
+### The prompt box
+
+The input box is pinned to the bottom of the terminal, with Omi's status line
+above it and the context/model bar below. Output scrolls above the box, and the
+box stays usable while the agent works:
+
+- **Enter while the agent works** queues your message (the border shows
+  `1 queued`); it runs as soon as the current turn ends.
+- **Esc** interrupts the turn. Arrow keys don't: they edit and recall history.
+- **Pasting never sends.** A one-line paste lands in the box as text; a
+  multi-line paste shows as `[Pasted text #1 +14 lines]` and is sent in full
+  when you press Enter. This covers text copied from Omi's own output too.
+- **Ctrl-C** clears the box; with the box empty, press it twice to exit.
+- Typing `/` opens the command menu under the box.
+
+Set `OMNI_SIMPLE_PROMPT=1` for the plain one-line prompt instead. That's also
+what you get when the terminal has fewer than 12 rows or isn't interactive.
+Bracketed paste is on by default. `OMNI_BRACKET_PASTE=0` turns it off.
+
 ### Goal mode
 
 ```
@@ -213,7 +232,7 @@ Inside the REPL, `/extend` walks the agent through scaffolding one for you.
 Omni/
   bin/omni.mjs            thin launcher
   src/
-    cli/                  REPL, command registry, goal mode, model picker
+    cli/                  REPL, prompt box, paste filter, command registry, goal mode, model picker
     core/                 agent loop, tool-call parser, provider client, config
     tools/                tool schemas + implementations
     integrations/         MCP proxy, NimTools bridge, package registry, router

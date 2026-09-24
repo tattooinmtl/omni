@@ -1,10 +1,23 @@
 // Interactive REPL: readline loop, interrupt handling, tab completion for
 // slash commands, the agent turn runner, and goal-mode auto-continuation.
+//
+// Input path (interactive terminal):
+//
+//   stdin (raw) ──► PasteFilter ──► rlInput ──► readline ──► "line"
+//                    │                           (keys, history, editing)
+//                    └─ pastes become text/chips, never Enter
+//
+// readline only ever sees typed keys; pastes are recognised on the raw chunks
+// first (see paste.mjs). In box mode readline draws nothing — its output is a
+// no-op sink and the pinned footer (footer.mjs) renders rl.line inside the
+// input box, which stays on screen while the agent works.
 
 import readline from "node:readline";
+import { PassThrough, Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import {
   c, banner, infoLine, warnLine, shutdown,
-  promptTop, promptBottom, statusBar, setPersonaIndicator,
+  promptTop, promptBottom, statusBar, statusBarText, setPersonaIndicator, setStatusSink,
 } from "../ui.mjs";
 import { runTurn } from "../core/agent.mjs";
 import { Session, turnMaxIterations } from "../core/config.mjs";
@@ -19,10 +32,18 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
-import { restoreLineEditing } from "./term.mjs";
+import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
+import { createFooter, stripAnsi } from "./footer.mjs";
 
 // Rows of the live "/" menu visible at once (plus one hint line below them).
 export const MENU_MAX = 12;
+
+// The input prompt, shared by readline and the plain-mode redraw.
+const PROMPT = "› ";
+
+// A second Ctrl-C within this long of the first (with nothing running and an
+// empty prompt) exits. One stray Ctrl-C — e.g. trying to copy — no longer does.
+export const EXIT_CONFIRM_MS = 1500;
 
 // Format the visible slice of the "/" command menu. Pure and exported so the
 // geometry that keeps the list on screen is testable without a terminal.
@@ -67,66 +88,27 @@ export function formatMenuRows(rows, { width = 80, selected = 0, max = MENU_MAX 
   return lines;
 }
 
-// How long a gap between consecutive plain (non-slash, non-continuation)
-// readline "line" events is still considered "the same paste" rather than
-// two separate deliberate submissions. This has to absorb real-world paste
-// jitter, not just the ideal case: a pasted multi-line block usually arrives
-// as one synchronous burst, but on some terminal/shell combinations (seen on
-// Windows) the lines can land tens to a couple hundred ms apart. A window
-// that's too tight silently splits ONE paste into N separate agent turns —
-// each one a real model request, which can burn through a rate limit in
-// seconds. A human manually typing two distinct one-line messages back to
-// back essentially never does it within half a second of each other, so this
-// stays well clear of that case while giving paste plenty of room.
-export const BURST_PASTE_WINDOW_MS = 500;
-
-export function shouldImmediateSubmit(rawInput, multiLineActive = false) {
-  const trimmed = String(rawInput || "").trim();
-  return trimmed.startsWith("/") || trimmed.endsWith("\\") || Boolean(multiLineActive);
+// Which prompt to use. The pinned box needs a real terminal with room for it
+// and VT escape support; OMNI_SIMPLE_PROMPT=1 forces the plain prompt.
+export function chooseBoxMode({ tty, rows, env = process.env } = {}) {
+  if (!tty) return false;
+  if (env.OMNI_SIMPLE_PROMPT === "1" || env.TERM === "dumb") return false;
+  return (rows || 0) >= 12;
 }
 
-// Pure helper used by tests to verify burst grouping behavior without
-// requiring an interactive terminal.
-export function coalesceBurstInputs(events, { windowMs = BURST_PASTE_WINDOW_MS } = {}) {
-  const out = [];
-  const burst = [];
-  let lastAt = 0;
+// Bracketed paste is on by default everywhere now (Windows Terminal and
+// Windows 11 conhost support it); OMNI_BRACKET_PASTE=0 turns it off.
+export function wantBracketedPaste({ tty, env = process.env } = {}) {
+  return Boolean(tty) && env.OMNI_BRACKET_PASTE !== "0";
+}
 
-  function flushBurst() {
-    if (!burst.length) return;
-    out.push({ text: burst.join("\n"), fromPaste: true });
-    burst.length = 0;
-  }
-
-  for (const ev of events || []) {
-    const input = String(ev?.input || "");
-    const at = Number.isFinite(ev?.at) ? ev.at : lastAt;
-    const immediate = shouldImmediateSubmit(input, Boolean(ev?.multiLineActive));
-
-    if (immediate) {
-      flushBurst();
-      out.push({ text: input, fromPaste: false });
-      lastAt = at;
-      continue;
-    }
-
-    if (burst.length && at - lastAt > windowMs) flushBurst();
-    burst.push(input);
-    lastAt = at;
-  }
-
-  flushBurst();
-  return out;
+// Only a lone Esc (or two, from a key-repeat) interrupts a running turn —
+// arrow keys, Home/End and pastes also start with ESC and used to kill it.
+export function isInterruptKey(chunk) {
+  return chunk === "\x1b" || chunk === "\x1b\x1b";
 }
 
 export async function startRepl(ctx, { resumeMode = false } = {}) {
-  const BRACKET_PASTE_ON = "\x1b[?2004h";
-  const BRACKET_PASTE_OFF = "\x1b[?2004l";
-  const BRACKET_PASTE_START = "\x1b[200~";
-  const BRACKET_PASTE_END = "\x1b[201~";
-  // (BURST_PASTE_WINDOW_MS is the module-level export above — one definition,
-  // so the live behavior and the unit tests can never drift apart again.)
-
   banner(ctx.model.key);
   // Cache-only, instant — never delays startup. Refreshes in the background
   // for next time (see integrations/update-check.mjs) if the cache is stale.
@@ -166,12 +148,30 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
   }
 
+  const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY && typeof process.stdin.setRawMode === "function");
+  const boxMode = chooseBoxMode({ tty, rows: process.stdout.rows });
+  ctx.canRaw = tty;
+
+  // readline reads from rlInput, which only ever receives what the paste
+  // filter lets through. Piped stdin (tests, scripts) goes straight in.
+  let rlInput = process.stdin;
+  if (tty) {
+    rlInput = new PassThrough();
+    rlInput.isTTY = true;
+    rlInput.setRawMode = (mode) => process.stdin.setRawMode(mode);
+  }
+  // Box mode: readline keeps the keys, the footer does the drawing.
+  const rlOutput = boxMode
+    ? Object.assign(new Writable({ write(_chunk, _enc, cb) { cb(); } }), { isTTY: true })
+    : process.stdout;
+
   // Tab completion: slash commands + skill commands.
   const completions = () => [...commandNames(), ...ctx.skills.map((s) => s.command)];
   const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: c.cyan("› "),
+    input: rlInput,
+    output: rlOutput,
+    prompt: c.cyan(PROMPT),
+    terminal: tty || undefined,
     completer: (line) => {
       if (!line.startsWith("/")) return [[], line];
       const hits = completions().filter((x) => x.startsWith(line));
@@ -179,62 +179,154 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     },
   });
   ctx.rl = rl;
-  // Bracketed paste: on POSIX terminals this lets us disambiguate real paste
-  // from typed input. On Windows Terminal / ConHost, however, several stacks
-  // in the readline path (Node's own line editor + downstream renderers) re-
-  // emit the wrapped payload, so a typed line visibly repeats on submit —
-  // the "prompt printed twice" bug. Default off on win32; opt back in with
-  // OMNI_BRACKET_PASTE=1 for a POSIX shell running on Windows (WSL, Git Bash
-  // on some setups) where the sequence does behave correctly.
-  const bracketPasteOptIn = process.env.OMNI_BRACKET_PASTE === "1";
-  const canBracketPaste =
-    process.stdin.isTTY && process.stdout.isTTY &&
-    (process.platform !== "win32" || bracketPasteOptIn);
-  if (canBracketPaste) process.stdout.write(BRACKET_PASTE_ON);
 
-  // Ctrl-C interrupt: wired to BOTH process and rl (rl.pause() mutes rl's
-  // SIGINT on Windows, so the process-level handler covers generation time).
+  // Set on rl "close"; a line handler that was still awaiting a turn when the
+  // REPL closed must not touch the closed readline — rl.prompt() after close
+  // throws ERR_USE_AFTER_CLOSE and kills the process.
+  let replClosed = false;
+
+  // ── Footer (box mode) ────────────────────────────────────────────────────
+  let activityText = null;   // Omi's line while a status animates
+  let footerNote = "";       // transient hint on the box border
+  let footerNoteTimer = null;
+  let pendingSubmits = 0;    // messages queued behind the running turn
+  let multiLine = "";
+  let multiLineDisplay = "";
+  let menuShown = [];        // rows the footer menu is showing right now
+
+  function idleActivity() {
+    if (ctx.currentAbort) {
+      return "  " + c.cyan("(•‿•)⌨") + "  " + c.magenta("Omi: on it…") +
+        c.dim("   esc to interrupt · enter queues a message");
+    }
+    return "  " + c.cyan("(•‿•)ᕗ") + "  " + c.dim("Omi ready · / for commands · end a line with \\ for more lines");
+  }
+
+  const footer = boxMode ? createFooter({
+    out: process.stdout,
+    getState: () => {
+      const cols = process.stdout.columns || 80;
+      const line = rl.line || "";
+      menuShown = !multiLine && line.startsWith("/") ? buildMenuRows(line) : [];
+      if (menuSelected >= menuShown.length) menuSelected = Math.max(0, menuShown.length - 1);
+      const note = footerNote || (pendingSubmits > 0 ? `${pendingSubmits} queued` : "");
+      return {
+        activity: activityText || idleActivity(),
+        prompt: multiLine ? "… " : stripAnsi(rl.getPrompt()),
+        line,
+        cursor: rl.cursor ?? line.length,
+        statusText: statusBarText(ctx.model, ctx.session, cols - 1),
+        menuLines: formatMenuRows(menuShown, { width: cols, selected: menuSelected, max: MENU_MAX }),
+        note,
+      };
+    },
+  }) : null;
+
+  let renderQueued = false;
+  function renderFooter() {
+    if (!footer || replClosed || rl.paused) return;
+    if (renderQueued) return;
+    renderQueued = true;
+    setImmediate(() => {
+      renderQueued = false;
+      if (!replClosed && !rl.paused) footer.render();
+    });
+  }
+
+  function flashNote(text) {
+    footerNote = text;
+    if (footerNoteTimer) clearTimeout(footerNoteTimer);
+    footerNoteTimer = setTimeout(() => { footerNote = ""; renderFooter(); }, EXIT_CONFIRM_MS);
+    footerNoteTimer.unref?.();
+    renderFooter();
+  }
+
+  if (footer) {
+    setStatusSink((text) => { activityText = text; renderFooter(); });
+    // Pickers (/model, /provider, …) pause readline and take the whole screen;
+    // get out of their way and come back when they hand the keyboard back.
+    rl.on("pause", () => footer.suspend());
+    rl.on("resume", () => renderFooter());
+    process.stdout.on("resize", () => { if (!rl.paused && !replClosed) footer.onResize(); });
+    // Never leave the shell with a scroll region or a hidden cursor.
+    process.on("exit", () => footer.disable());
+  }
+
+  // ── Raw stdin → paste filter → readline ──────────────────────────────────
+  const bracketPaste = wantBracketedPaste({ tty });
+  const pastes = new Map();
+  let pasteSeq = 0;
+  let onStdinData = null;
+  if (tty) {
+    // Keypress events on stdin itself are what the arrow pickers listen to.
+    readline.emitKeypressEvents(process.stdin);
+    const forward = (s) => { if (!replClosed && !rl.paused && s) rlInput.write(s); };
+    const filter = new PasteFilter({
+      onData: forward,
+      onPaste: (text) => {
+        const { inline, stored } = pasteInsertion(text, pasteSeq + 1);
+        if (stored != null) pastes.set(++pasteSeq, stored);
+        forward(inline);
+      },
+    });
+    const decoder = new StringDecoder("utf8");
+    onStdinData = (chunk) => {
+      const s = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      if (ctx.currentAbort && isInterruptKey(s)) { ctx.currentAbort.abort(); return; }
+      // readline raises Ctrl-C itself while it has the keyboard; when it's
+      // paused (plain-mode generation) nobody would see it.
+      if (rl.paused && ctx.currentAbort && s.includes("\x03")) { ctx.currentAbort.abort(); return; }
+      filter.push(s);
+    };
+    process.stdin.on("data", onStdinData);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    if (bracketPaste) process.stdout.write("\x1b[?2004h");
+  }
+
+  // Ctrl-C: interrupt a running turn; otherwise clear the prompt; otherwise
+  // exit on a second press within EXIT_CONFIRM_MS.
+  let lastSigint = 0;
   const handleInterrupt = () => {
-    if (ctx.currentAbort) ctx.currentAbort.abort();
-    else rl.close();
+    if (ctx.currentAbort) { ctx.currentAbort.abort(); return; }
+    if (!tty) { rl.close(); return; }
+    if (rl.line) {
+      rl.write(null, { ctrl: true, name: "e" });
+      rl.write(null, { ctrl: true, name: "u" });
+      renderFooter();
+      return;
+    }
+    const now = Date.now();
+    if (now - lastSigint < EXIT_CONFIRM_MS) { rl.close(); return; }
+    lastSigint = now;
+    if (footer) flashNote("press Ctrl-C again to exit");
+    else {
+      process.stdout.write("\n");
+      infoLine("press Ctrl-C again to exit");
+      rl.prompt(true);
+    }
   };
   process.on("SIGINT", handleInterrupt);
   rl.on("SIGINT", handleInterrupt);
 
-  // ESC detection via raw mode, only while readline is paused (during
-  // generation) so echoing is never affected. Raw-mode Ctrl-C = 0x03.
-  const canRaw = process.stdin.isTTY && typeof process.stdin.setRawMode === "function";
-  ctx.canRaw = canRaw;
-  if (canRaw) {
-    readline.emitKeypressEvents(process.stdin);
-    process.stdin.on("data", (chunk) => {
-      if (ctx.currentAbort && (chunk[0] === 0x1b || chunk[0] === 0x03)) {
-        ctx.currentAbort.abort();
-      }
-    });
-  }
-  // Set on rl "close"; a line handler that was still awaiting a turn when the
-  // REPL closed (burst/piped input) must not touch the closed readline —
-  // rl.prompt() after close throws ERR_USE_AFTER_CLOSE and kills the process.
-  // Declared up here because the interrupt-watch helpers below read it.
-  let replClosed = false;
-
-  const startInterruptWatch = () => { if (canRaw) { process.stdin.setRawMode(true); process.stdin.resume(); } };
-  // Give the keyboard back to readline, not to the shell: the ESC/Ctrl-C
-  // watcher above is gated on ctx.currentAbort, so nothing here needs cooked
-  // mode — and dropping to it used to kill every per-keystroke feature of the
-  // prompt for the rest of the session (see term.mjs).
-  const stopInterruptWatch = () => { if (canRaw) restoreLineEditing(replClosed ? null : rl); };
-
-  // Permission "ask" confirmation: hand the terminal back to readline
-  // mid-turn, ask, then restore the generation interrupt watch.
+  // Permission "ask" confirmation, asked in the prompt itself mid-turn.
   ctx.confirmToolUse = async function confirmToolUse(name, summary) {
-    stopInterruptWatch();
-    rl.resume();
     const q = c.yellow(`  allow ${name}${summary ? ` (${String(summary).slice(0, 80)})` : ""}? [y/N/a=always] `);
-    const answer = await new Promise((resolve) => rl.question(q, resolve));
-    rl.pause();
-    startInterruptWatch();
+    // readline's question() would glue a half-typed draft onto the answer.
+    const draft = { line: rl.line || "", cursor: rl.cursor || 0 };
+    rl.line = "";
+    rl.cursor = 0;
+    const wasPaused = Boolean(rl.paused);
+    const answer = await new Promise((resolve) => {
+      rl.question(footer ? stripAnsi(q).trim() + " " : q, resolve);
+      renderFooter();
+    });
+    if (footer) {
+      rl.line = draft.line;
+      rl.cursor = draft.cursor;
+      renderFooter();
+    }
+    if (wasPaused) rl.pause();
     return answer;
   };
 
@@ -253,7 +345,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   function clearPendingInput() {
     if (typeof rl.line === "string") rl.line = "";
     if (typeof rl.cursor === "number") rl.cursor = 0;
-    if (process.stdout.isTTY) {
+    if (process.stdout.isTTY && !footer) {
       readline.clearLine(process.stdout, 0);
       readline.cursorTo(process.stdout, 0);
     }
@@ -272,7 +364,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   // highlighted (not literally whatever text was typed — see the "line"
   // handler below, which substitutes the selected row's command). Cleared on
   // submit or when the "/" is deleted.
-  let menuLines = 0;      // rows the menu currently occupies below the input
+  let menuLines = 0;      // plain mode: rows the menu occupies below the input
   let menuSelected = 0;   // index into the current menu rows, highlighted row
   let menuLastLine = "";  // rl.line as of the last non-arrow keystroke — see
                            // the keypress handler: readline applies its own
@@ -292,7 +384,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     return [...cmds, ...skills];
   }
 
+  // Plain mode: draw the menu under the input line.
   function renderMenu() {
+    if (footer) { renderFooter(); return; }
     if (!process.stdout.isTTY || !promptActive || ctx.currentAbort) return;
     const line = rl.line || "";
     const rows = line.startsWith("/") ? buildMenuRows(line) : [];
@@ -328,64 +422,105 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   // Redraw the input row itself (prompt + text) — used after we restore
   // rl.line following a readline history-substitution we're overriding.
   function redrawInputLine(text) {
+    if (footer) { renderFooter(); return; }
     if (!process.stdout.isTTY) return;
     readline.clearLine(process.stdout, 0);
     readline.cursorTo(process.stdout, 0);
-    process.stdout.write(c.cyan("› ") + text);
+    process.stdout.write(c.cyan(PROMPT) + text);
   }
 
   function clearMenuAfterSubmit() {
     // Called from the line handler: readline has already echoed the newline,
     // so the cursor sits on the menu's first row — erase down from here.
-    if (menuLines > 0 && process.stdout.isTTY) {
+    if (!footer && menuLines > 0 && process.stdout.isTTY) {
       process.stdout.write("\r\x1b[0J");
-      menuLines = 0;
     }
+    menuLines = 0;
     menuSelected = 0;
   }
 
-  process.stdin.on("keypress", (_str, key) => {
-    if (!promptActive || ctx.currentAbort) return;
-    if (key && (key.name === "return" || key.name === "enter")) return;
-
-    if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/")) {
-      // Readline's own listener (registered before ours, at
-      // readline.createInterface() time) already ran for this same keypress
-      // and applied its default Up/Down history substitution to rl.line —
-      // override that: restore the real filter text and move the menu
-      // selection instead of recalling a previous command.
-      const rows = buildMenuRows(menuLastLine);
-      if (rows.length) {
-        rl.line = menuLastLine;
-        rl.cursor = menuLastLine.length;
-        menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
-        redrawInputLine(menuLastLine);
-        renderMenu();
+  // Registered after readline's own listener on the same stream, so it runs
+  // after readline has applied the key.
+  if (tty) {
+    rlInput.on("keypress", (_str, key) => {
+      if (footer) {
+        // The box shows the draft even while a turn runs.
+        if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/") && !multiLine) {
+          const rows = buildMenuRows(menuLastLine);
+          if (rows.length) {
+            rl.line = menuLastLine;
+            rl.cursor = menuLastLine.length;
+            menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
+          }
+          renderFooter();
+          return;
+        }
+        if (!(key && (key.name === "return" || key.name === "enter"))) {
+          menuLastLine = rl.line || "";
+          menuSelected = 0;
+        }
+        renderFooter();
+        return;
       }
-      return;
-    }
 
-    menuLastLine = rl.line || "";
-    menuSelected = 0;
-    setImmediate(renderMenu);
-  });
+      if (!promptActive || ctx.currentAbort) return;
+      if (key && (key.name === "return" || key.name === "enter")) return;
+
+      if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/")) {
+        // Readline's own listener already ran for this same keypress and
+        // applied its default Up/Down history substitution to rl.line —
+        // override that: restore the real filter text and move the menu
+        // selection instead of recalling a previous command.
+        const rows = buildMenuRows(menuLastLine);
+        if (rows.length) {
+          rl.line = menuLastLine;
+          rl.cursor = menuLastLine.length;
+          menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
+          redrawInputLine(menuLastLine);
+          renderMenu();
+        }
+        return;
+      }
+
+      menuLastLine = rl.line || "";
+      menuSelected = 0;
+      setImmediate(renderMenu);
+    });
+  }
 
   function showPrompt() {
     if (replClosed) return;
+    promptActive = true;
+    if (footer) {
+      // Keep whatever was typed into the box while the turn ran.
+      rl.prompt(true);
+      renderFooter();
+      return;
+    }
     clearPendingInput();
     statusBar(ctx.model, ctx.session);
     promptTop();
-    promptActive = true;
     rl.prompt();
+  }
+
+  // Echo a submitted message into the output (box mode: the box itself is
+  // cleared on submit, so this is the transcript's copy of what you sent).
+  function echoSubmitted(display) {
+    if (!footer) return;
+    const lines = String(display).split("\n");
+    console.log("");
+    lines.forEach((l, i) => console.log((i === 0 ? c.cyan(PROMPT) : "  ") + c.bold(l)));
   }
 
   // Run one agent turn, then keep going while goal mode queues continuations.
   async function runAgentTurns() {
-    if (!replClosed) rl.pause();
-    startInterruptWatch();
+    // Plain mode: readline would echo keystrokes into the streaming output, so
+    // it sits the turn out. Box mode keeps it live — typing goes to the box.
+    if (!footer && !replClosed) rl.pause();
     let keepGoing = true;
     while (keepGoing) {
       ctx.currentAbort = new AbortController();
+      renderFooter();
       await runTurn({
         model: ctx.model,
         settings: ctx.settings,
@@ -417,54 +552,53 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         }
       }
     }
-    stopInterruptWatch();
+    activityText = null;
     // Turn-scoped skill bodies (see applySkill / markEphemeralSkill in
     // helpers.mjs) live only for the turn(s) triggered by /<skill>. Once the
     // model returns a plain-text answer, drop them so a 10–26KB SKILL.md
     // isn't re-billed on every subsequent turn of the session.
     evictEphemeralSkillMessages(ctx.messages);
     console.log("");
-    clearPendingInput();
+    if (!footer) clearPendingInput();
     // The REPL may have closed while the turn ran (stdin EOF, /exit) —
     // resuming a closed readline throws ERR_USE_AFTER_CLOSE.
     if (!replClosed) rl.resume();
+    renderFooter();
   }
 
-  let multiLine = "";
-  let pasteActive = false;
-  let pasteLines = [];
-  let burstLines = [];
-  let burstTimer = null;
-  let burstLastAt = 0;
   let submitChain = Promise.resolve();
 
-  function stripBracketPasteMarkers(value) {
-    return String(value || "")
-      .replaceAll(BRACKET_PASTE_START, "")
-      .replaceAll(BRACKET_PASTE_END, "");
-  }
-
-  async function handleSubmittedText(rawText, { fromPaste = false } = {}) {
-    const line = fromPaste ? String(rawText || "") : String(rawText || "").trim();
+  async function handleSubmittedText(rawText, { display = rawText } = {}) {
+    const line = String(rawText || "").replace(/\r/g, "").trim();
+    const shown = String(display || "").trim();
 
     // Multi-line continuation
-    if (!fromPaste && line.endsWith("\\") && !line.startsWith("/")) {
+    if (line.endsWith("\\") && !line.startsWith("/")) {
       multiLine += line.slice(0, -1) + "\n";
-      process.stdout.write(c.dim("… "));
-      // We're prompting again (just without the full frame), so the menu and
-      // the rest of the keypress handling stay live for the continuation line.
-      promptActive = true;
+      multiLineDisplay += shown.slice(0, -1) + "\n";
+      if (footer) {
+        renderFooter();
+      } else {
+        process.stdout.write(c.dim("… "));
+        // We're prompting again (just without the full frame), so the menu and
+        // the rest of the keypress handling stay live for the continuation line.
+        promptActive = true;
+      }
       return;
     }
 
-    const fullLine = fromPaste ? line.replace(/\r/g, "") : multiLine + line;
+    const fullLine = multiLine + line;
+    const fullDisplay = multiLineDisplay + shown;
     multiLine = "";
+    multiLineDisplay = "";
+    pastes.clear();
     if (!fullLine.trim()) return showPrompt();
 
-    promptBottom();
+    if (!footer) promptBottom();
+    echoSubmitted(fullDisplay);
 
     const commandLine = fullLine.trim();
-    if (!fromPaste && commandLine.startsWith("/")) {
+    if (commandLine.startsWith("/")) {
       const parts = commandLine.split(/\s+/);
       const cmdName = parts[0].slice(1);
       const arg = parts.slice(1).join(" ");
@@ -504,81 +638,51 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     showPrompt();
   }
 
+  // Submissions run one at a time; anything sent while a turn runs waits here.
   function queueSubmittedText(rawText, opts) {
+    pendingSubmits++;
+    renderFooter();
     submitChain = submitChain
-      .then(() => handleSubmittedText(rawText, opts))
+      .then(() => {
+        pendingSubmits--;
+        return handleSubmittedText(rawText, opts);
+      })
       .catch((e) => {
         warnLine(e?.message || String(e));
       });
     return submitChain;
   }
 
-  function clearBurstTimer() {
-    if (burstTimer) {
-      clearTimeout(burstTimer);
-      burstTimer = null;
-    }
-  }
-
-  function flushBurstBuffer() {
-    clearBurstTimer();
-    if (!burstLines.length) return Promise.resolve();
-    const pasted = burstLines.join("\n");
-    burstLines = [];
-    return queueSubmittedText(pasted, { fromPaste: true });
-  }
-
-  rl.on("line", async (rawInput) => {
-    let input = rawInput;
+  rl.on("line", (rawInput) => {
+    let input = String(rawInput || "").replaceAll(PASTE_START, "").replaceAll(PASTE_END, "");
     promptActive = false;
-    const hasPasteStart = input.includes(BRACKET_PASTE_START);
-    const hasPasteEnd = input.includes(BRACKET_PASTE_END);
     // Enter runs whichever row is highlighted in the live "/" menu, not
     // necessarily the literal text typed (e.g. typed "/mod", arrowed to
     // "/model", Enter runs "/model" — or just the top match if you never
     // touched the arrows at all).
-    if (menuLines > 0 && !pasteActive && !hasPasteStart && !hasPasteEnd) {
+    const menuOpen = footer ? menuShown.length > 0 : menuLines > 0;
+    if (menuOpen && !multiLine) {
       const rows = buildMenuRows(input);
       if (rows.length && rows[menuSelected]) {
         input = rows[menuSelected].usage.split(/\s+/)[0];
       }
     }
     clearMenuAfterSubmit();
-    if (pasteActive || hasPasteStart || hasPasteEnd) {
-      if (hasPasteStart) pasteActive = true;
-      pasteLines.push(stripBracketPasteMarkers(input));
-      if (hasPasteEnd) {
-        pasteActive = false;
-        const pasted = pasteLines.join("\n");
-        pasteLines = [];
-        return handleSubmittedText(pasted, { fromPaste: true });
-      }
-      return;
-    }
-
-    const needsImmediate = shouldImmediateSubmit(input, Boolean(multiLine));
-
-    if (needsImmediate) {
-      await flushBurstBuffer();
-      return queueSubmittedText(input);
-    }
-
-    const now = Date.now();
-    if (burstLines.length && now - burstLastAt > BURST_PASTE_WINDOW_MS) {
-      await flushBurstBuffer();
-    }
-    burstLastAt = now;
-    burstLines.push(input);
-    clearBurstTimer();
-    burstTimer = setTimeout(() => {
-      void flushBurstBuffer();
-    }, BURST_PASTE_WINDOW_MS);
+    menuLastLine = "";
+    menuShown = [];
+    const text = expandPastes(input, pastes);
+    queueSubmittedText(text, { display: input });
   });
 
   rl.on("close", async () => {
     replClosed = true;
-    await flushBurstBuffer();
-    if (canBracketPaste && process.stdout.isTTY) process.stdout.write(BRACKET_PASTE_OFF);
+    if (onStdinData) process.stdin.off("data", onStdinData);
+    if (footer) { footer.disable(); setStatusSink(null); }
+    if (tty) {
+      if (bracketPaste) process.stdout.write("\x1b[?2004l");
+      try { process.stdin.setRawMode(false); } catch { /* already closed */ }
+      process.stdin.pause();
+    }
     disconnectAll();
     disconnectBridge();
     killSidecar();
