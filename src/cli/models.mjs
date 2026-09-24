@@ -671,17 +671,14 @@ export async function runArrowPicker(rows, opts = {}) {
 async function askLine(ctx, prompt, { defaultValue = "" } = {}) {
   const q = prompt + (defaultValue ? c.dim(` [${defaultValue}]`) : "") + " ";
   if (ctx?.rl) {
-    const wasRaw = ctx.canRaw && process.stdin.isTTY && process.stdin.readable;
-    if (wasRaw) process.stdin.setRawMode(false);
-    try {
-      ctx.rl.resume();
-      const answer = await new Promise((resolve) => ctx.rl.question(q, resolve));
-      const v = (answer || "").trim();
-      return v || defaultValue;
-    } finally {
-      ctx.rl.pause();
-      if (wasRaw) process.stdin.setRawMode(true);
-    }
+    // Stay in raw mode: the REPL's readline does its own line editing, and in
+    // cooked mode a whole typed line would arrive in one chunk and be taken
+    // for a paste (see paste.mjs) instead of an answer.
+    const wasPaused = Boolean(ctx.rl.paused);
+    const answer = await new Promise((resolve) => ctx.rl.question(q, resolve));
+    if (wasPaused) ctx.rl.pause();
+    const v = (answer || "").trim();
+    return v || defaultValue;
   }
   // Piped/one-shot fallback
   const readline = (await import("node:readline")).default;

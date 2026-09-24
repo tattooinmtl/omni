@@ -205,7 +205,7 @@ export const COMMANDS = [
     summary: "leave Omni Agent",
     handler: async (ctx) => {
       try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
-      console.log(c.dim("\n  bye 👋"));
+      // The REPL's close handler says goodbye.
       ctx.rl.close();
       return { closed: true };
     },

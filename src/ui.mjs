@@ -291,8 +291,10 @@ let statusFrameLines = 0;
 
 // Full-width horizontal rule. Defaults to the yellow separator used to frame
 // the bottom panel (user input when idle, token meter while generating).
+// One column short of the full width: Windows consoles wrap eagerly at the
+// last column, so a full-width rule would take two rows.
 export function hr(color = c.yellow, ch = "─") {
-  const width = process.stdout.columns || 80;
+  const width = Math.max(1, (process.stdout.columns || 80) - 1);
   console.log(color(ch.repeat(width)));
 }
 
@@ -312,10 +314,9 @@ function fmtK(n) {
   return n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + "k" : String(n);
 }
 
-export function statusBar(model, session) {
-  if (!process.stdout.isTTY) return;
-  const width = process.stdout.columns || 80;
-
+// The status bar as a string `width` columns wide (the pinned prompt box draws
+// it itself; statusBar() prints it for the plain prompt).
+export function statusBarText(model, session, width = (process.stdout.columns || 80) - 1) {
   // Context usage: size of the live conversation (last request's prompt +
   // completion) against the model's context WINDOW — not the output cap.
   const used = (session && (session.contextTokens || 0)) || 0;
@@ -344,10 +345,19 @@ export function statusBar(model, session) {
     gap = Math.max(1, width - left.length - right.length - personaLen);
   }
 
-  process.stdout.write(
-    c.gray(left) + " ".repeat(gap) + personaTag + c.dim(`(${provider}) `) + c.gray(id) + "\n"
-  );
+  return c.gray(left) + " ".repeat(gap) + personaTag + c.dim(`(${provider}) `) + c.gray(id);
 }
+
+export function statusBar(model, session) {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write(statusBarText(model, session) + "\n");
+}
+
+// When the pinned prompt box is up, the animated status is drawn on Omi's
+// line inside it instead of in the output. The sink receives the rendered
+// line on every tick, and null when the status stops.
+let _statusSink = null;
+export function setStatusSink(fn) { _statusSink = typeof fn === "function" ? fn : null; }
 
 // Start (or switch to) an animated status. Names: see STATES above.
 export function startStatus(name = "thinking", interval = 120) {
@@ -357,12 +367,16 @@ export function startStatus(name = "thinking", interval = 120) {
   const robotState = STATE_ROBOT[name] || "idle";
   const hint = c.dim("  [ESC / Ctrl-C to stop]");
   let i = 0;
-  statusTimer = setInterval(() => {
+  const tick = () => {
     const frame = state.frames[i % state.frames.length];
     const bot = c.cyan(robotFrame(robotState, i));
-    process.stdout.write("\r\x1b[2K  " + bot + "  " + state.color(frame) + hint);
+    const content = "  " + bot + "  " + state.color(frame) + hint;
+    if (_statusSink) _statusSink(content);
+    else process.stdout.write("\r\x1b[2K" + content);
     i++;
-  }, interval);
+  };
+  if (_statusSink) tick();
+  statusTimer = setInterval(tick, interval);
   // Don't let the spinner keep the event loop alive on exit.
   if (statusTimer.unref) statusTimer.unref();
 }
@@ -373,6 +387,7 @@ export function stopStatus() {
     statusTimer = null;
   }
   if (!process.stdout.isTTY) return;
+  if (_statusSink) { _statusSink(null); return; }
   if (statusFrameLines > 0) {
     // Cursor sits on the bottom rule. Erase it and every line above the panel,
     // leaving the cursor at the start of the (now empty) top line.
@@ -393,7 +408,7 @@ export function stopStatus() {
 export function startGenerationStatus(getTokenCount, { interval = 120, contextWindow = 0 } = {}) {
   if (!process.stdout.isTTY) return;
   if (statusTimer) stopStatus();
-  const width = process.stdout.columns || 80;
+  const width = Math.max(1, (process.stdout.columns || 80) - 1);
   const rule = c.yellow("─".repeat(width));
   const bar = STATES.tokens.frames;     // ▌ █▌ ██▌ ███▌ ████▌
   const clock = STATES.timer.frames;    // ◷ ◶ ◵ ◴
@@ -406,10 +421,13 @@ export function startGenerationStatus(getTokenCount, { interval = 120, contextWi
 
   // Lay down the frame once: top rule, blank content line, bottom rule. The
   // cursor ends on the bottom rule; each tick we hop up to the content line.
-  process.stdout.write(rule + "\n\n" + rule);
-  statusFrameLines = 3;
+  // (With the pinned prompt box, the content goes on Omi's line instead.)
+  if (!_statusSink) {
+    process.stdout.write(rule + "\n\n" + rule);
+    statusFrameLines = 3;
+  }
 
-  statusTimer = setInterval(() => {
+  const tick = () => {
     const elapsedMs = Date.now() - start;
     const elapsed = (elapsedMs / 1000).toFixed(1);
     const tokens = typeof getTokenCount === "function" ? getTokenCount() : 0;
@@ -426,10 +444,13 @@ export function startGenerationStatus(getTokenCount, { interval = 120, contextWi
       "  " + label +
       "   " + c.magenta(`${icon} ${tokens} tokens (${tps} tok/s)`) +
       "   " + c.gray(`${spin} ${elapsed}s${contextLabel}`);
+    if (_statusSink) _statusSink(content + c.dim("   esc to interrupt"));
     // Save cursor → up to the content line → clear → write → restore.
-    process.stdout.write("\x1b[s\x1b[1A\r\x1b[2K" + content + "\x1b[u");
+    else process.stdout.write("\x1b[s\x1b[1A\r\x1b[2K" + content + "\x1b[u");
     i++;
-  }, interval);
+  };
+  if (_statusSink) tick();
+  statusTimer = setInterval(tick, interval);
   if (statusTimer.unref) statusTimer.unref();
 }
 
