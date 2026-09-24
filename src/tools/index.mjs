@@ -253,8 +253,87 @@ export function commandRisk(command) {
   return { level: "normal", reason: "no high-risk pattern detected" };
 }
 
-// Helper to run a shell command (used by run_shell and run_test)
-function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false }) {
+// Kill a process and everything it started. On Windows killing the shell
+// alone leaves cargo/rustc/node running — and a leftover cargo holds the
+// target/ lock, so the next build blocks on it.
+function killProcessTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
+        .on("error", () => { try { child.kill(); } catch { /* gone */ } });
+    } else {
+      try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    }
+  } catch { /* already gone */ }
+}
+
+// Windows PowerShell 5.1 turns every stderr line of a native program into an
+// error record as soon as the command redirects it (`2>&1`, `*>&1`): the text
+// gets a "cargo : " prefix plus an "At line … NativeCommandError" block, and
+// $? goes false, so `powershell -Command` exits 1 even when the program
+// exited 0. cargo, git, npm and rustc all write normal progress to stderr, so
+// a clean build looked like a failure and the model kept retrying it.
+//
+// The wrapper reports the real exit code: a native program's own exit code
+// wins; a false $? caused only by that stderr wrapping counts as success.
+export function wrapPowerShellCommand(command) {
+  return [
+    "$ProgressPreference = 'SilentlyContinue'",
+    "$global:LASTEXITCODE = $null",
+    command,
+    "$__omniOk = $?",
+    "if ($global:LASTEXITCODE -is [int] -and $global:LASTEXITCODE -ne 0) { exit $global:LASTEXITCODE }",
+    "if (-not $__omniOk) {",
+    "  if ($global:LASTEXITCODE -eq 0 -and $Error.Count -gt 0 -and $Error[0].FullyQualifiedErrorId -eq 'NativeCommandError') { exit 0 }",
+    "  exit 1",
+    "}",
+    "exit 0",
+  ].join("\n");
+}
+
+// Strip PowerShell's NativeCommandError decoration back to the program's own
+// text. Returns { text, cleaned }.
+export function cleanNativeCommandErrors(text) {
+  const src = String(text ?? "");
+  if (!/FullyQualifiedErrorId\s*:\s*NativeCommandError/.test(src)) return { text: src, cleaned: false };
+  const lines = src.split(/\r?\n/);
+  const out = [];
+  let cleaned = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^At (line:\d+ char:\d+|[^\n]*:\d+ char:\d+)$/.test(line.trim())) {
+      // Find the end of this error block; only treat it as noise when it is
+      // a NativeCommandError (real PowerShell errors keep their details).
+      let end = i + 1;
+      while (end < lines.length && /^\s*\+/.test(lines[end])) end++;
+      const block = lines.slice(i, end).join("\n");
+      if (/FullyQualifiedErrorId\s*:\s*NativeCommandError/.test(block)) {
+        if (out.length) out[out.length - 1] = out[out.length - 1].replace(/^[\w.\-]+(\.exe)? : /i, "");
+        cleaned = true;
+        i = end - 1;
+        if (lines[end] !== undefined && !lines[end].trim()) i = end;
+        continue;
+      }
+    }
+    out.push(line);
+  }
+  return { text: out.join("\n"), cleaned };
+}
+
+const NATIVE_STDERR_NOTE =
+  "[note: PowerShell labels a native program's stderr as errors when it is redirected. " +
+  "That text is the program's normal output (cargo/git/npm write progress there) — judge success by the exit code, " +
+  "and don't add 2>&1: stderr is already captured.]";
+
+// Helper to run a shell command (used by run_shell, run_test, deps, lint…).
+//
+// Asynchronous on purpose. The old spawnSync blocked Omi's event loop for the
+// whole run — up to the timeout: no spinner, no Esc, no Ctrl-C, a frozen
+// screen during every long build. Now the command runs in the background,
+// Esc (the turn's abort signal) or the timeout kills the whole process tree,
+// and stdin is closed so nothing can sit waiting for input.
+function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false, signal = null }) {
   const risk = commandRisk(command);
   if (dry_run) {
     return [
@@ -274,20 +353,79 @@ function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, d
   }
   const isWin = process.platform === "win32";
   const shell = isWin ? "powershell.exe" : "/bin/sh";
-  const args = isWin ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command];
-  const r = spawnSync(shell, args, {
-    encoding: "utf8",
-    timeout: timeout_ms,
-    maxBuffer: 1024 * 1024 * 16,
-    cwd: process.cwd(),
+  // Plain -Command, not -EncodedCommand: the encoded form makes Windows
+  // PowerShell serialize the error stream as "#< CLIXML" XML.
+  const args = isWin
+    ? ["-NoProfile", "-NonInteractive", "-Command", wrapPowerShellCommand(command)]
+    : ["-c", command];
+  const MAX_BYTES = 1024 * 1024 * 16;
+
+  return new Promise((resolveRun) => {
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    let spawnError = null;
+    let exitCode = null;
+
+    let child;
+    try {
+      child = spawn(shell, args, {
+        cwd: process.cwd(),
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        detached: !isWin, // own process group, so the whole tree can be killed
+      });
+    } catch (e) {
+      resolveRun(clip(`[spawn error: ${e.message}]\n[exit code: null]`));
+      return;
+    }
+
+    const take = (which) => (chunk) => {
+      const s = chunk.toString("utf8");
+      if (stdout.length + stderr.length + s.length > MAX_BYTES) { truncated = true; return; }
+      if (which === "out") stdout += s; else stderr += s;
+    };
+    child.stdout.on("data", take("out"));
+    child.stderr.on("data", take("err"));
+
+    const timer = setTimeout(() => { timedOut = true; killProcessTree(child); }, Math.max(1, Number(timeout_ms) || 120000));
+    const onAbort = () => { aborted = true; killProcessTree(child); };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      let out = "";
+      if (stdout) out += stdout;
+      if (stderr) out += (out ? "\n" : "") + stderr;
+      const { text, cleaned } = isWin ? cleanNativeCommandErrors(out) : { text: out, cleaned: false };
+      out = text.trimEnd();
+      if (cleaned) out += "\n" + NATIVE_STDERR_NOTE;
+      if (truncated) out += "\n[output truncated at 16 MB]";
+      if (spawnError) out += `\n[spawn error: ${spawnError.message}]`;
+      if (timedOut) out += `\n[timeout: command exceeded ${Math.round(timeout_ms / 1000)}s and was stopped, including any programs it started. For long builds pass a larger timeout_ms, or use start_process.]`;
+      if (aborted) out += "\n[interrupted by the user — the command and any programs it started were stopped]";
+      out += `\n[exit code: ${timedOut || aborted ? "null" : (exitCode ?? "null")}]`;
+      resolveRun(clip(out.trim()));
+    };
+
+    child.on("error", (e) => { spawnError = e; finish(); });
+    child.on("close", (code) => { exitCode = code; finish(); });
+    // A grandchild that outlives the shell can keep the pipes open forever;
+    // don't wait on them for more than a moment after the shell itself exits.
+    child.on("exit", (code) => {
+      exitCode = code;
+      setTimeout(finish, 1500).unref?.();
+    });
   });
-  let out = "";
-  if (r.stdout) out += r.stdout;
-  if (r.stderr) out += (out ? "\n" : "") + r.stderr;
-  if (r.error) out += `\n[spawn error: ${r.error.message}]`;
-  if (r.status === null && r.error?.killed) out += "\n[timeout: command exceeded time limit]";
-  out += `\n[exit code: ${r.status ?? "null"}]`;
-  return clip(out.trim());
 }
 
 // Read-only dependency commands per package manager (used by the deps tool).
@@ -697,6 +835,8 @@ export const tools = [
       name: "run_shell",
       description:
         "Run a shell command (PowerShell on Windows) in the cwd and return stdout/stderr. Use for build, test, git, etc. " +
+        "stdout and stderr are both captured — don't add 2>&1 or *>&1 (in PowerShell that turns normal progress output " +
+        "from cargo/git/npm into fake errors). Judge success by the [exit code] line, not by text on stderr. " +
         "The default timeout is 120s — raise timeout_ms for scaffolding and dependency installs " +
         "(npx create-*, npm/pnpm install, cargo build, docker build routinely exceed it); a timeout kills the " +
         "command mid-run and can leave a half-written project directory.",
@@ -1488,7 +1628,7 @@ export const impl = {
     return clip(`${label}:\n${r.stdout.trim()}`);
   },
 
-  deps({ action = "detect", manager, timeout_ms = 120000 }) {
+  async deps({ action = "detect", manager, timeout_ms = 120000 }, context) {
     const detected = detectPackageManagers();
     if (action === "detect") {
       return detected.length
@@ -1501,7 +1641,7 @@ export const impl = {
     if (!commands) throw new Error(`unsupported manager "${mgr}" (known: ${Object.keys(DEPS_COMMANDS).join(", ")})`);
     const command = commands[action];
     if (!command) throw new Error("action must be detect, list, outdated, or audit");
-    return `$ ${command}\n` + runShellCommand({ command, timeout_ms });
+    return `$ ${command}\n` + await runShellCommand({ command, timeout_ms, signal: context?.signal });
   },
 
   async read_many_files({ paths = [], limit_per_file = 400 }) {
@@ -1864,12 +2004,12 @@ export const impl = {
     return clip(out || "(no matches)");
   },
 
-  run_shell({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false }) {
-    return runShellCommand({ command, timeout_ms, allow_unsafe, dry_run });
+  run_shell({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false }, context) {
+    return runShellCommand({ command, timeout_ms, allow_unsafe, dry_run, signal: context?.signal });
   },
 
-  run_test({ command = "npm test", timeout_ms = 120000, allow_unsafe = false, dry_run = false }) {
-    return runShellCommand({ command, timeout_ms, allow_unsafe, dry_run });
+  run_test({ command = "npm test", timeout_ms = 120000, allow_unsafe = false, dry_run = false }, context) {
+    return runShellCommand({ command, timeout_ms, allow_unsafe, dry_run, signal: context?.signal });
   },
 
   async lsp({ action, path: p, line, character }) {
@@ -1934,14 +2074,14 @@ export const impl = {
     return `Renamed across ${files.length} file(s), ${totalEdits} edit(s):\n${summary}`;
   },
 
-  test_coverage({ command, timeout_ms = 300000, dry_run = false }) {
+  async test_coverage({ command, timeout_ms = 300000, dry_run = false }, context) {
     const cmd = command || coverageCommand();
     if (!cmd) return "(could not detect a test stack — pass an explicit coverage command)";
     if (dry_run) return `Would run: ${cmd}\ncwd: ${process.cwd()}`;
-    return `$ ${cmd}\n` + runShellCommand({ command: cmd, timeout_ms });
+    return `$ ${cmd}\n` + await runShellCommand({ command: cmd, timeout_ms, signal: context?.signal });
   },
 
-  lint_check({ fix = false, path: p } = {}) {
+  async lint_check({ fix = false, path: p } = {}, context) {
     // The command is assembled from a fixed whitelist (detected script names
     // and linter invocations), so the only model-influenced part is the path
     // scope — validate it hard before letting it near a shell string.
@@ -1956,10 +2096,10 @@ export const impl = {
     // Same gate as run_shell/run_test: runShellCommand applies the
     // unsafe-command blocklist (commandRisk) before executing — there is no
     // allow_unsafe here, so a blocked pattern is always refused.
-    return `$ ${cmd}\n` + runShellCommand({ command: cmd, timeout_ms: 300000 });
+    return `$ ${cmd}\n` + await runShellCommand({ command: cmd, timeout_ms: 300000, signal: context?.signal });
   },
 
-  security_scan({ scope = "all", path: p = "." }) {
+  async security_scan({ scope = "all", path: p = "." } = {}, context) {
     const sections = [];
 
     if (scope === "all" || scope === "secrets") {
@@ -2001,7 +2141,7 @@ export const impl = {
         for (const mgr of managers) {
           const cmd = DEPS_COMMANDS[mgr]?.audit;
           if (!cmd) continue;
-          sections.push(`Dependency audit (${mgr}) — $ ${cmd}\n` + runShellCommand({ command: cmd, timeout_ms: 180000 }));
+          sections.push(`Dependency audit (${mgr}) — $ ${cmd}\n` + await runShellCommand({ command: cmd, timeout_ms: 180000, signal: context?.signal }));
         }
       }
     }

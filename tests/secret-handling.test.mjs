@@ -168,7 +168,7 @@ const origCwd = process.cwd();
 let report = "";
 try {
   process.chdir(scanDir);
-  report = impl.security_scan({ scope: "secrets", path: "." });
+  report = await impl.security_scan({ scope: "secrets", path: "." });
 } finally {
   process.chdir(origCwd);
 }
