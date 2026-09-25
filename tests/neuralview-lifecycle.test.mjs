@@ -117,6 +117,89 @@ await ok("evicted live nodes don't leave dangling edges in the rendered graph", 
   assert.equal(dangling.length, 0, `dangling edges: ${JSON.stringify(dangling.slice(0, 3))}`);
 });
 
+// ---- tied to Omi's lifetime -------------------------------------------------
+// The view used to keep running until the process was force-killed, open
+// pages never learned Omi had gone, and a half-closed Omi kept the port so
+// the next one silently moved to another.
+
+// An SSE client like the browser page; collects the events it receives.
+const sseClient = (port) => new Promise((resolve) => {
+  const events = [];
+  let ended = false;
+  const s = net.connect(port, "127.0.0.1", () => {
+    s.write(`GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n`);
+  });
+  s.on("data", (d) => {
+    for (const m of String(d).matchAll(/data: (\{.*\})/g)) { try { events.push(JSON.parse(m[1])); } catch { /* partial */ } }
+  });
+  s.on("close", () => { ended = true; });
+  setTimeout(() => resolve({ events, get ended() { return ended; }, socket: s }), 200);
+});
+
+await ok("stopping tells open pages Omi closed, ends their stream, frees the port", async () => {
+  nv.stopNeuralView();
+  const st = await nv.startNeuralView({ port: BASE + 8 });
+  const client = await sseClient(st.port);
+  assert.equal(nv.neuralViewClients(), 1, "the page should count as connected");
+  assert.equal(nv.stopNeuralView({ reason: "closed" }), true);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(client.events.some((e) => e.kind === "_shutdown" && e.reason === "closed"), JSON.stringify(client.events.map((e) => e.kind)));
+  assert.equal(client.ended, true, "the page's stream should be closed");
+  assert.equal(await portOpen(st.port), false, "port still bound after stop");
+  assert.equal(nv.neuralViewClients(), 0);
+});
+
+await ok("restart keeps the same port, so open pages reconnect by themselves", async () => {
+  const st = await nv.startNeuralView({ port: BASE + 9 });
+  const client = await sseClient(st.port);
+  const again = await nv.restartNeuralView();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(again.port, st.port);
+  assert.ok(client.events.some((e) => e.kind === "_shutdown" && e.reason === "restart"));
+  assert.equal(await portOpen(st.port), true);
+  nv.stopNeuralView();
+});
+
+await ok("/api/whoami identifies the owning Omi so a port clash can be explained", async () => {
+  const st = await nv.startNeuralView({ port: BASE + 10 });
+  const who = await nv.probeNeuralView(st.port);
+  assert.equal(who.app, "omni-neuralview");
+  assert.equal(who.pid, process.pid);
+  assert.equal(await nv.probeNeuralView(BASE + 11), null, "nothing listening → null");
+  nv.stopNeuralView();
+});
+
+await ok("the view never keeps Omi alive, and dies with it (even on a hard exit)", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const script = `
+    const nv = await import(${JSON.stringify(pathToFileURL(path.join(root, "src/local/neuralview-server.mjs")).href)});
+    await nv.startNeuralView({ port: ${BASE + 12} });
+    console.log("up");
+  `;
+  // No explicit stop and nothing else pending: the process must exit on its own.
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8", timeout: 8000, env: { ...process.env, OMNI_HOME: tmpHome },
+  });
+  assert.equal(r.error?.code, undefined, `process didn't exit by itself (${r.error?.code})`);
+  assert.match(r.stdout, /up/);
+  assert.equal(await portOpen(BASE + 12), false);
+});
+
+await ok("/neuralview status|stop|restart work and bad subcommands show usage", async () => {
+  const { neuralViewCommand } = await import(pathToFileURL(path.join(root, "src/cli/neuralview.mjs")).href);
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  try {
+    await neuralViewCommand("stop");
+    await neuralViewCommand("status");
+    await neuralViewCommand("bogus");
+  } finally { console.log = orig; }
+  const text = lines.join("\n");
+  assert.match(text, /isn't running/);
+  assert.match(text, /usage: \/neuralview \[open\|restart\|stop\|status\]/);
+});
+
 fs.rmSync(tmpHome, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

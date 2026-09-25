@@ -101,7 +101,7 @@ Tab completes `/commands`. `/help` shows this grouped menu with usage strings.
 | Category | Commands |
 |---|---|
 | Session | `/help` `/status` `/clear` `/compact [now]` `/resume` `/cost` `/cwd` `/config` `/version` `/exit` |
-| Agent | `/goal` `/effort` `/route` `/diff` `/memory` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/route` `/diff` `/memory` `/neuralview` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/apikey` `/switch-provider` `/addprovider` `/llama` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
 
@@ -130,6 +130,24 @@ box stays usable while the agent works:
 Set `OMNI_SIMPLE_PROMPT=1` for the plain one-line prompt instead. That's also
 what you get when the terminal has fewer than 12 rows or isn't interactive.
 Bracketed paste is on by default. `OMNI_BRACKET_PASTE=0` turns it off.
+
+### Neural view
+
+`/neuralview` opens a live map of the knowledge base and memory in your
+browser. It pulses as the agent works. It runs only while Omi is open: when
+Omi closes, the tab says so, and it reloads by itself the next time Omi
+starts. If a tab is already open, `/neuralview` brings that tab forward
+instead of opening another one.
+
+| | |
+|---|---|
+| `/neuralview open` | open another tab |
+| `/neuralview restart` | restart it on the same port (open tabs reconnect) |
+| `/neuralview stop` | stop it for this session |
+| `/neuralview status` | port, open tabs, graph size |
+
+It uses port 5678. A second Omi window uses the next free port, and
+`/neuralview` tells you which Omi holds 5678.
 
 ### Goal mode
 

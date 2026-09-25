@@ -55,9 +55,20 @@ export const PAGE = `<!doctype html>
   #panel .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: #8b93b8; font-size: 16px; background: none; border: none; }
   #panel .history { margin-top: 12px; font-size: 11.5px; color: #9aa1c7; white-space: pre-wrap; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+  #offline { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 50;
+    background: rgba(6,8,20,0.78); backdrop-filter: blur(3px); }
+  #offline.show { display: flex; }
+  #offline .card { max-width: 420px; margin: 16px; padding: 22px 26px; border-radius: 14px; text-align: center;
+    background: rgba(20,24,48,0.95); border: 1px solid rgba(255,255,255,0.12); color: #cfd3ec; }
+  #offline h2 { margin: 0 0 8px; font-size: 17px; color: #fff; }
+  #offline p { margin: 0; font-size: 13px; line-height: 1.55; color: #9aa1c7; }
 </style>
 </head>
 <body>
+<div id="offline" role="status" aria-live="polite"><div class="card">
+  <h2 id="offlineTitle">Omi closed</h2>
+  <p id="offlineText">This view comes back by itself the next time you start Omi. You can also close this tab.</p>
+</div></div>
 <canvas id="c"></canvas>
 <div id="hud">
   <div class="panel">
@@ -736,8 +747,32 @@ export const PAGE = `<!doctype html>
   // that actually changed.
   var L0_LABEL = { user: "you sent a message", assistant: "agent replied", tool: "tool result recorded", session_start: "session started", error: "error recorded", skill: "skill applied" };
 
+  // ---- Omi lifecycle: the server stops when Omi closes ----------------------
+  var offline = false; // set once the server has gone away; the next connect reloads
+  function showOffline(title, text) {
+    document.getElementById("offlineTitle").textContent = title;
+    document.getElementById("offlineText").textContent = text;
+    document.getElementById("offline").classList.add("show");
+    document.getElementById("liveDot").style.background = "#f87171";
+    stopThinking();
+  }
+
   function handleActivity(data) {
-    if (data.kind === "_replay_end") { refreshGraph(); return; }
+    if (data.kind === "_shutdown") {
+      offline = true;
+      if (data.reason === "restart") showOffline("Restarting…", "The neural view is restarting and will reconnect in a moment.");
+      else if (data.reason === "stopped") showOffline("Neural view stopped", "Run /neuralview in Omi to start it again. This tab reconnects by itself.");
+      else showOffline("Omi closed", "This view comes back by itself the next time you start Omi. You can also close this tab.");
+      return;
+    }
+    if (data.kind === "_focus") { try { window.focus(); } catch (e) { /* browser decides */ } return; }
+    if (data.kind === "_replay_end") {
+      // Reconnected after Omi went away: it may be a brand-new Omi with a
+      // different graph — start over from a clean page.
+      if (offline) { location.reload(); return; }
+      refreshGraph();
+      return;
+    }
 
     // History replayed from before this tab connected (the server usually
     // ran for a while before /neuralview was opened) — worth showing in the
@@ -874,7 +909,16 @@ export const PAGE = `<!doctype html>
       es.onmessage = function (ev) {
         try { handleActivity(JSON.parse(ev.data)); } catch (e) { /* ignore malformed event */ }
       };
-      es.onerror = function () { document.getElementById("liveDot").style.background = "#f87171"; };
+      // The browser retries a dropped stream by itself (the server asks for a
+      // 2 s retry). Losing it without a "_shutdown" means Omi was killed or
+      // crashed; either way the page reloads once a new Omi answers.
+      es.onerror = function () {
+        if (!offline && es.readyState !== 1) {
+          offline = true;
+          showOffline("Omi isn't running", "Waiting for Omi to start again — this view reconnects by itself.");
+        }
+      };
+      es.onopen = function () { document.getElementById("liveDot").style.background = ""; };
     } catch (e) { /* EventSource unsupported — the page still works, just not live */ }
 
     // Belt-and-suspenders refresh in case an SSE event is missed/dropped.
