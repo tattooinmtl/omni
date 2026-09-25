@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 let pass = 0, fail = 0;
 function ok(label, fn) {
@@ -193,6 +194,30 @@ ok("repair never produces a nonsensical cap", () => {
 });
 
 fs.rmSync(repairHome, { recursive: true, force: true });
+
+// The schema sets additionalProperties: false, so any key the shipped config
+// uses and the schema lacks makes every $schema-aware editor flag it invalid.
+ok("every top-level key in omni.config.json is declared in its schema", () => {
+  const config = JSON.parse(fs.readFileSync(path.join(root, "omni.config.json"), "utf8"));
+  const schema = JSON.parse(fs.readFileSync(path.join(root, "schema", "omni.config.schema.json"), "utf8"));
+  const missing = Object.keys(config).filter((k) => !(k in schema.properties));
+  assert.deepEqual(missing, [], `not in schema: ${missing.join(", ")}`);
+});
+
+// README, prompts/default.md and the /extend skill all point at
+// docs/EXTENDING.md. A `docs/` ignore rule once kept it out of the repo, so
+// every fresh install had a broken link and a model told to read a missing file.
+{
+  const git = (...args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (git("rev-parse", "--git-dir").status !== 0) {
+    console.log("  SKIP docs/EXTENDING.md is tracked and exported (no git checkout)");
+  } else {
+    ok("docs/EXTENDING.md is tracked and not export-ignored", () => {
+      assert.equal(git("ls-files", "docs/EXTENDING.md").stdout.trim(), "docs/EXTENDING.md");
+      assert.doesNotMatch(git("check-attr", "export-ignore", "docs/EXTENDING.md").stdout, /: set$/m);
+    });
+  }
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

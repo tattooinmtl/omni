@@ -964,7 +964,7 @@ async function providerCommand(ctx, arg) {
       const prov = ctx.settings.providers[name];
       if (!prov) { errorLine(`unknown provider "${name}"`); break; }
       if (field === "baseUrl") prov.baseUrl = value;
-      else if (field === "apiKey") prov.apiKey = value;
+      else if (field === "apiKey") setProviderKey(prov, value);
       else { errorLine('field must be "baseUrl" or "apiKey"'); break; }
       await saveSettings(ctx.settings);
       infoLine(`updated provider ${name}.${field} (saved)`);
@@ -975,7 +975,7 @@ async function providerCommand(ctx, arg) {
       const key = keyParts.join(" ").trim();
       if (!prov || !key) { errorLine("usage: /provider login <provider> <apiKey>"); break; }
       if (!ctx.settings.providers[prov]) { errorLine(`unknown provider "${prov}" (add with /provider add)`); break; }
-      ctx.settings.providers[prov].apiKey = key;
+      setProviderKey(ctx.settings.providers[prov], key);
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`logged into provider ${prov} (saved)`);
@@ -985,7 +985,7 @@ async function providerCommand(ctx, arg) {
       const prov = subArg.trim();
       if (!prov) { errorLine("usage: /provider logout <provider>"); break; }
       if (!ctx.settings.providers[prov]) { errorLine(`unknown provider "${prov}"`); break; }
-      ctx.settings.providers[prov].apiKey = "";
+      setProviderKey(ctx.settings.providers[prov], "");
       await saveSettings(ctx.settings);
       infoLine(`logged out of provider ${prov} (API key cleared)`);
       break;
@@ -1000,7 +1000,7 @@ async function providerCommand(ctx, arg) {
       }
       if (!ctx.settings.providers[prov]) { errorLine(`unknown provider "${prov}"`); break; }
       if (!key) { infoLine(`${prov}: ${maskKey(ctx.settings.providers[prov].apiKey)}`); break; }
-      ctx.settings.providers[prov].apiKey = key;
+      setProviderKey(ctx.settings.providers[prov], key);
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`updated API key for ${prov}: ${maskKey(key)} (saved)`);
@@ -1072,7 +1072,10 @@ export function suggestCommand(name) {
 }
 
 export function printHelp(ctx) {
+  // Known categories first, in this order, then any other category a command
+  // declares — so a new category (like "Tools" for /browser) can't be hidden.
   const categories = ["Session", "Agent", "Models & Providers", "Packages & Integrations"];
+  for (const cmd of COMMANDS) if (!categories.includes(cmd.category)) categories.push(cmd.category);
   console.log("");
   for (const cat of categories) {
     console.log(c.bold(`  ${cat}`));

@@ -7,7 +7,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cmdtest-"));
 process.env.OMNI_HOME = home;
 
 const { loadSettings, saveSettings, resolveModel } = await import("../src/core/config.mjs");
-const { COMMANDS, findCommand, dispatchCommand, commandNames } = await import("../src/cli/commands.mjs");
+const { COMMANDS, findCommand, dispatchCommand, commandNames, printHelp } = await import("../src/cli/commands.mjs");
 const { buildConnectRows, buildDisconnectRows, disconnectInteractive, addProviderInteractive } = await import("../src/cli/models.mjs");
 
 let pass = 0;
@@ -169,6 +169,15 @@ await test("/addprovider accepts preset name with apiKey and preserves preset ba
   assert.ok(ctx.settings.providers["minimax.io"]);
   assert.equal(ctx.settings.providers["minimax.io"].baseUrl, "https://api.minimax.io/v1");
   assert.equal(ctx.settings.providers["minimax.io"].apiKey, "sk-test-key-preset");
+});
+
+await test("/help lists every command", async () => {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  try { printHelp({ skills: [] }); } finally { console.log = orig; }
+  const out = lines.join("\n");
+  for (const cmd of COMMANDS) assert.ok(out.includes(cmd.usage), `missing from /help: ${cmd.usage}`);
 });
 
 console.log(`\nAll Tests: ${pass} passed, ${fail} failed\n`);

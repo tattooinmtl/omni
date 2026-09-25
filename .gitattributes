@@ -4,7 +4,10 @@
 # zero skills (no SKILL.md) and no system prompt (no prompts/default.md),
 # quietly falling back to the built-in prompt. .gitignore already keeps
 # internal notes out of the repo, so anything tracked as .md is meant to ship.
-docs/ export-ignore
+# docs/**, not docs/: a directory-level export-ignore prunes the whole folder,
+# and no per-file rule can bring EXTENDING.md (linked from README) back.
+docs/** export-ignore
+docs/EXTENDING.md -export-ignore
 site/downloads/ export-ignore
 agent/ export-ignore
 router/__pycache__/ export-ignore

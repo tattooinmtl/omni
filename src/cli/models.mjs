@@ -2,7 +2,7 @@
 // Every function takes the mutable CLI context `ctx` (see main.mjs).
 
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
-import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar } from "../core/config.mjs";
+import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
 import { listProviderModels, probeModel } from "../core/provider.mjs";
@@ -768,7 +768,7 @@ export async function addProviderInteractive(ctx, arg = "") {
   if (!existing?.apiKey) {
     const key = await askLine(ctx, `API key for ${installed}`, { defaultValue: "" });
     if (key) {
-      ctx.settings.providers[installed].apiKey = key;
+      setProviderKey(ctx.settings.providers[installed], key);
       await saveSettings(ctx.settings);
       infoLine(`saved API key for ${installed}: ${maskKey(key)}`);
     }
@@ -904,7 +904,7 @@ export async function connectInteractive(ctx) {
   if (providerNeedsKeyPrompt(p)) {
     const key = await askLine(ctx, `API key for ${providerName} (Enter to skip)`, { defaultValue: "" });
     if (key) {
-      ctx.settings.providers[providerName].apiKey = key;
+      setProviderKey(ctx.settings.providers[providerName], key);
       await saveSettings(ctx.settings);
       infoLine(`saved API key for ${providerName}: ${maskKey(key)}`);
     } else if (kind === "preset") {

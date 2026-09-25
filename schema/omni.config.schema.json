@@ -99,6 +99,11 @@
           }
         }
       }
+    },
+    "hooks": {
+      "type": "array",
+      "description": "Hook definition files under hooks/ (e.g. scan-now.json). Run by the host harness on their trigger (e.g. SessionStart); Omni itself only lists them here.",
+      "items": { "type": "string" }
     }
   }
 }
