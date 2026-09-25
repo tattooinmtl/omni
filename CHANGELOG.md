@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.5.6 — 2026-09-25
 
-- **Shipped:** this PR · chore/changelog · session `cb62e1a3-538e-4079-8cc4-aa7114a888a0`
+- **Shipped:** [#19](https://github.com/tattooinmtl/omni/pull/19) · merge commit in the PR · chore/changelog · session `cb62e1a3-538e-4079-8cc4-aa7114a888a0`
 - Added this `CHANGELOG.md`, backfilled from the git and PR history.
 - `AGENTS.md` and `CLAUDE.md` are now tracked, so every clone and worktree
   sees the instructions (they were git-ignored and existed in one checkout
