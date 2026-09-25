@@ -27,12 +27,16 @@ Thumbs.db
 .DS_Store
 
 # Internal docs/notes/audits stay local — the public repo ships just the
-# README plus whatever markdown the app actually reads at runtime:
+# README, CHANGELOG, AGENTS/CLAUDE (agent instructions), plus whatever
+# markdown the app actually reads at runtime:
 # the system prompt, SKILL.md for autoDiscoverSkills (and its package-source
 # copies under packages/), and each package's own README.
 docs/*
 *.md
 !/README.md
+!/CHANGELOG.md
+!/AGENTS.md
+!/CLAUDE.md
 !prompts/**/*.md
 !skills/**/*.md
 !packages/**/SKILL.md
