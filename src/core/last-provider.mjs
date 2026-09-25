@@ -27,7 +27,8 @@ import { fileURLToPath } from "node:url";
 
 // Read HOME dynamically (per call) so tests that change process.env.OMNI_HOME
 // between cases still work, and so an `omni --home <path>` style flag (if
-// added later) takes effect without re-importing this module.
+// added later) takes effect without re-importing this module. OMNI_HOME is
+// shell-only — loadDotEnv skips it — so this always agrees with config HOME.
 function filePath() {
   // fileURLToPath, not `new URL(...).pathname` — a URL pathname is
   // percent-encoded, so an install under "C:\Program Files\..." resolved to

@@ -348,6 +348,11 @@ function loadDotEnv() {
       const eq = t.indexOf("=");
       if (eq === -1) continue;
       const key = t.slice(0, eq).trim();
+      // HOME is resolved at import, before any .env is read, so an OMNI_HOME
+      // here could never move settings — but last-provider.mjs reads
+      // process.env.OMNI_HOME per call and would follow it, splitting state
+      // across two folders. OMNI_HOME is shell-only.
+      if (key === "OMNI_HOME") continue;
       let val = t.slice(eq + 1).trim();
       if (
         (val.startsWith('"') && val.endsWith('"')) ||
