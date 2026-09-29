@@ -8,6 +8,16 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.7 — 2026-09-28
+
+- **Shipped:** this PR · — · minimax-m3.1-flash-preview · session `01a0ea7f-d30c-7033-a39f-f9b4d2d9c8ab`
+- MiniMax (`minimax.io`) now ships `MiniMax-M3.1-Flash-Preview` as
+  `minimax.io/m3.1-flash-preview`. That is the published API id (1,000,000
+  token context, image input). The output cap is 128000, the same verified
+  ceiling as M3, which stays under the API's 524288 max_tokens limit.
+- Tests: `minimax` asserts the shipped id, context, vision flag, and output
+  cap. `context-probe` pins the 1M family window for this id.
+
 ## 3.5.6 — 2026-09-25
 
 - **Shipped:** [#19](https://github.com/tattooinmtl/omni/pull/19) · merge commit in the PR · chore/changelog · session `cb62e1a3-538e-4079-8cc4-aa7114a888a0`

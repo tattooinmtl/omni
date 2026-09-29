@@ -265,6 +265,19 @@ export const DEFAULT_SETTINGS = {
       // on a long edit/refactor session.
       maxToolIterations: 200,
     },
+    "minimax.io/m3.1-flash-preview": {
+      provider: "minimax.io",
+      // Published id. MiniMax rejects anything else, including the shorter
+      // "M3.1-flash-preview" spelling.
+      id: "MiniMax-M3.1-Flash-Preview",
+      // Same output ceiling as M3. The API 400s max_tokens above
+      // MINIMAX_MAX_OUTPUT_TOKENS (524288) on this line.
+      maxTokens: 128000,
+      contextWindow: 1000000,
+      // Image input. Without this, agent.mjs strips image parts before send.
+      vision: true,
+      maxToolIterations: 200,
+    },
     // maxTokens is the OUTPUT half of the context, not a second budget:
     // prompt + completion must fit the window. These three shipped with
     // maxTokens EQUAL to contextWindow, which asks the provider to reserve the
