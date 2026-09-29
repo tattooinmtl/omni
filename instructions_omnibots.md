@@ -102,26 +102,19 @@ time: starting it again just brings the open window to the front.
 | `got the stop request but is still open` | It's finishing a step, or waiting in its first-run window | Close it from the tray icon → Exit |
 | `usage: /omnibots [start\|status\|stop]` | An unknown word after `/omnibots` (for example `-stop`) | Type it without the dash |
 
-## To do: the same notice on Omni's website
+## Omni's website
 
-The OmniBots site (https://omnibots.globalwarningnetworks.com) now has a **Works with Omni** section. It links to
-https://omni.globalwarningnetworks.com, explains how the two work together, and says to install Omni first. Omni's
-site (`website/index.html` here, deployed separately; `website/` isn't in git) should get the matching notice:
+The OmniBots site has a **Works with Omni** section. Omni's page (`website/index.html` in this checkout; `website/`
+is not in git and FastComet serves the public copy) now has the matching notice:
 
-- **A header link** "OmniBots ↗" to https://omnibots.globalwarningnetworks.com.
-- **A short section, "Works with OmniBots",** saying:
-  - OmniBots is a desktop app where Omi, a boss bot, builds a team of worker bots and gets a job done, with every
-    result checked and your approval before anything risky.
-  - It uses the AI provider keys and models you already set up in Omni.
-  - Omni starts it: `/omnibots` (also `/omnibots status` and `/omnibots stop`).
-  - Both live side by side in your user folder, `~\.omni` and `~\.omnibots`.
-  - **Install Omni first, then OmniBots.**
-- **The OmniBots install line**, with a Copy button like Omni's own:
+- Header and footer link **OmniBots ↗** to https://omnibots.globalwarningnetworks.com.
+- Section **Works with OmniBots** (`#omnibots`): what Omi's team does, that it uses Omni's keys, `/omnibots`,
+  `/omnibots status` and `/omnibots stop`, the folders `~\.omni` and `~\.omnibots`, and **install Omni first**.
+- The OmniBots install line, with its own Copy button:
   `irm https://raw.githubusercontent.com/tattooinmtl/Omnibots/master/install.ps1 | iex`
-- **A link** "More about OmniBots" to https://omnibots.globalwarningnetworks.com.
+- **More about OmniBots** links to https://omnibots.globalwarningnetworks.com.
 
-Match the site's existing look (the same card and code-block styles as its install section), check that it has no
-sideways scroll at phone width, then redeploy the site.
+A git push does not publish that page. Upload `website/` to FastComet for omni.globalwarningnetworks.com.
 
 ## Rules to keep
 
