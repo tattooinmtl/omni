@@ -8,9 +8,19 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.9 — 2026-09-29
+
+- **Shipped:** this PR · — · omnibots-home-default · session `b7a22d57-e356-429c-a191-a55340019974`
+- `/omnibots` now looks for OmniBots in `~/.omnibots` first, where the
+  OmniBots installer puts it (next to `~/.omni`), then `C:\omnibots`, then
+  `%LOCALAPPDATA%\OmniBots`. `OMNIBOTS_DIR` still wins when set, and a
+  folder without OmniBots is named in the error.
+- Tests: `omnibots-launcher` picks `~/.omnibots` without `OMNIBOTS_DIR`, and
+  a set `OMNIBOTS_DIR` without OmniBots is refused.
+
 ## 3.5.8 — 2026-09-28
 
-- **Shipped:** this PR · — · omnibots-launcher · session `b7a22d57-e356-429c-a191-a55340019974`
+- **Shipped:** [#21](https://github.com/tattooinmtl/omni/pull/21) · f98efd1 · omnibots-launcher · session `b7a22d57-e356-429c-a191-a55340019974`
 - New `/omnibots` command starts the OmniBots desktop app (Omi and its bot
   team, in the system tray), or brings it to the front when it's already
   running. `/omnibots status` and `/omnibots stop` check or close it.

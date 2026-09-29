@@ -7,11 +7,13 @@
 //   3. every python on PATH that can import OmniBots' dependencies
 // The one that works is remembered per OmniBots folder (omnibots-launcher.json next to this file). When none works,
 // a venv is made in <OmniBots folder>\.venv and the project installed into it (once, a minute or two).
-// The OmniBots folder: env OMNIBOTS_DIR, else C:\omnibots.
+// The OmniBots folder: env OMNIBOTS_DIR, else the first with the code of ~/.omnibots (the installer's default, next to
+// ~/.omni), C:\omnibots, %LOCALAPPDATA%\OmniBots.
 // OmniBots is single-instance: starting it again brings the running window to the front.
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,11 +23,18 @@ const DEPS_PROBE = "import PySide6, keyring, httpx, pydantic, sys; assert sys.ve
 const STARTING = "OmniBots is open but still finishing its start. On a first run it asks you to pick its output folder: " +
   "look for its window (or click the tray icon).";
 
-function omnibotsDir() {
-  const dir = process.env.OMNIBOTS_DIR || "C:\\omnibots";
-  if (!fs.existsSync(path.join(dir, "omnibots", "__main__.py"))) {
-    throw new Error(`no OmniBots checkout at ${dir} (set OMNIBOTS_DIR to its folder)`);
+const hasCode = (dir) => fs.existsSync(path.join(dir, "omnibots", "__main__.py"));
+
+export function omnibotsDir() {
+  if (process.env.OMNIBOTS_DIR) {                    // set by the user: that folder or nothing
+    const dir = process.env.OMNIBOTS_DIR;
+    if (!hasCode(dir)) throw new Error(`no OmniBots checkout at ${dir} (set OMNIBOTS_DIR to its folder)`);
+    return dir;
   }
+  // the installer's home (~/.omnibots, next to ~/.omni), then a clone at C:\omnibots, then the old install folder
+  const tried = [path.join(os.homedir(), ".omnibots"), "C:\\omnibots", path.join(process.env.LOCALAPPDATA || "", "OmniBots")];
+  const dir = tried.find(hasCode);
+  if (!dir) throw new Error(`no OmniBots checkout in ${tried.join(", ")} (install it, or set OMNIBOTS_DIR to its folder)`);
   return dir;
 }
 
