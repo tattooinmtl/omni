@@ -17,10 +17,24 @@ async function ok(label, fn) {
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z]:)/, "$1"));
 const root = path.join(here, "..");
-const ext = (await import(pathToFileURL(path.join(root, "extensions", "omnibots-launcher.js")).href)).default;
+const mod = await import(pathToFileURL(path.join(root, "extensions", "omnibots-launcher.js")).href);
+const ext = mod.default;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "omni-omnibots-launcher-"));
-const saved = { dir: process.env.OMNIBOTS_DIR, path: process.env.PATH, local: process.env.LOCALAPPDATA };
+const saved = { dir: process.env.OMNIBOTS_DIR, path: process.env.PATH, local: process.env.LOCALAPPDATA,
+                profile: process.env.USERPROFILE };
+
+await ok("without OMNIBOTS_DIR, ~/.omnibots (the installer's home, next to ~/.omni) is used; OMNIBOTS_DIR wins", () => {
+  const profile = path.join(tmp, "user");
+  fs.mkdirSync(path.join(profile, ".omnibots", "omnibots"), { recursive: true });
+  fs.writeFileSync(path.join(profile, ".omnibots", "omnibots", "__main__.py"), "");
+  delete process.env.OMNIBOTS_DIR;
+  process.env.USERPROFILE = profile;                  // os.homedir() on Windows
+  assert.equal(mod.omnibotsDir(), path.join(profile, ".omnibots"));
+  process.env.OMNIBOTS_DIR = path.join(profile, "elsewhere");
+  assert.throws(() => mod.omnibotsDir(), /no OmniBots checkout at .*elsewhere/);
+  process.env.USERPROFILE = saved.profile;
+});
 
 await ok("exposes start, status and stop, each with an impl", () => {
   const names = ext.tools.map((t) => t.function.name).sort();
@@ -51,6 +65,7 @@ process.env.OMNIBOTS_DIR = saved.dir ?? "";
 if (saved.dir === undefined) delete process.env.OMNIBOTS_DIR;
 process.env.PATH = saved.path;
 process.env.LOCALAPPDATA = saved.local;
+process.env.USERPROFILE = saved.profile;
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
