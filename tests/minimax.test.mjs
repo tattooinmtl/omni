@@ -146,6 +146,21 @@ await test("every shipped minimax.io model is within the ceiling", () => {
   }
 });
 
+await test("MiniMax-M3.1-Flash-Preview is on the shipped minimax.io list", () => {
+  const m = DEFAULT_SETTINGS.models["minimax.io/m3.1-flash-preview"];
+  assert.ok(m, "missing from DEFAULT_SETTINGS.models");
+  assert.equal(m.provider, "minimax.io");
+  // The API id is case-sensitive. "M3.1-flash-preview" is not a model.
+  assert.equal(m.id, "MiniMax-M3.1-Flash-Preview");
+  assert.equal(m.contextWindow, 1000000);
+  assert.equal(m.vision, true);
+  assert.ok(m.maxTokens > 0 && m.maxTokens <= MINIMAX_MAX_OUTPUT_TOKENS);
+  const resolved = resolveModel(DEFAULT_SETTINGS, "minimax.io/m3.1-flash-preview");
+  assert.equal(resolved.id, "MiniMax-M3.1-Flash-Preview");
+  assert.equal(resolved.contextWindow, 1000000);
+  assert.equal(resolved.vision, true);
+});
+
 await test("a saved over-cap maxTokens is repaired on load", async () => {
   writeLegacySettings();
   const s = await loadSettings();

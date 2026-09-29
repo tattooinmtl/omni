@@ -164,6 +164,7 @@ await test("familyContextWindow covers the new provider presets", () => {
   // catches it before a user does.
   const cases = [
     ["MiniMax-M3", 1000000],
+    ["MiniMax-M3.1-Flash-Preview", 1000000],
     ["MiniMax-M2", 1000000],
     ["minimax-m3-preview", 1000000],
     ["kimi-k2-0711-preview", 262144],
