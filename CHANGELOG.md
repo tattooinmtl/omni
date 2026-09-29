@@ -8,6 +8,19 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.12 — 2026-09-29
+
+- **Shipped:** this PR · — · website-omnibots-notice · session `01a0eda3-bc15-7ca1-aba3-6ba8cc04d497`
+- Omni's local website (`website/index.html`, not in git) now has the matching
+  notice: header and footer **OmniBots ↗**, a **Works with OmniBots** section,
+  the OmniBots PowerShell install line with its own Copy button, and a link to
+  omnibots.globalwarningnetworks.com. Install Omni first, then OmniBots. The
+  two folders are `~\.omni` and `~\.omnibots`.
+- `instructions_omnibots.md` records that notice as done. Publishing the page
+  is still a FastComet upload; a push does not deploy `website/`.
+- The offline banner fallback is v3.5.12. `.playwright-mcp/` and `*.bak-*`
+  stay ignored so those local files do not block the installer's next update.
+
 ## 3.5.11 — 2026-09-29
 
 - **Shipped:** this PR · — · omnibots-instructions · session `b7a22d57-e356-429c-a191-a55340019974`

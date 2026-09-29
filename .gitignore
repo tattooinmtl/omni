@@ -67,6 +67,11 @@ OmniV4/
 
 # Test artifacts (e.g. browser_screenshot output during regression runs)
 *.png
+
+# Local agent leftovers. The installer refuses to update a dirty tree, so these
+# must stay ignored or the next release never applies.
+.playwright-mcp/
+*.bak-*
 evil.com.png
 # User's live installation state (real settings, sessions, memory, atom log,
 # update-check cache) — never committed. See src/core/config.mjs HOME = OMNI_HOME.
