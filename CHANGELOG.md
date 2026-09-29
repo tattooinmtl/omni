@@ -8,9 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.11 — 2026-09-29
+
+- **Shipped:** this PR · — · omnibots-instructions · session `b7a22d57-e356-429c-a191-a55340019974`
+- New `instructions_omnibots.md`: everything `/omnibots` needs to work. It
+  covers OmniBots installed in `%USERPROFILE%\.omnibots` next to `~\.omni`,
+  the launcher, the config line, the command and the skill, how the OmniBots
+  folder and its Python are found, a quick test, what each launcher message
+  means and what to do about it, and the rules between the two projects.
+- It also holds a to-do for Omni's website: the same "works together, install
+  Omni first" notice that the OmniBots site now has, linking to
+  omnibots.globalwarningnetworks.com.
+- `.gitignore` publishes that one file (`!/instructions_omnibots.md`); other
+  loose markdown stays local as before.
+- The website's offline version fallback was back at v2.1.4 (the `website/`
+  folder had been reset to the deployed copy); it's v3.5.11 again, so
+  `website-version` passes. The live site needs a redeploy to show it.
+
 ## 3.5.10 — 2026-09-29
 
-- **Shipped:** this PR · — · omnibots-command · session `01a0ed1e-344f-7173-9a50-70c5930b585f`
+- **Shipped:** [#23](https://github.com/tattooinmtl/omni/pull/23) · 31415da · omnibots-command · session `01a0ed1e-344f-7173-9a50-70c5930b585f`
 - `/omnibots` is now in the command list (`/help`, the `/` menu, tab
   completion, and the README), beside `/browser`. `/omnibots` and
   `/omnibots start` start the tray app or bring its window forward.

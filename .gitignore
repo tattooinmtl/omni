@@ -42,6 +42,7 @@ docs/*
 !packages/**/SKILL.md
 !packages/**/README.md
 !docs/EXTENDING.md
+!/instructions_omnibots.md
 
 # Website is a separate deployable static site with its own git history —
 # never tracked inside the app repo.
