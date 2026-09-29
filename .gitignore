@@ -75,3 +75,5 @@ omni-home/
 
 # Scratch sub-project — an abandoned experiment, kept on disk but not shipped.
 buddy/
+# the /omnibots launcher's per-PC choice of Python
+extensions/omnibots-launcher.json

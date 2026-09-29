@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.8 — 2026-09-28
+
+- **Shipped:** this PR · — · omnibots-launcher · session `b7a22d57-e356-429c-a191-a55340019974`
+- New `/omnibots` command starts the OmniBots desktop app (Omi and its bot
+  team, in the system tray), or brings it to the front when it's already
+  running. `/omnibots status` and `/omnibots stop` check or close it.
+- The Python for OmniBots is found automatically: the checkout's `.venv`,
+  then the OmniBots installer's venv, then any `python` on PATH that can
+  import OmniBots' dependencies. The choice is remembered per OmniBots folder
+  (`extensions/omnibots-launcher.json`, git-ignored). When none works, it
+  makes `<OmniBots folder>.venv` and installs OmniBots into it.
+- The OmniBots folder is `OMNIBOTS_DIR`, else `C:omnibots`; without one
+  the command says so and starts nothing. Status is a short summary (version,
+  bots, jobs), never provider details.
+- Files: `extensions/omnibots-launcher.js` (registered in
+  `omni.config.json`), `skills/omnibots/SKILL.md`.
+- Tests: `omnibots-launcher` (the three tools load; a missing OmniBots folder
+  is named and nothing starts; with no usable Python, status says so and
+  builds nothing).
+
 ## 3.5.7 — 2026-09-28
 
-- **Shipped:** this PR · — · minimax-m3.1-flash-preview · session `01a0ea7f-d30c-7033-a39f-f9b4d2d9c8ab`
+- **Shipped:** [#20](https://github.com/tattooinmtl/omni/pull/20) · 82d79c3 · minimax-m3.1-flash-preview · session `01a0ea7f-d30c-7033-a39f-f9b4d2d9c8ab`
 - MiniMax (`minimax.io`) now ships `MiniMax-M3.1-Flash-Preview` as
   `minimax.io/m3.1-flash-preview`. That is the published API id (1,000,000
   token context, image input). The output cap is 128000, the same verified
