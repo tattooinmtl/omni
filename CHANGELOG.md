@@ -8,9 +8,27 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.10 — 2026-09-29
+
+- **Shipped:** this PR · — · omnibots-command · session `01a0ed1e-344f-7173-9a50-70c5930b585f`
+- `/omnibots` is now in the command list (`/help`, the `/` menu, tab
+  completion, and the README), beside `/browser`. `/omnibots` and
+  `/omnibots start` start the tray app or bring its window forward.
+  `/omnibots status` checks it. `/omnibots stop` (also `close` and `quit`)
+  closes it. Those run the launcher directly, so they do not spend a model
+  turn, and `omni /omnibots status` works with no provider key.
+- The skill of the same name stays for a plain-language ask ("start
+  omnibots"). A typed `/omnibots` hits the command, and `/help` lists it once.
+- The launcher still talks to OmniBots with `python -m omnibots`,
+  `python -m omnibots --send status`, and `python -m omnibots --send stop`.
+- Tests: `omnibots-launcher` — the command is on the menu; start, status,
+  stop, open, close, and quit call the matching tool; an unknown subcommand
+  prints the usage line; a same-named skill does not take the slash or show
+  twice in `/help`; a missing launcher is named.
+
 ## 3.5.9 — 2026-09-29
 
-- **Shipped:** this PR · — · omnibots-home-default · session `b7a22d57-e356-429c-a191-a55340019974`
+- **Shipped:** [#22](https://github.com/tattooinmtl/omni/pull/22) · c8b618e · omnibots-home-default · session `b7a22d57-e356-429c-a191-a55340019974`
 - `/omnibots` now looks for OmniBots in `~/.omnibots` first, where the
   OmniBots installer puts it (next to `~/.omni`), then `C:\omnibots`, then
   `%LOCALAPPDATA%\OmniBots`. `OMNIBOTS_DIR` still wins when set, and a

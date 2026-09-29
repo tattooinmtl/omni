@@ -30,7 +30,7 @@ import { detectContextWindow } from "../core/context.mjs";
 import { stopNeuralView } from "../local/neuralview-server.mjs";
 import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
-import { dispatchCommand, commandNames, commandMenu } from "./commands.mjs";
+import { dispatchCommand, commandNames, commandMenu, slashKind } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
@@ -180,8 +180,12 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     ? Object.assign(new Writable({ write(_chunk, _enc, cb) { cb(); } }), { isTTY: true })
     : process.stdout;
 
-  // Tab completion: slash commands + skill commands.
-  const completions = () => [...commandNames(), ...ctx.skills.map((s) => s.command)];
+  // Tab completion: slash commands, then skills that don't reuse a command name.
+  const completions = () => {
+    const names = commandNames();
+    const taken = new Set(names.map((n) => n.toLowerCase()));
+    return [...names, ...ctx.skills.map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
+  };
   const rl = readline.createInterface({
     input: rlInput,
     output: rlOutput,
@@ -393,8 +397,10 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     if (/\s/.test(body)) return []; // arguments started — hide the menu
     const prefix = body.toLowerCase();
     const cmds = commandMenu(prefix).map((r) => ({ usage: r.usage, summary: r.summary }));
+    const taken = new Set(commandNames().map((n) => n.toLowerCase()));
     const skills = ctx.skills
       .filter((s) => s.command.slice(1).toLowerCase().startsWith(prefix))
+      .filter((s) => !taken.has(s.command.toLowerCase()))
       .map((s) => ({ usage: s.command, summary: s.description || "skill" }));
     return [...cmds, ...skills];
   }
@@ -630,8 +636,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       const cmdName = parts[0].slice(1);
       const arg = parts.slice(1).join(" ");
 
-      // Skill commands (from skills/*/SKILL.md) run a turn with skill instructions.
-      if (ctx.skillByCommand.has(parts[0])) {
+      // Skills run a turn with their instructions. A built-in of the same name
+      // wins (slashKind), so /omnibots hits the launcher, not the model.
+      if (slashKind(ctx, commandLine) === "skill") {
         await applySkill(ctx.skillByCommand.get(parts[0]), arg, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
         await runAgentTurns();
         return showPrompt();

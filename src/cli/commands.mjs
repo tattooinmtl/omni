@@ -42,6 +42,7 @@ import {
 import { llamaCommand } from "./llama-cmd.mjs";
 import { hardwareCommand } from "./hardware-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
+import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
 
@@ -839,6 +840,11 @@ export const COMMANDS = [
     summary: "inspect or control the headless browser session (browser_* tools)",
     handler: (ctx, arg) => runBrowserCommand(ctx, arg),
   },
+  {
+    name: "omnibots", aliases: [], usage: "/omnibots [start|status|stop]", category: "Tools",
+    summary: "start the OmniBots tray app (Omi and the bot team), or check or close it",
+    handler: (ctx, arg) => runOmnibotsCommand(ctx, arg),
+  },
 
   // ── Packages & Integrations ───────────────────────────────────────────
   {
@@ -1084,13 +1090,28 @@ export function printHelp(ctx) {
     }
     console.log("");
   }
-  if (ctx.skills?.length) {
+  // A skill whose command is also a built-in (today: /omnibots) is already
+  // listed above. Printing it again under Skills would show two different
+  // descriptions for one keystroke.
+  const skillRows = (ctx.skills || []).filter((s) => !findCommand(String(s.command || "").replace(/^\//, "")));
+  if (skillRows.length) {
     console.log(c.bold("  Skills"));
-    for (const s of ctx.skills) console.log(`    ${s.command.padEnd(46)} ${c.dim(s.description)}`);
+    for (const s of skillRows) console.log(`    ${s.command.padEnd(46)} ${c.dim(s.description)}`);
     console.log("");
   }
   console.log(c.dim("  Multi-line: end a line with \\ to continue. Tab completes /commands. Anything else goes to the agent."));
   console.log("");
+}
+
+// How a typed slash line is routed. A registered command wins over a skill
+// of the same name, so /omnibots runs the launcher instead of a model turn.
+// "unknown" still goes to the dispatcher, which prints the suggestion.
+export function slashKind(ctx, commandLine) {
+  const head = String(commandLine || "").trim().split(/\s+/)[0] || "";
+  if (!head.startsWith("/")) return "unknown";
+  if (findCommand(head.slice(1))) return "command";
+  if (ctx?.skillByCommand?.has(head)) return "skill";
+  return "unknown";
 }
 
 // Dispatch a parsed slash command. Returns whatever the handler returns

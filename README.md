@@ -186,7 +186,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Session | `/help` `/image` `/status` `/clear` `/compact [now]` `/resume` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` |
+| Tools | `/browser` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
@@ -331,6 +331,8 @@ uses the next free port, and `/neuralview` tells you which Omi holds 5678.
   `browser_screenshot`, `browser_get_text`, `browser_extract`,
   `browser_evaluate`, … drive a headless Edge/Chrome for JS-rendered pages.
   `/browser` gives manual control.
+- **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
+  `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)
 - **Files:** `move_file`, `copy_file`, `delete_path`, `make_dir`
 - **Interaction and goals:** `ask_user`, `goal_complete`

@@ -26,6 +26,7 @@ import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
 import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
+import { dispatchCommand, findCommand } from "./commands.mjs";
 
 // Every child process the CLI may have started. Safe to call more than once
 // and safe when nothing was ever started — each teardown is a no-op then.
@@ -226,6 +227,16 @@ export async function main(args) {
   // One-shot mode: `omni "do this"` or `omni /skill args` runs once and exits.
   const promptArg = args.filter((a) => !a.startsWith("--")).join(" ").trim();
   if (promptArg) {
+    // /omnibots is a launcher, not a prompt. Run it before the model-key
+    // check so `omni /omnibots status` works with no provider configured.
+    const shotParts = promptArg.trim().split(/\s+/);
+    const shotHead = shotParts[0] || "";
+    if (shotHead.startsWith("/") && findCommand(shotHead.slice(1))?.name === "omnibots") {
+      await dispatchCommand(ctx, shotHead.slice(1), shotParts.slice(1).join(" "), shotParts);
+      stopBackgroundChildren();
+      await shutdown(0);
+      return;
+    }
     if (reportMissingKey(ctx.model)) {
       await shutdown(1);
       return;
