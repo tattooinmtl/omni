@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.13 — 2026-09-29
+
+- **Shipped:** this PR · — · TattooAI/omnibots-config-doctor-289fb1 · session `75b72e75-5bf5-4682-9787-9950350d4ea8`
+- `instructions_omnibots.md` catches up with OmniBots (tattooinmtl/Omnibots#21):
+  - The only folders either app keeps config, keys or data in: `~\.omni`,
+    `~\.omnibots`, `%LOCALAPPDATA%\OmniBots` (Qt's cache only) and the
+    projects folder.
+  - Providers and keys: one shared list in Omni's `settings.json`. OmniBots'
+    Settings → Providers edits only its provider entries. Without Omni,
+    OmniBots uses its own Omni-format copy in `~\.omnibots\config`, with the
+    keys DPAPI-encrypted in its database, never in a text file. A wrong
+    `[omni] install_root` is reported, not silently replaced.
+  - The OmniBots doctor: its reference file (`layout.json`), the ways to run
+    it (every start, Settings → Doctor, asking Omi, the CLI, the installer),
+    what its messages mean, and what it never does (delete, write to
+    `~\.omni`, show a key).
+  - "Rules to keep" no longer says OmniBots only reads Omni's config.
+- Omni's code is unchanged. The offline banner fallback is v3.5.13.
+- The 3.5.11 and 3.5.12 entries now name their PRs and merge commits.
+
 ## 3.5.12 — 2026-09-29
 
-- **Shipped:** this PR · — · website-omnibots-notice · session `01a0eda3-bc15-7ca1-aba3-6ba8cc04d497`
+- **Shipped:** [#25](https://github.com/tattooinmtl/omni/pull/25) · d884d17 · website-omnibots-notice · session `01a0eda3-bc15-7ca1-aba3-6ba8cc04d497`
 - Omni's local website (`website/index.html`, not in git) now has the matching
   notice: header and footer **OmniBots ↗**, a **Works with OmniBots** section,
   the OmniBots PowerShell install line with its own Copy button, and a link to
@@ -23,7 +43,7 @@ entries were rebuilt from git history).
 
 ## 3.5.11 — 2026-09-29
 
-- **Shipped:** this PR · — · omnibots-instructions · session `b7a22d57-e356-429c-a191-a55340019974`
+- **Shipped:** [#24](https://github.com/tattooinmtl/omni/pull/24) · 94ff286 · omnibots-instructions · session `b7a22d57-e356-429c-a191-a55340019974`
 - New `instructions_omnibots.md`: everything `/omnibots` needs to work. It
   covers OmniBots installed in `%USERPROFILE%\.omnibots` next to `~\.omni`,
   the launcher, the config line, the command and the skill, how the OmniBots

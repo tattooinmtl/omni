@@ -34,9 +34,21 @@ That folder then holds:
   and an install or update never touches it.
 
 It needs **Python 3.12 or newer** and **Git** on the PC. The installer offers to install both with winget if they're
-missing. Run the same line again to update OmniBots.
+missing. Run the same line again to update OmniBots. The installer runs the OmniBots doctor at the end (section 5).
 
 **Check:** `C:\Users\ThePa\.omnibots\omnibots\__main__.py` and `C:\Users\ThePa\.omnibots\.venv\Scripts\python.exe` exist.
+
+**The only folders either app keeps config, keys or data in:**
+
+| Folder | What's there |
+|---|---|
+| `%USERPROFILE%\.omni` | Omni. `agent\settings.json` (and `.env`) hold the providers and keys **both** apps use |
+| `%USERPROFILE%\.omnibots` | OmniBots: code, `.venv`, `settings.toml`, `db\omnibots.sqlite`, the bots' data, and `config\` only when Omni isn't installed |
+| `%LOCALAPPDATA%\OmniBots` | Only Qt's window cache (`cache\qtpipelinecache-…`) |
+| The projects folder (e.g. `C:\omnibots_output`) | The bots' projects, one folder per goal |
+
+Anything that looks like their config somewhere else (an old `C:\omnibots` copy, an old `%LOCALAPPDATA%\OmniBots`
+install with a database, a loose `%USERPROFILE%\.env`) is reported by the OmniBots doctor and left for you to remove.
 
 ### 2. The launcher and the command are in Omni (Omni 3.5.10 or later)
 
@@ -80,6 +92,45 @@ If none works, it makes `<OmniBots folder>\.venv` and installs OmniBots into it.
 minute or two. The app is then started windowless (`pythonw -m omnibots`). Only one copy of OmniBots runs at a
 time: starting it again just brings the open window to the front.
 
+### 5. Providers and keys: one list, shared (OmniBots 2026-09-29 or later)
+
+**With Omni installed** (install Omni first, then OmniBots), the providers and keys live in Omni's
+`%USERPROFILE%\.omni\agent\settings.json` (and `.env`), and both apps use that one list.
+
+- In Omni: `/apikey`, `/provider` and the rest, as always.
+- In OmniBots: **Settings → Providers** adds, edits and removes providers in that same `settings.json`. It only
+  changes provider entries; every other Omni setting in the file stays as it was. A key is written only when you
+  type one, so a key that comes from an environment variable is never copied into the file.
+- Omni sees a change the next time it loads settings; OmniBots within a few seconds.
+
+**Without Omni** (someone installs only OmniBots), OmniBots makes its own copy of Omni's layout in
+`%USERPROFILE%\.omnibots\config`: `settings.json`, `.env` and `omni.config.json`, in Omni's formats, with **no
+keys** in them. The keys are stored in OmniBots' database (`db\omnibots.sqlite`, table `provider_keys`), each one
+encrypted with Windows DPAPI, so only that Windows user on that PC can read them. A key typed into those files is
+moved into the database by the doctor. Install Omni later and OmniBots goes back to Omni's `settings.json`; the
+keys then need adding in Omni.
+
+If OmniBots' `settings.toml` names an Omni folder (`[omni] install_root`) or `OMNI_INSTALL_ROOT` is set, and that
+folder isn't an Omni install, OmniBots reports the error instead of switching to its own copy.
+
+### 6. The OmniBots doctor
+
+The doctor checks everything both apps need, repairs what it safely can, and keeps it that way. Its reference is
+`%USERPROFILE%\.omnibots\omnibots\doctor\layout.json` (explained in `docs\DOCTOR.md` there): the folders above,
+OmniBots' settings and database, Python packages, the provider config and keys, Omni's files (read-only), the
+environment variables, and old copies in other places. It creates and upgrades (the database after a backup),
+**never deletes**, **never writes to `~\.omni`**, and never shows a key.
+
+| How to run it | |
+|---|---|
+| Every OmniBots start | The quick part, quietly (folders, settings, the provider config) |
+| OmniBots → **Settings → Doctor → Run doctor** | Everything; tick *Test provider keys online* to try each key |
+| Ask Omi: "call the doctor" | Omi's `call_doctor` tool |
+| `%USERPROFILE%\.omnibots\.venv\Scripts\python.exe -m omnibots.doctor` | From a terminal (`--no-fix`, `--online`, `--all`, `--json`) |
+| The OmniBots installer | Once, at the end |
+
+The last report is in `%USERPROFILE%\.omnibots\logs\doctor.json`. Omni's own `/doctor` still looks after Omni.
+
 ## Quick test
 
 1. Close Omni fully and open it again.
@@ -87,6 +138,8 @@ time: starting it again just brings the open window to the front.
 3. Run `/omnibots`. It should say **OmniBots started … version 0.3.0** (or newer) and name
    `C:\Users\ThePa\.omnibots\.venv\Scripts\python.exe`. The OmniBots icon appears in the tray.
 4. Run `/omnibots status` for the short status, then `/omnibots stop`, which should say **OmniBots closed**.
+5. In OmniBots, open **Settings → Doctor** and press **Run doctor**. It should report no problems and say the
+   providers come from Omni.
 
 ## When something goes wrong
 
@@ -101,6 +154,15 @@ time: starting it again just brings the open window to the front.
 | `didn't answer within 30 s` | It was launched, but didn't reply | Check the tray, and the log in `%USERPROFILE%\.omnibots\logs\app.log` |
 | `got the stop request but is still open` | It's finishing a step, or waiting in its first-run window | Close it from the tray icon → Exit |
 | `usage: /omnibots [start\|status\|stop]` | An unknown word after `/omnibots` (for example `-stop`) | Type it without the dash |
+
+| OmniBots says (Settings → Doctor) | What it means | What to do |
+|---|---|---|
+| `no provider has a key` | Nothing to think with yet | Add a key in Omni (`/apikey`), or in OmniBots → Settings → Providers |
+| `Omni was not found (looked in: …)` | `[omni] install_root` or `OMNI_INSTALL_ROOT` names a folder that isn't Omni | Fix or clear that setting, then restart OmniBots |
+| `Omni's omni.config.json doesn't list extensions/omnibots-launcher.js` | `/omnibots` won't work in Omni | Update Omni (3.5.10+), or add the line (section 2) |
+| `keys are sitting in text files` | A key was typed into `~\.omnibots\config\.env` or `settings.json` | Run the doctor with repairs on: it moves them into the encrypted store |
+| `can't be read` (stored keys) | The database came from another PC or Windows user | Type those keys again in Settings → Providers |
+| `… still has settings.toml, db …; OmniBots doesn't use it` | An old copy in another folder | Move anything you need into `~\.omnibots`, then delete the old copy yourself |
 
 ## Omni's website
 
@@ -118,8 +180,12 @@ A git push does not publish that page. Upload `website/` to FastComet for omni.g
 
 ## Rules to keep
 
-- Omni only **starts, checks and stops** OmniBots. It never writes into OmniBots' folders, and OmniBots only reads
-  Omni's config. The two stay separate projects: `tattooinmtl/omni` and `tattooinmtl/Omnibots`.
+- Omni only **starts, checks and stops** OmniBots. It never writes into OmniBots' folders. The two stay separate
+  projects: `tattooinmtl/omni` and `tattooinmtl/Omnibots`.
+- OmniBots reads Omni's config, with one writer: **Settings → Providers**, which edits only the provider entries in
+  Omni's `settings.json` (the shared list, at the user's request, 2026-09-29). Nothing else in `~\.omni` is written
+  by OmniBots, the doctor included.
+- Without Omni, OmniBots' keys are DPAPI-encrypted in its database, never in a text file.
 - The launcher's status is a short summary. It never passes on provider details or keys.
 - `extensions/omnibots-launcher.json` holds paths from this PC. It stays git-ignored.
 
