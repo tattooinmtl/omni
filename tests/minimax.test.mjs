@@ -38,7 +38,7 @@ const {
 } = await import(u("core/config.mjs"));
 const {
   resolveProviderAlias, defaultMaxTokensFor, maxTokensForFetched,
-  FALLBACK_MAX_TOKENS, PROVIDER_PRESETS,
+  FALLBACK_MAX_TOKENS, PROVIDER_PRESETS, providerModelRows,
 } = await import(u("cli/models.mjs"));
 
 // A settings.json in the shape the bug produced: both providers, models on
@@ -159,6 +159,20 @@ await test("MiniMax-M3.1-Flash-Preview is on the shipped minimax.io list", () =>
   assert.equal(resolved.id, "MiniMax-M3.1-Flash-Preview");
   assert.equal(resolved.contextWindow, 1000000);
   assert.equal(resolved.vision, true);
+});
+
+await test("/model lists m3.1-flash-preview although MiniMax's /models omits it", () => {
+  // What api.minimax.io/v1/models actually returned on 2026-10-11: no preview.
+  const live = ["MiniMax-M2", "MiniMax-M2.7", "MiniMax-M3"];
+  const rows = providerModelRows(DEFAULT_SETTINGS, "minimax.io", live);
+  const flash = rows.find((r) => r.id === "MiniMax-M3.1-Flash-Preview");
+  assert.ok(flash, "configured preview model missing from the picker rows");
+  assert.equal(flash.key, "minimax.io/m3.1-flash-preview", "must reuse the configured key, not mint a duplicate");
+  // Live ids still come through once each; the configured m3 (same id) isn't doubled.
+  assert.equal(rows.filter((r) => r.id === "MiniMax-M3").length, 1);
+  for (const id of live) assert.ok(rows.some((r) => r.id === id), id);
+  // Other providers' models stay out.
+  assert.ok(rows.every((r) => !r.key.startsWith("openai/")));
 });
 
 await test("a saved over-cap maxTokens is repaired on load", async () => {

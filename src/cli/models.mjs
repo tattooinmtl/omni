@@ -173,6 +173,24 @@ export function modelHealthLabel(ctx, key) {
   return c.yellow(" [unavailable]");
 }
 
+// The rows the picker offers for one provider: its live /models list, plus
+// every configured model on that provider the list leaves out. Providers don't
+// always advertise what they serve — MiniMax's /v1/models omits
+// MiniMax-M3.1-Flash-Preview, which made minimax.io/m3.1-flash-preview
+// impossible to pick from /model even though it ships in the defaults.
+// Configured extras keep their own key, so no duplicate entry is saved.
+export function providerModelRows(settings, provKey, liveIds) {
+  const rows = liveIds.map((id) => ({ id, key: modelKeyFor(provKey, id) }));
+  const seen = new Set(liveIds);
+  const extras = [];
+  for (const [key, m] of Object.entries(settings.models || {})) {
+    if (m?.provider !== provKey || !m.id || seen.has(m.id)) continue;
+    seen.add(m.id);
+    extras.push({ id: m.id, key });
+  }
+  return [...rows, ...extras].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "" } = {}) {
   const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
   const provider = ctx.settings.providers[provKey];
@@ -194,8 +212,9 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     ids.sort((a, b) => a.localeCompare(b));
   }
   const q = String(filter || "").toLowerCase();
-  const shown = q ? ids.filter((id) => id.toLowerCase().includes(q)) : ids;
-  ctx.lastFetchedModels = shown.map((id, i) => ({ index: i + 1, provider: provKey, id, key: modelKeyFor(provKey, id) }));
+  const shown = providerModelRows(ctx.settings, provKey, ids)
+    .filter((row) => !q || row.id.toLowerCase().includes(q) || row.key.toLowerCase().includes(q));
+  ctx.lastFetchedModels = shown.map((row, i) => ({ index: i + 1, provider: provKey, ...row }));
   if (save) {
     for (const row of ctx.lastFetchedModels) {
       const existing = ctx.settings.models[row.key] || {};
