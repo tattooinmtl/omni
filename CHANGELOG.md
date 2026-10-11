@@ -8,9 +8,22 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.14 — 2026-10-11
+
+- **Shipped:** this PR · — · TattooAI/add-m3-flash-preview-model-02aa5b · session `5fefff97-2c15-4efa-bb4b-b7680cfef07e`
+- `MiniMax-M3.1-Flash-Preview` (`minimax.io/m3.1-flash-preview`, shipped in
+  3.5.7) now shows in the `/model` picker and in `/models minimax.io`.
+  MiniMax's `/v1/models` doesn't list the preview, and the picker showed only
+  that live list. It now adds every configured model on the provider that the
+  live list leaves out, under its configured key, so no duplicate entry is
+  saved. The fix applies to every provider, not just MiniMax.
+- Tests: `minimax` checks that the picker rows include the preview under
+  `minimax.io/m3.1-flash-preview` when the live list omits it, without
+  doubling `MiniMax-M3`.
+
 ## 3.5.13 — 2026-09-29
 
-- **Shipped:** this PR · — · TattooAI/omnibots-config-doctor-289fb1 · session `75b72e75-5bf5-4682-9787-9950350d4ea8`
+- **Shipped:** [#26](https://github.com/tattooinmtl/omni/pull/26) · 0df3e01 · TattooAI/omnibots-config-doctor-289fb1 · session `75b72e75-5bf5-4682-9787-9950350d4ea8`
 - `instructions_omnibots.md` catches up with OmniBots (tattooinmtl/Omnibots#21):
   - The only folders either app keeps config, keys or data in: `~\.omni`,
     `~\.omnibots`, `%LOCALAPPDATA%\OmniBots` (Qt's cache only) and the
