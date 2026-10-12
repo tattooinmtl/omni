@@ -195,6 +195,48 @@ await ok("invoke_skill prefers the bundled body on a collision", () => {
   assert.match(messages[0].content, /BUNDLED REVIEW/, "must load the bundled body, not the external one");
 });
 
+// The brain-skills index (the one omni.config.json ships pointing at) lists
+// `skills` with paths relative to `source`. Before 3.5.15 only `entries` was
+// read, so that index loaded zero skills — /gauntlet-loop never existed.
+await ok("a brain-skills index ({ source, skills: [relative paths] }) loads", () => {
+  const brain = path.join(fixture, "brain.json");
+  fs.writeFileSync(brain, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    source: path.join(fixture, "skills"),
+    count: 1,
+    nestedCount: 1,
+    skills: [
+      { name: "alpha-widget", path: "alpha-widget", is_nested: false },
+      { name: "beta-gadget", path: "beta-gadget", is_nested: true },
+    ],
+  }));
+  _resetCache();
+  const got = loadScannedSkills({ skillIndex: brain }, []);
+  assert.deepEqual(got.map((s) => s.command).sort(), ["/alpha-widget", "/beta-gadget"]);
+  assert.match(got.find((s) => s.command === "/alpha-widget").body, /ALPHA BODY/);
+});
+
+await ok("a brain-skills index with no source resolves paths beside the index file", () => {
+  const brain = path.join(fixture, "skills", "local-index.json");
+  fs.writeFileSync(brain, JSON.stringify({ skills: [{ name: "alpha-widget", path: "alpha-widget" }] }));
+  _resetCache();
+  const got = loadScannedSkills({ skillIndex: brain }, []);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].command, "/alpha-widget");
+});
+
+// rust-coding's command is /rust. Told to "run the rust-coding skill", models
+// called invoke_skill("/rust-coding") and got "unknown skill".
+await ok("invoke_skill also finds a skill by its name when that differs from its command", () => {
+  _resetCache();
+  const messages = [];
+  const bundled = [...BUNDLED, { name: "rust-coding", command: "/rust", description: "Rust", body: "RUST BODY" }];
+  setSessionCtx({ skills: bundled, project: cfg, messages });
+  const res = impl.invoke_skill({ command: "/rust-coding" });
+  assert.match(res, /Loaded skill "rust-coding"/, res);
+  assert.match(messages[0].content, /RUST BODY/);
+});
+
 await ok("invoke_skill on an unknown command points back at find_skill", () => {
   _resetCache();
   setSessionCtx({ skills: BUNDLED, project: cfg, messages: [] });

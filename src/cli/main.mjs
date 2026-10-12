@@ -26,7 +26,8 @@ import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
 import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
-import { dispatchCommand, findCommand } from "./commands.mjs";
+import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
+import { loadScannedSkills } from "../core/skill-index.mjs";
 
 // Every child process the CLI may have started. Safe to call more than once
 // and safe when nothing was ever started — each teardown is a no-op then.
@@ -66,7 +67,12 @@ export async function main(args) {
   const project = loadProjectConfig();
   const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
   const skills = loadSkills(project);
-  const skillByCommand = new Map(skills.map((s) => [s.command, s]));
+  // Skills from the external index (omni.config.json `skillIndex`) are
+  // typeable too — /gauntlet-loop, /superpowers. They stay out of `skills`
+  // (and so out of the system prompt); loadScannedSkills already drops any
+  // whose command a bundled skill owns, so bundled still wins a clash.
+  const slashSkills = [...skills, ...loadScannedSkills(project, skills)];
+  const skillByCommand = new Map(slashSkills.map((s) => [s.command, s]));
 
   // MCP: register the single `mcp` proxy tool. Connections are lazy.
   const mcpInfo = registerMcpProxy(loadMcpConfig(project));
@@ -199,6 +205,7 @@ export async function main(args) {
     settings,
     project,
     skills,
+    slashSkills,
     skillByCommand,
     loadedExtensions,
     mcpInfo,
@@ -245,6 +252,7 @@ export async function main(args) {
     const firstWord = promptArg.split(/\s+/)[0];
     const skill = skillByCommand.get(firstWord);
     if (skill) {
+      infoLine(skillLoadedLine(skill));
       await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session, { contextMode: ctx.contextMode });
     } else {
       messages.push({ role: "user", content: promptArg });

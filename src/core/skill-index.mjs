@@ -40,12 +40,23 @@ export function skillIndexPath(config) {
   return typeof configured === "string" && configured.trim() ? configured.trim() : null;
 }
 
+// Two index shapes exist in the wild:
+//   scan-now.js:  { entries: [{ name, path }], nested: [...] }  — absolute paths
+//   brain-skills: { source, skills: [{ name, path, is_nested }] } — paths
+//                 relative to `source` (or the index file's own folder)
+// Until 3.5.15 only the first was read, so a brain-skills index (the one
+// omni.config.json points at) silently loaded zero skills.
 function readIndexFile(indexPath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8"));
     const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
     const nested = Array.isArray(parsed?.nested) ? parsed.nested : [];
-    return { entries: [...entries, ...nested], generatedAt: parsed?.generatedAt || null, source: parsed?.source || null };
+    const base = typeof parsed?.source === "string" && parsed.source ? parsed.source : path.dirname(indexPath);
+    const listed = (Array.isArray(parsed?.skills) ? parsed.skills : []).map((s) => ({
+      ...s,
+      path: s?.path ? path.resolve(base, String(s.path)) : "",
+    }));
+    return { entries: [...entries, ...listed, ...nested], generatedAt: parsed?.generatedAt || null, source: parsed?.source || null };
   } catch {
     // Missing or malformed index is the normal case on a machine where the
     // scanner was never installed — stay silent, return nothing.
