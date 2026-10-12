@@ -1424,7 +1424,7 @@ export const tools = [
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Skill command, with or without the leading slash (e.g. '/code-review' or 'code-review')" },
+          command: { type: "string", description: "Skill command or skill name, with or without the leading slash (e.g. '/code-review' or 'code-review')" },
           args: { type: "string", description: "Optional arguments to pass to the skill" },
         },
         required: ["command"],
@@ -1544,9 +1544,14 @@ export const impl = {
     const norm = wanted.startsWith("/") ? wanted : "/" + wanted;
     // Bundled first (they win on a name collision), then anything the
     // scan-now hook indexed from an external folder.
+    // A skill's name can differ from its command (rust-coding → /rust), and
+    // models reach for the name, so match the name after the command.
+    const external = loadScannedSkills(ctx.project, ctx.skills);
+    const byCommand = (s) => s.command === norm;
+    const byName = (s) => "/" + s.name === norm;
     const skill =
-      ctx.skills.find((s) => s.command === norm) ||
-      loadScannedSkills(ctx.project, ctx.skills).find((s) => s.command === norm);
+      ctx.skills.find(byCommand) || external.find(byCommand) ||
+      ctx.skills.find(byName) || external.find(byName);
     if (!skill) return `unknown skill: ${norm}. Call find_skill(query) to list matching commands.`;
     // Push the skill body straight into the live conversation. The REPL's
     // post-turn eviction (evictEphemeralSkillMessages) will drop it once

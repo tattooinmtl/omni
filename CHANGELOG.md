@@ -8,9 +8,35 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.15 — 2026-10-12
+
+- **Shipped:** this PR · — · TattooAI/omni-endpoints-file-eab6e8 · session `cd6afbc1-d61b-4bd2-b852-006fc4d9caa2`
+- Typing a skill now visibly works. A recognised `/command` or `/skill` turns
+  blue in the input box (and in the echoed line), and running a skill prints
+  `▸ skill /rust loaded — rust-coding`. Before, `/rust` ran with no sign it
+  had been picked up.
+- The model is now told the skill's instructions are already loaded, so it no
+  longer calls `invoke_skill` for it. The old wording ("Run the rust-coding
+  skill") sent models to `invoke_skill("/rust-coding")`, which failed because
+  the command is `/rust`; one test run spent 88k tokens recovering, now 21k.
+  With no task after the skill, the model says what the skill does and asks
+  what you want, instead of replying with next to nothing.
+- `invoke_skill` also accepts a skill's name when it differs from its command.
+- The skill index set in `omni.config.json` (`skillIndex`, the brain-skills
+  `skills.json`) actually loads. It lists `skills` with paths relative to
+  `source`, but Omni only read the scan-now `entries` shape, so it loaded zero
+  skills. Its 232 skills are now reachable by `find_skill` and, new, typeable
+  as commands with the `/` menu and Tab: `/gauntlet-loop`, `/superpowers` and
+  the rest. They stay out of the system prompt, and a bundled skill still wins
+  a name clash.
+- Tests: `slash-skills` covers which input is highlighted, the confirmation
+  line, the new skill prompt, and that highlighting leaves the box layout
+  unchanged. `skill-index` covers the brain-skills index shape (with and
+  without `source`) and `invoke_skill` by name.
+
 ## 3.5.14 — 2026-10-11
 
-- **Shipped:** this PR · — · TattooAI/add-m3-flash-preview-model-02aa5b · session `5fefff97-2c15-4efa-bb4b-b7680cfef07e`
+- **Shipped:** [#27](https://github.com/tattooinmtl/omni/pull/27) · `bdbf3ce` · TattooAI/add-m3-flash-preview-model-02aa5b · session `5fefff97-2c15-4efa-bb4b-b7680cfef07e`
 - `MiniMax-M3.1-Flash-Preview` (`minimax.io/m3.1-flash-preview`, shipped in
   3.5.7) now shows in the `/model` picker and in `/models minimax.io`.
   MiniMax's `/v1/models` doesn't list the preview, and the picker showed only

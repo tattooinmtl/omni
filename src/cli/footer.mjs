@@ -47,6 +47,7 @@ export function layoutFooter({
   statusText = "",
   menuLines = [],
   note = "",
+  highlight = 0,                         // leading chars of `line` to draw blue (a recognised /command)
   maxRows = BOX_MAX_ROWS,
 } = {}) {
   const width = Math.max(20, cols - 1);
@@ -79,6 +80,7 @@ export function layoutFooter({
       const isCaret = r === caretRow && j === caretCol;
       if (isCaret) text += `\x1b[7m${ch}\x1b[27m`;
       else if (idx < promptChars.length) text += c.cyan(ch);
+      else if (idx < promptChars.length + highlight) text += c.blue(c.bold(ch));
       else text += ch;
     }
     return c.gray("│") + " " + text + " " + c.gray("│");

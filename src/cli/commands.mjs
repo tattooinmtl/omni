@@ -1114,6 +1114,21 @@ export function slashKind(ctx, commandLine) {
   return "unknown";
 }
 
+// Length of the leading "/word" when it names a real command or skill, else 0.
+// The input box and the echoed line colour that span blue, so you can see a
+// skill was picked up before pressing Enter.
+export function recognizedSlashLength(ctx, line) {
+  const head = String(line || "").split(/\s/)[0] || "";
+  if (head.length < 2) return 0;
+  return slashKind(ctx, head) === "unknown" ? 0 : head.length;
+}
+
+// Printed when a /skill runs, so it never looks like nothing happened.
+export function skillLoadedLine(skill) {
+  const where = skill?.external ? " (from skill index)" : "";
+  return `▸ skill ${skill.command} loaded${where} — ${skill.name}`;
+}
+
 // Dispatch a parsed slash command. Returns whatever the handler returns
 // ({ startTurn, prompt } to run the agent, { closed: true } on exit, or undefined).
 export async function dispatchCommand(ctx, cmdName, arg, parts) {

@@ -30,7 +30,7 @@ import { detectContextWindow } from "../core/context.mjs";
 import { stopNeuralView } from "../local/neuralview-server.mjs";
 import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
-import { dispatchCommand, commandNames, commandMenu, slashKind } from "./commands.mjs";
+import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
@@ -184,7 +184,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   const completions = () => {
     const names = commandNames();
     const taken = new Set(names.map((n) => n.toLowerCase()));
-    return [...names, ...ctx.skills.map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
+    return [...names, ...(ctx.slashSkills || ctx.skills).map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
   };
   const rl = readline.createInterface({
     input: rlInput,
@@ -234,6 +234,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         prompt: multiLine ? "… " : stripAnsi(rl.getPrompt()),
         line,
         cursor: rl.cursor ?? line.length,
+        highlight: multiLine ? 0 : recognizedSlashLength(ctx, line),
         statusText: statusBarText(ctx.model, ctx.session, cols - 1),
         menuLines: formatMenuRows(menuShown, { width: cols, selected: menuSelected, max: MENU_MAX }),
         note,
@@ -398,7 +399,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     const prefix = body.toLowerCase();
     const cmds = commandMenu(prefix).map((r) => ({ usage: r.usage, summary: r.summary }));
     const taken = new Set(commandNames().map((n) => n.toLowerCase()));
-    const skills = ctx.skills
+    const skills = (ctx.slashSkills || ctx.skills)
       .filter((s) => s.command.slice(1).toLowerCase().startsWith(prefix))
       .filter((s) => !taken.has(s.command.toLowerCase()))
       .map((s) => ({ usage: s.command, summary: s.description || "skill" }));
@@ -530,7 +531,12 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     if (!footer) return;
     const lines = String(display).split("\n");
     console.log("");
-    lines.forEach((l, i) => console.log((i === 0 ? c.cyan(PROMPT) : "  ") + c.bold(l)));
+    lines.forEach((l, i) => {
+      // A recognised /command or /skill shows in blue, like it did in the box.
+      const head = i === 0 ? recognizedSlashLength(ctx, l) : 0;
+      const text = head ? c.blue(c.bold(l.slice(0, head))) + c.bold(l.slice(head)) : c.bold(l);
+      console.log((i === 0 ? c.cyan(PROMPT) : "  ") + text);
+    });
   }
 
   // Run one agent turn, then keep going while goal mode queues continuations.
@@ -639,7 +645,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       // Skills run a turn with their instructions. A built-in of the same name
       // wins (slashKind), so /omnibots hits the launcher, not the model.
       if (slashKind(ctx, commandLine) === "skill") {
-        await applySkill(ctx.skillByCommand.get(parts[0]), arg, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
+        const skill = ctx.skillByCommand.get(parts[0]);
+        infoLine(skillLoadedLine(skill));
+        await applySkill(skill, arg, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
         await runAgentTurns();
         return showPrompt();
       }

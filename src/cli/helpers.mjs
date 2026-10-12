@@ -99,6 +99,18 @@ export function evictEphemeralSkillMessages(messages) {
 // the chunks against the most recent user message (the `arg` if present, or
 // the last user message on the stack), keep the top ~3 chunks / ~1500 chars,
 // and stash the full body so `/expand-skill <name>` can restore it.
+// The user turn that accompanies a /<skill>. It says the instructions are
+// already in context: "Run the rust-coding skill" used to send models off to
+// invoke_skill("/rust-coding"), which failed because the command is /rust.
+// With no arguments there is no task yet, so ask for one rather than leaving
+// the model to guess (often a near-empty reply that looked like nothing ran).
+export function skillInvocationPrompt(skill, arg) {
+  const loaded = `The user typed ${skill.command} — the "${skill.name}" skill's instructions are already loaded above; do not call invoke_skill for it.`;
+  return arg
+    ? `${loaded} Follow them for this task: ${arg}`
+    : `${loaded} No task was given with it, so reply briefly: say in a sentence or two what this skill helps with, then ask what the user wants to do with it.`;
+}
+
 export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   rememberSkillBody(skill);
   const contextMode = opts.contextMode || "classic";
@@ -139,9 +151,7 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   const skillMsg = { role: "system", content: systemContent };
   markEphemeralSkill(skillMsg);
   msgs.push(skillMsg);
-  const userMsg = arg
-    ? `Run the "${skill.name}" skill. Arguments: ${arg}`
-    : `Run the "${skill.name}" skill.`;
+  const userMsg = skillInvocationPrompt(skill, arg);
   msgs.push({ role: "user", content: userMsg });
   await sess.append({ type: "skill", skill: skill.name, arg, contextMode });
 }
