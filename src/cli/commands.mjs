@@ -831,9 +831,9 @@ export const COMMANDS = [
     handler: (ctx, arg) => llamaCommand(ctx, "restart", (arg || "").trim()),
   },
   {
-    name: "hardware", aliases: ["hw"], usage: "/hardware [rescan|clear]", category: "Models & Providers",
-    summary: "show the cached hardware profile (cores, VRAM, recommended backend for /llama-start)",
-    handler: (ctx, arg, parts) => hardwareCommand(ctx, parts[1] || ""),
+    name: "hardware", aliases: ["hw"], usage: "/hardware [rescan|clear|set <setting> <value|auto>]", category: "Models & Providers",
+    summary: "show this PC (CPU, GPU, display, power, tools) and the settings Omni chose for it; set overrides one",
+    handler: (ctx, arg, parts) => hardwareCommand(ctx, parts.slice(1).join(" ")),
   },
   {
     name: "browser", aliases: [], usage: "/browser [status|close|navigate <url>|screenshot]", category: "Tools",

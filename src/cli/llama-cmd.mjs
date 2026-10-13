@@ -188,7 +188,8 @@ export async function llamaCommand(ctx, sub, subArg) {
         try { profile = await ensureHardwareProfile(); } catch { /* degrade */ }
       }
       const safety = applyVramSafety({
-        requestedBackend: parsed.backend,
+        // An explicit arg wins, then `/hardware set localBackend`, then the profile.
+        requestedBackend: parsed.backend || ctx.settings?.hardware?.localBackend,
         profile,
         cfg,
         force: parsed.force,

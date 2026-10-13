@@ -329,7 +329,8 @@ uses the next free port, and `/neuralview` tells you which Omi holds 5678.
   `youtube_transcript`, `http_request`
 - **Browser:** `browser_navigate`, `browser_click`, `browser_type`,
   `browser_screenshot`, `browser_get_text`, `browser_extract`,
-  `browser_evaluate`, … drive a headless Edge/Chrome for JS-rendered pages.
+  `browser_evaluate`, … drive a headless Edge/Chrome for JS-rendered pages,
+  with the GPU on when this PC has one.
   `/browser` gives manual control.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
@@ -377,11 +378,21 @@ models directory is `C:\models`; the installer offers to create it.
 /llama-start qwen3 vulkan --force # override the VRAM<6GB CPU fallback
 /llama-stop
 /llama-restart
-/hardware                         # detected cores + VRAM + recommended backend
+/hardware                         # this PC + the settings Omni chose for it
+/hardware set browserGpu off      # override one choice (auto puts it back)
 ```
 
-**Backend choice:** on first boot Omni scans your hardware and caches the
-result in `agent/hardware-profile.json`. With less than 6 GB of VRAM,
+**Fits each PC:** on first launch (and after a hardware change) Omni scans
+the machine: CPU, RAM, every GPU and whether it is a graphics card, a
+built-in iGPU or software-only, display and refresh rate, battery and power
+plan, free disk, and which of python, git, ffmpeg, ollama, docker and a
+browser are installed. It caches the result in `agent/hardware-profile.json`,
+chooses settings from it (browser GPU on or off, local-model backend and
+threads) and gives the agent a short summary of the machine every session,
+so it stops guessing. `/hardware` shows each choice and why;
+`/hardware set <browserGpu|localBackend> <value|auto>` overrides one.
+
+**Backend choice:** With less than 6 GB of VRAM,
 `/llama-start` picks `cpu`; 6 GB or more gets `vulkan`.
 
 - Change the threshold: `settings.llama.gpuMinVramGB` (default 6).

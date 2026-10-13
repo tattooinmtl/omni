@@ -31,23 +31,15 @@ import fs from "node:fs/promises";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { resolveContained } from "./file-tools.js";
+import { browserCandidates } from "../src/local/hardware-profile.mjs";
 
 // Where screenshots land by default. Must match vision-tools.js's readable
 // roots exactly, or read_media_file refuses the file we just wrote.
 const IMAGE_CACHE = path.join(os.homedir(), ".omni", "image-cache");
 
-const BROWSER_CANDIDATES = [
-  process.env.OMNI_BROWSER_EXE,
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files\\Chromium\\Application\\chrome.exe",
-];
-
 // Find an installed browser. Throws with a helpful message if none.
 async function findBrowser() {
-  for (const exe of BROWSER_CANDIDATES) {
-    if (!exe) continue;
+  for (const exe of browserCandidates()) {
     try { await fs.access(exe); return exe; } catch { /* not here */ }
   }
   throw new Error(
@@ -144,7 +136,11 @@ class BrowserSession {
     const userDataDir = path.join(os.tmpdir(), `omni-browser-${process.pid}-${Date.now()}`);
     this.proc = spawn(exe, [
       "--headless=new",
-      "--disable-gpu",
+      // GPU on/off is decided per PC from the hardware profile: main.mjs
+      // exports it as OMNI_BROWSER_GPU, and `/hardware set browserGpu`
+      // overrides it. Unset (scripts and tests that skip the REPL) keeps the
+      // old software-rendering default.
+      ...(process.env.OMNI_BROWSER_GPU === "1" ? [] : ["--disable-gpu"]),
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--no-first-run",

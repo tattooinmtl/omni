@@ -223,21 +223,41 @@ right backend and thread count without spawning subprocesses on every
 launch. A **cheap fingerprint** (arch + core count + rounded totalmem)
 is checked every boot in <5 ms; the full scan (PowerShell +
 `nvidia-smi` → `dxdiag` → `Win32_VideoController` fallback chain for
-VRAM) only re-runs when the fingerprint drifts. Force a re-scan with
-`/hardware rescan` after a GPU swap.
+VRAM) only re-runs when the fingerprint drifts or the profile `schema` is
+older than this Omni. Force a re-scan with `/hardware rescan` after a GPU
+swap. `dxdiag` (~7 s) only runs when `AdapterRAM` sits at its 4 GB ceiling.
+
+The same scan covers the rest of the machine, and
+`deriveSettings(profile, settings.hardware)` turns it into per-PC settings:
+`browserGpu` (on for a discrete or integrated GPU, off for software/VM
+adapters; exported to the browser extension as `OMNI_BROWSER_GPU`) and
+`localBackend`. `/hardware set <key> <value|auto>` writes overrides to
+`settings.hardware`. `summarizeForPrompt()` adds a short "This machine"
+block to the system prompt. On a new install the REPL waits for this first
+scan (a few seconds, capped at 20 s) before the first turn.
 
 ### Profile schema
 
 ```jsonc
 {
+  "schema": 2,
   "scannedAt": "2026-08-26T15:32:11.204Z",
   "platform": "win32", "arch": "x64",
+  "osName": "Microsoft Windows 11 Home",
+  "cpuName": "AMD Ryzen 7 5700U with Radeon Graphics",
   "cpuCores": 8,       // physical
   "cpuThreads": 16,    // logical
   "totalRamGB": 32.0,
   "gpuName": "AMD Radeon(TM) Graphics",
   "gpuVramGB": 3.0,
-  "gpuVramSource": "dxdiag",   // "nvidia-smi" | "dxdiag" | "Win32_VideoController.AdapterRAM"
+  "gpuVramSource": "Win32_VideoController.AdapterRAM", // or "nvidia-smi" | "dxdiag"
+  "gpuKind": "integrated",     // "discrete" | "integrated" | "software" | "virtual" | "unknown"
+  "gpus": [{ "name": "AMD Radeon(TM) Graphics", "kind": "integrated", "refreshHz": 60, "width": 1920, "height": 1080 }],
+  "display": { "width": 1920, "height": 1080, "refreshHz": 60 },
+  "battery": { "present": false, "onBattery": false, "chargePercent": null },
+  "powerPlan": "Balanced",
+  "freeDiskGB": 73.3,
+  "tools": { "python": true, "git": true, "ffmpeg": true, "ollama": false, "docker": false, "nvidia-smi": false, "browser": "msedge" },
   "fingerprint": "…",
   "recommendedBackend": "cpu", // "cpu" or "vulkan"
   "recommendedThreads": 8,
@@ -255,6 +275,10 @@ VRAM) only re-runs when the fingerprint drifts. Force a re-scan with
     "allowLowVram": false,        // set true to always allow Vulkan below the floor
     "threads": 12,                // else profile.recommendedThreads → os.cpus().length
     "extraArgs": ["--flash-attn"] // appended verbatim to llama-server
+  },
+  "hardware": {                   // written by /hardware set; omit a key for auto
+    "browserGpu": "off",          // "on" | "off"
+    "localBackend": "cpu"         // "cpu" | "vulkan" (VRAM floor still applies)
   }
 }
 ```

@@ -8,9 +8,37 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.16 — 2026-10-13
+
+- **Shipped:** this PR · — · TattooAI/omni-web-browser-6536fd · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- Omni now fits itself to the PC it is installed on. The first launch on a
+  new machine (and the first after a hardware change or this upgrade) scans
+  it: CPU name, RAM, free disk, every GPU and whether it is a graphics card,
+  a built-in iGPU, or software-only (VMs, remote desktop), display resolution
+  and refresh rate, battery and power plan, and which of python, git, ffmpeg,
+  ollama, docker and a Chromium browser are installed. Nothing is tuned to
+  one machine; each install reads its own.
+- The agent gets a short "This machine" block in its system prompt every
+  session, with only the warnings that apply: integrated GPU, browser FPS
+  capped by the display, running on battery, under 8 GB RAM, which tools are
+  missing, what size of local model fits. Before, it had to guess.
+- Settings are chosen from the scan. The headless browser now uses the GPU
+  when the PC has a real one (it always ran with `--disable-gpu`, so WebGL
+  and canvas pages rendered in software); VMs and software adapters keep
+  software rendering. `/hardware` lists each choice and why, and
+  `/hardware set <browserGpu|localBackend> <value|auto>` overrides one
+  (saved in `settings.hardware`; `/llama-start` honours `localBackend`).
+- The scan is ~3x faster (12 s → ~4 s here): `dxdiag` only runs when
+  Windows' 32-bit `AdapterRAM` sits at its 4 GB ceiling.
+- Tests: `hardware-profile` covers GPU classification for real adapter
+  names, the Windows scan parser (single GPU, no battery, 59 Hz panels,
+  laptop on battery with iGPU + dGPU, garbage input), settings and prompt
+  summaries for a gaming desktop, a low-RAM laptop on battery and a VM,
+  overrides, stale pre-schema caches, and the browser GPU env export.
+
 ## 3.5.15 — 2026-10-12
 
-- **Shipped:** this PR · — · TattooAI/omni-endpoints-file-eab6e8 · session `cd6afbc1-d61b-4bd2-b852-006fc4d9caa2`
+- **Shipped:** [#28](https://github.com/tattooinmtl/omni/pull/28) · `4c1a127` · TattooAI/omni-endpoints-file-eab6e8 · session `cd6afbc1-d61b-4bd2-b852-006fc4d9caa2`
 - Typing a skill now visibly works. A recognised `/command` or `/skill` turns
   blue in the input box (and in the echoed line), and running a skill prints
   `▸ skill /rust loaded — rust-coding`. Before, `/rust` ran with no sign it
