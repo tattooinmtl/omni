@@ -28,6 +28,13 @@ entries were rebuilt from git history).
   one-liner; a failed download warns without failing the install. The
   website's install section has an "Include the optional runtime pack"
   checkbox that switches the command.
+- Safety: a download is capped at its catalog size (a response that keeps
+  streaming is cut off before it can fill the disk); the pack never
+  overwrites a file in `vendor/` it didn't install; `/runtime remove` only
+  deletes that part's own files inside `vendor/`, whatever `runtime.json`
+  says; npm parts install with `--ignore-scripts`. `OMNI_VENDOR_DIR` is
+  shell-only like `OMNI_HOME`, and the rg / fd / jq lookups honour it.
+  `omni runtime …` waits for the hardware rescan before exiting.
 - Omni puts `vendor/` first on PATH at startup, so every tool and child
   process finds the pack. When ffmpeg is missing, the agent's machine notes
   and `/hardware` point to `/runtime install ffmpeg`.
@@ -36,7 +43,9 @@ entries were rebuilt from git history).
   the install path end to end with injected downloads: checksum mismatch
   and HTTP errors install nothing, an exe and a zip (file found at any
   depth) install and are recorded, removal, and missing files reading as not
-  installed. `all-commands` dispatches `/runtime`.
+  installed, plus the size cap, never overwriting a user's file, and a
+  tampered manifest that can't delete outside `vendor/`. `all-commands`
+  dispatches `/runtime`.
 
 ## 3.5.16 — 2026-10-13
 

@@ -18,12 +18,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
-import { INSTALL_ROOT } from "../paths.mjs";
+import { vendorDir } from "../paths.mjs";
 import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 
-export function vendorDir() {
-  return process.env.OMNI_VENDOR_DIR || path.join(INSTALL_ROOT, "vendor");
-}
+export { vendorDir };
 const manifestPath = () => path.join(vendorDir(), "runtime.json");
 const npmPrefix = () => path.join(vendorDir(), "npm");
 
@@ -85,7 +83,8 @@ export const CATALOG = [
         files: { "fd.exe": "fd.exe" },
       },
     },
-    hint: { darwin: "brew install fd", linux: "sudo apt install fd-find" },
+    // Debian/Ubuntu's fd-find installs the binary as `fdfind`; Omni looks for `fd`.
+    hint: { darwin: "brew install fd", linux: "sudo apt install fd-find && sudo ln -s $(which fdfind) /usr/local/bin/fd" },
   },
   {
     id: "jq",
@@ -187,22 +186,32 @@ export function status({ checkSystem = true } = {}) {
 
 // ── Download + verify ────────────────────────────────────────────────────
 
-export async function downloadVerified(url, dest, sha256, { onProgress, fetchImpl = fetch } = {}) {
+// `maxBytes` (the catalog's size) caps what is written: a wrong or hostile
+// response that keeps streaming is cut off instead of filling the disk
+// before the checksum gets a chance to reject it.
+export async function downloadVerified(url, dest, sha256, { onProgress, fetchImpl = fetch, maxBytes } = {}) {
   const res = await fetchImpl(url, { redirect: "follow", headers: { "User-Agent": "omni-runtime-pack" } });
   if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} for ${url}`);
   const total = Number(res.headers.get("content-length")) || 0;
+  if (maxBytes && total > maxBytes) throw new Error(`download refused: ${path.basename(url)} is ${total} bytes, expected ${maxBytes}`);
   const hash = crypto.createHash("sha256");
   const out = fs.createWriteStream(dest);
   let got = 0;
+  let tooBig = false;
   try {
     for await (const chunk of Readable.fromWeb(res.body)) {
-      hash.update(chunk);
       got += chunk.length;
+      if (maxBytes && got > maxBytes) { tooBig = true; break; }
+      hash.update(chunk);
       if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
       onProgress?.(got, total);
     }
   } finally {
     await new Promise((r) => out.end(r));
+  }
+  if (tooBig) {
+    try { fs.unlinkSync(dest); } catch { /* ignore */ }
+    throw new Error(`download refused: ${path.basename(url)} is larger than the expected ${maxBytes} bytes; nothing was installed`);
   }
   const digest = hash.digest("hex");
   if (digest !== sha256) {
@@ -266,7 +275,9 @@ async function installOne(item, { onProgress, fetchImpl, key } = {}) {
   if (item.npm) {
     fs.mkdirSync(npmPrefix(), { recursive: true });
     const [cmd, pre] = npmCommand();
-    const r = spawnSync(cmd, [...pre, "install", "--prefix", npmPrefix(), "--no-audit", "--no-fund", "--save-exact", ...item.npm], {
+    // --ignore-scripts: no package's install scripts run with the user's
+    // privileges. TypeScript and Pyright need none (they ship prebuilt).
+    const r = spawnSync(cmd, [...pre, "install", "--prefix", npmPrefix(), "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", ...item.npm], {
       encoding: "utf8", windowsHide: true, timeout: 10 * 60 * 1000,
     });
     if (r.status !== 0) throw new Error(`npm install failed: ${(r.stderr || r.error?.message || "").trim().split(/\r?\n/).slice(-3).join(" ")}`);
@@ -279,10 +290,18 @@ async function installOne(item, { onProgress, fetchImpl, key } = {}) {
     throw new Error(`no portable ${item.label} build for ${key || platformKey()}${hint ? ` — install it with: ${hint}` : ""}`);
   }
 
+  // Never overwrite a file in vendor/ the pack didn't put there (a user's own
+  // rg.exe, say): remove() would later delete it. Checked before downloading.
+  const owned = new Set(readManifest()[item.id]?.files || []);
+  const clash = Object.keys(build.files).filter((f) => !owned.has(f) && fs.existsSync(path.join(vdir, f)));
+  if (clash.length) {
+    throw new Error(`${clash.map((f) => path.join(vdir, f)).join(", ")} already exists and wasn't installed by the runtime pack — move it out of vendor/ first`);
+  }
+
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `omni-runtime-${item.id}-`));
   try {
     const archive = path.join(work, path.basename(new URL(build.url).pathname));
-    await downloadVerified(build.url, archive, build.sha256, { onProgress, fetchImpl });
+    await downloadVerified(build.url, archive, build.sha256, { onProgress, fetchImpl, maxBytes: build.size });
     const placed = [];
     if (build.kind === "exe") {
       for (const [dest] of Object.entries(build.files)) {
@@ -354,9 +373,14 @@ export function remove(id) {
   const m = readManifest();
   const rec = m[item.id];
   if (!rec) return { id: item.id, removed: [] };
+  // Only ever delete what this part can have installed, and only inside
+  // vendor/ — runtime.json is a plain file, so its paths aren't trusted.
+  const expected = new Set(item.npm ? ["npm"] : Object.values(item.builds || {}).flatMap((b) => Object.keys(b.files)));
+  const root = path.resolve(vendorDir());
   const removed = [];
   for (const f of rec.files || []) {
-    const p = path.join(vendorDir(), f);
+    const p = path.resolve(root, String(f));
+    if (!expected.has(f) || path.dirname(p) !== root) continue;
     try { fs.rmSync(p, { recursive: true, force: true }); removed.push(f); } catch { /* in use */ }
   }
   delete m[item.id];

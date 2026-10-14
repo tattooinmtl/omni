@@ -31,7 +31,15 @@ function progressLine(item, got, total) {
   process.stdout.write(`\r    ${item.id}: ${mb(got)}${total ? ` of ${mb(total)}` : ""}${pct}   `);
 }
 
-async function runInstall(names) {
+// The hardware profile lists installed tools for the agent; refresh it so the
+// next session knows. In the REPL that runs in the background; the CLI form
+// (`omni runtime …`, ctx null) exits right after, so it waits for the scan.
+async function refreshProfile(ctx) {
+  const p = ensureHardwareProfile({ force: true }).catch(() => { /* next boot rescans */ });
+  if (!ctx) await p;
+}
+
+async function runInstall(ctx, names) {
   let ids;
   try { ids = pack.resolveIds(names); } catch (e) { errorLine(e.message); return false; }
   // A part named explicitly always installs (e.g. to get the pinned version
@@ -55,26 +63,24 @@ async function runInstall(names) {
       else warnLine(`${item.id}: ${r.error}`);
     },
   });
-  // The hardware profile lists installed tools for the agent; refresh it so
-  // the next session knows about what was just added.
-  ensureHardwareProfile({ force: true }).catch(() => { /* next boot rescans */ });
+  await refreshProfile(ctx);
   const failed = results.filter((r) => !r.ok);
   if (!failed.length) infoLine("done — available now; no restart needed.");
   return failed.length === 0;
 }
 
 // Returns true on success so the CLI form can set an exit code.
-export async function runtimeCommand(_ctx, argString) {
+export async function runtimeCommand(ctx, argString) {
   const [sub, ...rest] = String(argString || "").trim().split(/\s+/).filter(Boolean);
   const action = (sub || "").toLowerCase();
   if (!action || action === "list" || action === "status") { printStatus(); return true; }
-  if (action === "install" || action === "add") return runInstall(rest);
+  if (action === "install" || action === "add") return runInstall(ctx, rest);
   if (action === "remove" || action === "uninstall") {
     if (!rest[0]) { errorLine("usage: /runtime remove <name>"); return false; }
     try {
       const r = pack.remove(rest[0]);
       infoLine(r.removed.length ? `removed ${r.id} (${r.removed.join(", ")})` : `${r.id} was not installed`);
-      ensureHardwareProfile({ force: true }).catch(() => {});
+      await refreshProfile(ctx);
       return true;
     } catch (e) { errorLine(e.message); return false; }
   }

@@ -366,6 +366,9 @@ function loadDotEnv() {
       // process.env.OMNI_HOME per call and would follow it, splitting state
       // across two folders. OMNI_HOME is shell-only.
       if (key === "OMNI_HOME") continue;
+      // Same for OMNI_VENDOR_DIR: vendor/ goes on PATH at startup, before
+      // .env is read, so a .env value would apply only half-way.
+      if (key === "OMNI_VENDOR_DIR") continue;
       let val = t.slice(eq + 1).trim();
       if (
         (val.startsWith('"') && val.endsWith('"')) ||

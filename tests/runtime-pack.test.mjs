@@ -112,6 +112,39 @@ if (made.status === 0 && fs.existsSync(zipPath)) {
   console.log("  SKIP zip unpack (this tar can't create zip archives)");
 }
 
+await ok("a download larger than the catalog size is cut off and installs nothing", async () => {
+  const body = Buffer.alloc(4096, 1);
+  const item = { ...testItem({ url: "https://github.com/x/y/releases/download/1/big.exe", sha256: sha(body), size: 1024, kind: "exe", files: { "big.exe": "big.exe" } }), id: "testbig" };
+  // Lying content-length is refused up front…
+  await assert.rejects(pack.installItem(item, { fetchImpl: serve(body), key: "test-key" }), /download refused: .* expected 1024/);
+  // …and a stream with no content-length is cut off once it passes the size.
+  const noLength = async () => new Response(new ReadableStream({ start(c) { c.enqueue(body); c.close(); } }));
+  await assert.rejects(pack.installItem(item, { fetchImpl: noLength, key: "test-key" }), /larger than the expected 1024 bytes/);
+  assert.equal(fs.existsSync(path.join(pack.vendorDir(), "big.exe")), false);
+});
+
+await ok("a file in vendor/ the pack didn't install is never overwritten", async () => {
+  fs.writeFileSync(path.join(pack.vendorDir(), "mine.exe"), "the user's own build");
+  const body = Buffer.from("pack build");
+  const item = { ...testItem({ url: "https://github.com/x/y/releases/download/1/mine.exe", sha256: sha(body), size: body.length, kind: "exe", files: { "mine.exe": "mine.exe" } }), id: "testmine" };
+  await assert.rejects(pack.installItem(item, { fetchImpl: serve(body), key: "test-key" }), /already exists and wasn't installed by the runtime pack/);
+  assert.equal(fs.readFileSync(path.join(pack.vendorDir(), "mine.exe"), "utf8"), "the user's own build");
+});
+
+await ok("remove() ignores tampered manifest paths outside vendor/ and files the part never ships", () => {
+  const outside = path.join(tmp, "precious.txt");
+  fs.writeFileSync(outside, "keep me");
+  fs.writeFileSync(path.join(pack.vendorDir(), "other.exe"), "keep me too");
+  const m = pack.readManifest();
+  m.ripgrep = { version: "15.2.0", files: ["../precious.txt", "other.exe", "rg.exe"] };
+  fs.writeFileSync(path.join(pack.vendorDir(), "runtime.json"), JSON.stringify(m));
+  fs.writeFileSync(path.join(pack.vendorDir(), "rg.exe"), "x");
+  const r = pack.remove("ripgrep");
+  assert.deepEqual(r.removed, ["rg.exe"]);
+  assert.equal(fs.readFileSync(outside, "utf8"), "keep me");
+  assert.equal(fs.existsSync(path.join(pack.vendorDir(), "other.exe")), true);
+});
+
 await ok("a platform with no build points at its package manager instead", async () => {
   const item = { ...pack.CATALOG.find((i) => i.id === "ffmpeg") };
   await assert.rejects(pack.installItem(item, { key: "plan9-mips" }), /no portable ffmpeg/);
