@@ -8,9 +8,39 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.17 — 2026-10-13
+
+- **Shipped:** this PR · — · TattooAI/omni-runtime-pack · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- New optional runtime pack: portable tools Omni's features use, installed
+  into Omni's own `vendor/` folder with no admin rights and nothing
+  system-wide. ffmpeg + ffprobe 9.0.2 (video understanding), ripgrep 15.2.0
+  (fast search / replace / security scan), fd 10.5.0 (`find_files`), jq 1.8.2,
+  and on request language servers (TypeScript 7 + Pyright, for `lsp` and
+  `rename_symbol`). Each download is pinned to a release and checked against
+  the SHA-256 GitHub publishes for it before anything is unpacked; a
+  mismatch installs nothing.
+- `/runtime` shows each part, what it unlocks and whether it is installed
+  (in the pack or already on the PC); `/runtime install` adds ffmpeg,
+  ripgrep, fd and jq, skipping any the PC already has; `/runtime install
+  lsp|all|<names>` and `/runtime remove <name>`. Same as `omni runtime …`
+  outside the REPL. Other platforms get their package-manager command.
+- The installer takes `-WithRuntime`, or `$env:OMNI_RUNTIME = "1"` before the
+  one-liner; a failed download warns without failing the install. The
+  website's install section has an "Include the optional runtime pack"
+  checkbox that switches the command.
+- Omni puts `vendor/` first on PATH at startup, so every tool and child
+  process finds the pack. When ffmpeg is missing, the agent's machine notes
+  and `/hardware` point to `/runtime install ffmpeg`.
+- Tests: `runtime-pack` checks every catalog entry is pinned (GitHub release
+  URL, SHA-256, size; exact npm versions), id resolution, PATH wiring, and
+  the install path end to end with injected downloads: checksum mismatch
+  and HTTP errors install nothing, an exe and a zip (file found at any
+  depth) install and are recorded, removal, and missing files reading as not
+  installed. `all-commands` dispatches `/runtime`.
+
 ## 3.5.16 — 2026-10-13
 
-- **Shipped:** this PR · — · TattooAI/omni-web-browser-6536fd · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- **Shipped:** [#29](https://github.com/tattooinmtl/omni/pull/29) · `254f9f2` · TattooAI/omni-web-browser-6536fd · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
 - Omni now fits itself to the PC it is installed on. The first launch on a
   new machine (and the first after a hardware change or this upgrade) scans
   it: CPU name, RAM, free disk, every GPU and whether it is a graphics card,

@@ -306,6 +306,22 @@ named `local` or `ollama`, **or** its `baseUrl` matches
 `ollama` port or a loopback vLLM server and the same rails apply — no
 config change needed.
 
+## Runtime pack (`src/local/runtime-pack.mjs`)
+
+Portable binaries Omni's tools use, installed on request into
+`<install>/vendor/` (override with `OMNI_VENDOR_DIR`), which `main.mjs` puts
+first on PATH (`addVendorToPath`) so tools and child processes find them with
+no per-tool wiring. `vendor/runtime.json` records what the pack installed.
+
+Each `CATALOG` entry is pinned: a GitHub release URL, the SHA-256 GitHub
+publishes for that asset (`gh api repos/<o>/<r>/releases/tags/<t> --jq
+'.assets[] | [.name, .digest]'`), its size, and which files to take from the
+archive (matched by name at any depth). The download is hashed while it
+streams and refused on mismatch before anything is unpacked. npm parts
+(`lsp`) install exact versions under `vendor/npm` through this Node's own
+`npm-cli.js`, with no shell. To bump a part, change the URL, `sha256`,
+`size` and `version` together; `tests/runtime-pack.test.mjs` checks the shape.
+
 ## Packaging for the registry (`omni-pkg`)
 
 To distribute via `node bin\omni.mjs install <name>` (or `/install`), zip
