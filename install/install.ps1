@@ -32,7 +32,7 @@
 # Version comes from package.json on the branch, so this script and the app can
 # never drift out of sync - there is no hardcoded version to bump by hand.
 #
-# Optional runtime pack (ffmpeg, ripgrep, fd, jq into <install>endor - no
+# Optional runtime pack (ffmpeg, ripgrep, fd, jq into <install>\vendor - no
 # admin rights, checksum-verified) with -WithRuntime, or from the one-liner,
 # which can't pass switches:
 #
@@ -322,7 +322,16 @@ function Initialize-Install([string]$Root) {
 
 # The runtime pack is optional: a failed download must not fail the install.
 function Install-RuntimePack([string]$Root) {
-  Info "Installing the runtime pack (ffmpeg, ripgrep, fd, jq) into $Rootendor"
+  # This script always comes fresh from GitHub, but the Omni it runs against
+  # may not have updated (local changes, -NoUpdate). Before 3.5.17 there is
+  # no `runtime` command, and `omni runtime install` is taken as a one-shot
+  # prompt and sent to the model - so only run it where the command exists.
+  if (-not (Test-Path (Join-Path $Root "src\cli\runtime-cmd.mjs"))) {
+    Write-Warning "Skipping the runtime pack: this Omni ($(Get-LocalVersion $Root)) predates it."
+    Write-Warning "Update Omni first (see the messages above), then run: omni runtime install"
+    return
+  }
+  Info "Installing the runtime pack (ffmpeg, ripgrep, fd, jq) into $Root\vendor"
   Push-Location $Root
   try {
     & node ./bin/omni.mjs runtime install
