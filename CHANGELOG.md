@@ -8,9 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.18 — 2026-10-13
+
+- **Shipped:** this PR · — · TattooAI/omni-runtime-installer-guard · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- Fixed: installing with the runtime option on an Omni that didn't update
+  sent `runtime install` to the model as a chat prompt. The installer
+  always comes fresh from GitHub, but local changes in the install folder
+  stop the update, and Omni before 3.5.17 has no `runtime` command, so
+  `omni runtime install` ran as a one-shot prompt. The installer now skips
+  the pack on such an install and says to update first, then run
+  `omni runtime install`.
+- Fixed: the installer's runtime messages read `<install>endor` — a `\v`
+  in the path had become a control character.
+- Tests: `installer-runtime` runs the real `Install-RuntimePack` from
+  `install.ps1` against a fake pre-3.5.17 install (skipped, nothing run) and
+  a current one (runs `omni runtime install`), and checks shipped text
+  files for stray control characters.
+
 ## 3.5.17 — 2026-10-13
 
-- **Shipped:** this PR · — · TattooAI/omni-runtime-pack · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- **Shipped:** [#30](https://github.com/tattooinmtl/omni/pull/30) · `fdc082a` · TattooAI/omni-runtime-pack · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
 - New optional runtime pack: portable tools Omni's features use, installed
   into Omni's own `vendor/` folder with no admin rights and nothing
   system-wide. ffmpeg + ffprobe 9.0.2 (video understanding), ripgrep 15.2.0
