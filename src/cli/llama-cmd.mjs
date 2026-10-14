@@ -4,7 +4,7 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel } from "../core/config.mjs";
 import * as llama from "../local/llama.mjs";
 import { installProviderPreset } from "./models.mjs";
-import { readCachedProfile, ensureHardwareProfile } from "../local/hardware-profile.mjs";
+import { getHardwareProfileSync, ensureHardwareProfile } from "../local/hardware-profile.mjs";
 
 // Parse "[model] [backend] [--force]" from a /llama-start argument string.
 // Order-tolerant: backend can come before or after model, --force anywhere.
@@ -180,18 +180,24 @@ export async function llamaCommand(ctx, sub, subArg) {
       }
 
       // Backend selection: explicit → hardware profile recommendation → cpu.
-      let profile = readCachedProfile();
+      // Only a fresh profile picks the backend: a stale one (older schema,
+      // changed hardware) may carry the wrong VRAM. Rescan, or degrade to no
+      // profile if that fails.
+      let profile = getHardwareProfileSync();
       if (!profile) {
-        // No cache yet (first ever run before boot refresh finished) —
-        // do a synchronous scan so /llama-start still makes an informed pick.
-        infoLine("no hardware profile cached yet — scanning (one-time)…");
-        try { profile = await ensureHardwareProfile(); } catch { /* degrade */ }
+        infoLine("hardware profile missing or stale — scanning…");
+        try { profile = await ensureHardwareProfile(); } catch { profile = null; }
       }
+      // An explicit arg wins, then a valid `/hardware set localBackend`, then
+      // the profile. The override is the user's explicit choice, so it skips
+      // the low-VRAM fallback the same way --force does.
+      const override = ["cpu", "vulkan"].includes(ctx.settings?.hardware?.localBackend)
+        ? ctx.settings.hardware.localBackend : undefined;
       const safety = applyVramSafety({
-        requestedBackend: parsed.backend,
+        requestedBackend: parsed.backend || override,
         profile,
         cfg,
-        force: parsed.force,
+        force: parsed.force || (!parsed.backend && !!override),
       });
       if (safety.forcedTo) warnLine(safety.reason);
 

@@ -24,7 +24,7 @@ import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
 import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
-import { refreshInBackground as refreshHardwareProfile } from "../local/hardware-profile.mjs";
+import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
 import { loadScannedSkills } from "../core/skill-index.mjs";
@@ -178,8 +178,18 @@ export async function main(args) {
     process.exit(1);
   }
 
+  // Know the machine before the first turn: GPU, display, power, installed
+  // tools. A cached profile costs <5ms; a new install (or changed hardware)
+  // waits for one scan so the very first session already fits this PC.
+  const machine = await loadMachineContext(settings.hardware, {
+    onScan: () => infoLine("scanning this PC so Omni can fit its settings to it (one-time)…"),
+    onFail: (why) => warnLine(`hardware scan ${why} — continuing without machine info; /hardware rescan retries`),
+  });
+  applyMachineEnv(machine.settings);
+
   const session = new Session();
-  const messages = [{ role: "system", content: buildSystemPrompt(project, skills, memoryPreamble()) }];
+  const preamble = [machine.summary, memoryPreamble()].filter(Boolean).join("\n\n");
+  const messages = [{ role: "system", content: buildSystemPrompt(project, skills, preamble) }];
 
   // Persist the current model as "last good" on every clean exit (Ctrl+C,
   // /exit, normal completion) so the next launch reloads it. Async save —
@@ -297,11 +307,6 @@ export async function main(args) {
   // system, not a thing the user starts — bind it now, silently, and let
   // /neuralview just open a browser onto whatever's already running.
   startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
-
-  // Hardware profile is used by /llama-start to pick a backend. Cheap
-  // fingerprint check is <5ms; only spawns the real scan when hardware
-  // changed. Fire-and-forget — never blocks the REPL.
-  refreshHardwareProfile();
 
   await startRepl(ctx, { resumeMode });
 }

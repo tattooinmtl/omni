@@ -8,9 +8,64 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.16 — 2026-10-13
+
+- **Shipped:** this PR · — · TattooAI/omni-web-browser-6536fd · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- Omni now fits itself to the PC it is installed on. The first launch on a
+  new machine (and the first after a hardware change or this upgrade) scans
+  it: CPU name, RAM, free disk, every GPU and whether it is a graphics card,
+  a built-in iGPU, or software-only (VMs, remote desktop), display resolution
+  and refresh rate, battery and power plan, and which of python, git, ffmpeg,
+  ollama, docker and a Chromium browser are installed. Nothing is tuned to
+  one machine; each install reads its own.
+- The agent gets a short "This machine" block in its system prompt every
+  session, with only the warnings that apply: integrated GPU, browser FPS
+  capped by the display, running on battery, under 8 GB RAM, which tools are
+  missing, what size of local model fits. Before, it had to guess.
+- Settings are chosen from the scan. The headless browser now uses the GPU
+  when the PC has a real one (it always ran with `--disable-gpu`, so WebGL
+  and canvas pages rendered in software), and only together with Chromium's
+  sandbox: pages the agent opens are untrusted, so if the sandbox can't
+  start the browser falls back to the old no-sandbox software mode.
+  `browser_status` reports `sandbox` and `gpu`. VMs and software adapters
+  keep software rendering. `/hardware` lists each choice and why, and
+  `/hardware set <browserGpu|localBackend> <value|auto>` overrides one
+  (saved in `settings.hardware`; a `localBackend` override counts as
+  `--force` for `/llama-start`). An `OMNI_BROWSER_GPU` set in the shell or
+  `.env` always wins.
+- Fixed: the browser tools stopped working with current Edge. Edge's
+  launcher process now exits (code 0) right after handing off to the real
+  browser, and Omni took that as the browser dying, so every `browser_*`
+  call failed with "browser session is not running". It also attached to
+  Edge's own first-run tab (`edge://sync-confirmation-dialog/`) instead of
+  its `about:blank`. The session now lives as long as its devtools
+  connection, attaches to its own tab, and closes the real browser with
+  `Browser.close` (plus its pid on Ctrl+C or a crash). Before, closing killed
+  only the exited launcher and leaked a headless Edge every session.
+- On hybrid laptops the GPU name and VRAM now come from the best adapter
+  (the graphics card), not whichever one Windows lists first; `dxdiag` VRAM
+  is read from that card's block. Linux names GPUs from `lspci`, macOS from
+  `system_profiler` (plus display), and `nvidia-smi` VRAM works off Windows.
+  `/snap/bin/chromium` is found.
+- A cached profile older than a day is rescanned in the background for the
+  next session, since a new monitor, GPU or installed tool doesn't change
+  the cheap fingerprint. Battery state is reported as of the scan. A failed
+  or timed-out first scan prints a warning instead of starting silently
+  without machine info. `/llama-start` only trusts a fresh profile.
+- The scan is ~3x faster (12 s → ~4 s here): `dxdiag` only runs when
+  Windows' 32-bit `AdapterRAM` sits at its 4 GB ceiling.
+- Tests: `hardware-profile` covers GPU classification for real adapter
+  names (Arc B-series, Radeon iGPUs), best-adapter and per-card dxdiag
+  picks on hybrid laptops, the Windows / lspci / system_profiler parsers,
+  settings and prompt summaries for a gaming desktop, a low-RAM laptop on
+  battery and a VM, overrides, `.env` precedence, stale caches and a failed
+  scan. New `browser-session` (skips without a browser) pins the Edge
+  launcher hand-off, attaching to our own tab, and that `close()` really
+  shuts the browser down.
+
 ## 3.5.15 — 2026-10-12
 
-- **Shipped:** this PR · — · TattooAI/omni-endpoints-file-eab6e8 · session `cd6afbc1-d61b-4bd2-b852-006fc4d9caa2`
+- **Shipped:** [#28](https://github.com/tattooinmtl/omni/pull/28) · `4c1a127` · TattooAI/omni-endpoints-file-eab6e8 · session `cd6afbc1-d61b-4bd2-b852-006fc4d9caa2`
 - Typing a skill now visibly works. A recognised `/command` or `/skill` turns
   blue in the input box (and in the echoed line), and running a skill prints
   `▸ skill /rust loaded — rust-coding`. Before, `/rust` ran with no sign it
