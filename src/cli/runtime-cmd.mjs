@@ -14,6 +14,7 @@ function printStatus() {
   infoLine(`runtime pack ${c.dim(`→ ${pack.vendorDir()}`)}`);
   for (const s of pack.status()) {
     const state = s.installed ? c.green(`installed ${s.installed}`)
+      : s.inVendor ? c.green("already in vendor/ (from an older Omni)")
       : s.onSystem ? c.green("already on this PC")
       : s.downloadable ? c.dim(`not installed · ${mb(s.size) || "npm"}`)
       : c.dim(`not available here${s.hint ? ` — ${s.hint}` : ""}`);
@@ -47,9 +48,9 @@ async function runInstall(ctx, names) {
   const explicit = new Set((names || []).map((n) => n.toLowerCase()));
   const rows = pack.status();
   const row = (id) => rows.find((r) => r.id === id);
-  const skip = ids.filter((id) => row(id)?.installed || (row(id)?.onSystem && !explicit.has(id)));
+  const skip = ids.filter((id) => row(id)?.installed || ((row(id)?.onSystem || row(id)?.inVendor) && !explicit.has(id)));
   const todo = ids.filter((id) => !skip.includes(id));
-  if (skip.length) infoLine(`already available: ${skip.map((id) => `${id} (${row(id).installed ? "pack" : "this PC"})`).join(", ")}`);
+  if (skip.length) infoLine(`already available: ${skip.map((id) => `${id} (${row(id).installed ? "pack" : row(id).inVendor ? "vendor/" : "this PC"})`).join(", ")}`);
   if (!todo.length) return true;
 
   const total = todo.reduce((n, id) => n + (rows.find((r) => r.id === id)?.size || 0), 0);

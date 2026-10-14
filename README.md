@@ -389,8 +389,11 @@ Skills are discovered from:
 
 1. `skills/*/SKILL.md` under the install root (`autoDiscoverSkills`)
 2. User skill folders (`~/.agents/skills/`, `~/.kimi-code/skills/`)
-3. An external index written by a scanner (`skillIndex` in
-   `omni.config.json`)
+3. An external index written by a scanner. Point your own at it with
+   `"skillIndex": "<path to skills.json>"` in `agent/settings.json`, which
+   wins over the shipped default in `omni.config.json`. Don't edit
+   `omni.config.json` for this: a changed install folder blocks the
+   installer's updates.
 
 ## Local models (llama.cpp)
 

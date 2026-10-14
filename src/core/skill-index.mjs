@@ -35,6 +35,16 @@ export function _resetCache() { _cache = null; _cacheKey = null; }
 // without project config (a sub-agent, a test, a fresh clone on another OS)
 // silently picks up whatever that machine happens to have indexed. The
 // default lives in omni.config.json, where a machine-specific path belongs.
+// A personal skill index (an add-on such as brain-skills) belongs in the
+// user's own agent/settings.json, not in the shipped omni.config.json:
+// editing that file leaves the install dirty, and the installer then
+// refuses to update it. settings.skillIndex wins over the shipped value.
+export function applySkillIndexSetting(project, settings) {
+  const own = settings?.skillIndex;
+  if (project && typeof own === "string" && own.trim()) project.skillIndex = own.trim();
+  return project;
+}
+
 export function skillIndexPath(config) {
   const configured = config?.skillIndex;
   return typeof configured === "string" && configured.trim() ? configured.trim() : null;

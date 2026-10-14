@@ -165,6 +165,19 @@ await ok("remove() deletes a catalog part's files and its manifest entry", () =>
   assert.throws(() => pack.remove("nope"), /unknown runtime component/);
 });
 
+await ok("status() counts files an older Omni left in vendor/ as already available", () => {
+  const m = pack.readManifest();
+  delete m.jq;
+  fs.writeFileSync(path.join(pack.vendorDir(), "runtime.json"), JSON.stringify(m));
+  fs.writeFileSync(path.join(pack.vendorDir(), "jq.exe"), "old bundled jq");
+  const row = pack.status({ checkSystem: false }).find((s) => s.id === "jq");
+  if (pack.buildFor(pack.CATALOG.find((i) => i.id === "jq"))) {
+    assert.equal(row.installed, null);
+    assert.equal(row.inVendor, true);
+  }
+  fs.rmSync(path.join(pack.vendorDir(), "jq.exe"));
+});
+
 await ok("status() reports a part whose files went missing as not installed", () => {
   const m = pack.readManifest();
   m.fd = { version: "10.5.0", files: ["fd.exe"] }; // file never written
