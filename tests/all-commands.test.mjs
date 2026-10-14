@@ -109,6 +109,7 @@ const safeCommands = [
   ["bridge", ""],
   ["mcp", ""],
   ["hardware", ""],
+  ["runtime", ""],
 ];
 
 for (const [cmd, arg] of safeCommands) {

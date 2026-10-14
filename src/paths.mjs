@@ -5,9 +5,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const INSTALL_ROOT = path.resolve(__dirname, "..");
 
+// Where the runtime pack (local/runtime-pack.mjs) puts its tools.
+// OMNI_VENDOR_DIR is shell-only, like OMNI_HOME (see loadDotEnv).
+export function vendorDir() {
+  return process.env.OMNI_VENDOR_DIR || path.join(INSTALL_ROOT, "vendor");
+}
+
 function bundledExe(name) {
   const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(INSTALL_ROOT, "vendor", `${name}${ext}`);
+  return path.join(vendorDir(), `${name}${ext}`);
 }
 
 export function rgPath() {

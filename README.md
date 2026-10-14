@@ -108,6 +108,33 @@ The installer refuses to move a checkout with uncommitted changes, or one with
 commits that exist nowhere on the remote. It names them and stops rather than
 losing work.
 
+### Optional runtime pack
+
+Portable tools Omni uses when they are there, installed into Omni's own
+`vendor/` folder: no admin rights, nothing system-wide, and every download is
+checked against the SHA-256 its GitHub release publishes before it is
+unpacked. Omni puts `vendor/` first on PATH at startup.
+
+| Part | Unlocks | Download |
+|---|---|---|
+| `ffmpeg` + `ffprobe` 9.0.2 | video understanding (`read_video_file`) | 115 MB |
+| `ripgrep` 15.2.0 | fast `search`, `search_replace`, `security_scan` | 2 MB |
+| `fd` 10.5.0 | fast `find_files` | 2 MB |
+| `jq` 1.8.2 | the `jq` tool | 1 MB |
+| `lsp`: TypeScript 7 + Pyright (npm) | `lsp` and `rename_symbol` for JS/TS/Python | ~60 MB |
+
+```powershell
+$env:OMNI_RUNTIME = "1"; irm https://omni.globalwarningnetworks.com/install.ps1 | iex   # with the install
+.installinstall.ps1 -WithRuntime                                                       # from a checkout
+```
+
+Or later, from Omni: `/runtime` shows what is installed and what each part
+unlocks, `/runtime install` adds the first four (skipping any the PC
+already has), `/runtime install lsp` the language servers, `/runtime install
+all` everything, `/runtime remove <name>` takes one out. Outside the REPL:
+`omni runtime install`. Downloads are Windows x64; elsewhere `/runtime` prints
+the package-manager command instead.
+
 ## API keys
 
 Omni ships **with no API keys**; supply your own. The first run writes a clean
@@ -186,7 +213,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Session | `/help` `/image` `/status` `/clear` `/compact [now]` `/resume` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` `/omnibots` |
+| Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
@@ -418,8 +445,8 @@ at pixels:
   clipboard when no file is given.
 - **`read_video_file <path>`:** mp4, mov, webm, mkv, avi, m4v. It extracts
   frames with `ffmpeg` (default 6, mode `even`; also `scene` and `interval`),
-  capped at 16 frames and 20 MB. Needs `ffmpeg` on PATH:
-  `winget install Gyan.FFmpeg`.
+  capped at 16 frames and 20 MB. Needs `ffmpeg`: `/runtime install ffmpeg`
+  (or any `ffmpeg` on PATH).
 
 Text-only models get a one-line "image omitted" note instead of an error.
 

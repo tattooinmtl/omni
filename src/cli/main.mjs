@@ -25,6 +25,7 @@ import { startRepl } from "./repl.mjs";
 import { readContextMode } from "../core/context-mode.mjs";
 import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
 import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.mjs";
+import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
 import { loadScannedSkills } from "../core/skill-index.mjs";
@@ -40,6 +41,17 @@ function stopBackgroundChildren() {
 }
 
 export async function main(args) {
+  // Runtime-pack tools (vendor/: ffmpeg, rg, fd, jq, language servers) win
+  // over PATH, for Omni's own lookups and every child process it starts.
+  addVendorToPath();
+
+  // `omni runtime …` manages that pack and exits; it needs no settings,
+  // workspace or model. The installer calls it for the runtime option.
+  if (args[0] === "runtime") {
+    const { runtimeCommand } = await import("./runtime-cmd.mjs");
+    process.exit((await runtimeCommand(null, args.slice(1).join(" "))) ? 0 : 1);
+  }
+
   // --version / -V before anything else: no settings load, no workspace
   // prompt, no network. "What version am I on?" has to be answerable even
   // when the install is half-broken — that's usually when you're asking.

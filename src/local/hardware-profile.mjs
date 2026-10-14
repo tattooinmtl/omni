@@ -626,7 +626,11 @@ export function summarizeForPrompt(profile, eff) {
   if (p.battery?.present) notes.push("laptop — unplugged, the CPU/GPU throttle; benchmarks are only representative when plugged in");
   if (e.lowMemory) notes.push(`under ${LOW_RAM_GB} GB RAM — avoid running dev servers, local models and the browser all at once`);
   if (e.localBackend === "cpu") notes.push(`local LLMs run on CPU — prefer small quantized models (${Number(p.totalRamGB) >= 16 ? "≤ 8B" : "≤ 3B"} at Q4)`);
-  if (missing.length) notes.push(`don't assume ${missing.join("/")} exist; tell the user to install one if the task needs it`);
+  if (missing.length) {
+    const viaPack = missing.filter((k) => k === "ffmpeg");
+    notes.push(`don't assume ${missing.join("/")} exist; tell the user to install one if the task needs it` +
+      (viaPack.length ? ` (${viaPack.join(", ")}: /runtime install ${viaPack.join(" ")} adds it to Omni without admin rights)` : ""));
+  }
   if (notes.length) lines.push(`- Notes: ${notes.join("; ")}.`);
   return lines.join("\n");
 }

@@ -43,7 +43,7 @@ function printProfile(p, overrides, { stale = false } = {}) {
     console.log(`    ${d.label.padEnd(20)} ${c.bold(d.value.padEnd(7))} ${src}  ${c.dim(d.why)}`);
   }
   console.log(`    ${"local-model threads".padEnd(20)} ${c.bold(String(eff.localThreads || "auto").padEnd(7))} ${c.dim("auto")}  ${c.dim("physical cores")}`);
-  console.log(`    ${"video tools".padEnd(20)} ${c.bold((eff.videoTools ? "on" : "off").padEnd(7))} ${c.dim("auto")}  ${c.dim(eff.videoTools ? "ffmpeg found" : "install ffmpeg to enable")}`);
+  console.log(`    ${"video tools".padEnd(20)} ${c.bold((eff.videoTools ? "on" : "off").padEnd(7))} ${c.dim("auto")}  ${c.dim(eff.videoTools ? "ffmpeg found" : "/runtime install ffmpeg to enable")}`);
   console.log(c.dim(`    change one: /hardware set <${Object.keys(HARDWARE_SETTINGS).join("|")}> <value|auto>`));
   if (Array.isArray(p.notes) && p.notes.length) {
     for (const n of p.notes) console.log(`    note:     ${c.dim(n)}`);

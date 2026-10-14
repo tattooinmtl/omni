@@ -32,6 +32,14 @@
 # Version comes from package.json on the branch, so this script and the app can
 # never drift out of sync - there is no hardcoded version to bump by hand.
 #
+# Optional runtime pack (ffmpeg, ripgrep, fd, jq into <install>endor - no
+# admin rights, checksum-verified) with -WithRuntime, or from the one-liner,
+# which can't pass switches:
+#
+#   $env:OMNI_RUNTIME = "1"; irm https://omni.globalwarningnetworks.com/install.ps1 | iex
+#
+# Later, from Omni: /runtime install (or: omni runtime install).
+#
 # Safe to re-run. It never overwrites an existing .env or agent/settings.json:
 # your API keys are never touched, and no secret is ever downloaded, generated,
 # or required by this script - only .env.example / settings.example.json
@@ -51,6 +59,8 @@ param(
   # Check and report only - don't move the working tree.
   [switch]$NoUpdate,
   [switch]$WithRouter,
+  # Also install the optional runtime pack (same as OMNI_RUNTIME=1).
+  [switch]$WithRuntime,
   [switch]$SkipLink,
   # Local GGUF models directory. Default target is C:\models. Pass an explicit
   # path for silent installs; pass "" to skip the create prompt entirely.
@@ -310,6 +320,21 @@ function Initialize-Install([string]$Root) {
   }
 }
 
+# The runtime pack is optional: a failed download must not fail the install.
+function Install-RuntimePack([string]$Root) {
+  Info "Installing the runtime pack (ffmpeg, ripgrep, fd, jq) into $Rootendor"
+  Push-Location $Root
+  try {
+    & node ./bin/omni.mjs runtime install
+    if ($LASTEXITCODE -ne 0) {
+      Info "WARNING: some runtime pack parts did not install - run: omni runtime install"
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 try {
   Ensure-Command "node" "Install Node.js 20+ from https://nodejs.org, then re-run this installer."
   $nodeMajor = [int]((& node -e "console.log(process.versions.node.split('.')[0])").Trim())
@@ -330,6 +355,8 @@ try {
   Check-RequiredFiles $root
   Ensure-ModelsDir
   Initialize-Install $root
+  $wantRuntime = $WithRuntime -or ($env:OMNI_RUNTIME -eq "1")
+  if ($wantRuntime) { Install-RuntimePack $root }
 
   $installed = Get-LocalVersion $root
   # Don't declare victory on a version that isn't the latest. The old ending
@@ -351,6 +378,9 @@ try {
   Write-Host "  2. Set a provider key: omni --set-key nvidia nvapi-xxxx"
   Write-Host "     (free key: https://build.nvidia.com - or edit $root\.env)"
   Write-Host "  3. Run: omni"
+  if (-not $wantRuntime) {
+    Write-Host "  Optional: omni runtime install  (video tools, faster search - see /runtime)"
+  }
   Write-Host ""
 }
 catch {
