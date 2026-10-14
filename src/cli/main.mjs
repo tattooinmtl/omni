@@ -28,7 +28,7 @@ import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.m
 import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
-import { loadScannedSkills } from "../core/skill-index.mjs";
+import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
 
 // Every child process the CLI may have started. Safe to call more than once
 // and safe when nothing was ever started — each teardown is a no-op then.
@@ -77,6 +77,7 @@ export async function main(args) {
 
   // Project config: extensions + skills + prompt (omni.config.json).
   const project = loadProjectConfig();
+  applySkillIndexSetting(project, settings);
   const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
   const skills = loadSkills(project);
   // Skills from the external index (omni.config.json `skillIndex`) are

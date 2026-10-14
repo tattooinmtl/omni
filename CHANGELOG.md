@@ -8,9 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.19 — 2026-10-13
+
+- **Shipped:** this PR · — · TattooAI/omni-local-skill-index · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- A personal skill index (an add-on such as brain-skills) can now be set in
+  your own `agent/settings.json` as `"skillIndex": "<path>"`, which wins
+  over the shipped default in `omni.config.json`. Before, the only place
+  was `omni.config.json` itself, and editing it left the install folder
+  with a local change, so the installer refused to update it.
+- The runtime pack treats rg / fd / jq that an older Omni left in `vendor/`
+  as already available: `/runtime` shows "already in vendor/ (from an
+  older Omni)" and `/runtime install` skips them, instead of warning that
+  it won't overwrite a file it didn't install. Naming the part explicitly
+  still refuses, with the same "move it out first" message.
+- Tests: `skill-index` covers the settings override and that a missing or
+  blank value leaves the shipped one alone; `runtime-pack` covers files
+  already in `vendor/`.
+
 ## 3.5.18 — 2026-10-13
 
-- **Shipped:** this PR · — · TattooAI/omni-runtime-installer-guard · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- **Shipped:** [#31](https://github.com/tattooinmtl/omni/pull/31) · `2c00a97` · TattooAI/omni-runtime-installer-guard · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
 - Fixed: installing with the runtime option on an Omni that didn't update
   sent `runtime install` to the model as a chat prompt. The installer
   always comes fresh from GitHub, but local changes in the install folder

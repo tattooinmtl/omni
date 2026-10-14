@@ -162,21 +162,24 @@ function onSystemPath(name) {
     .some((l) => !vendor.includes(path.dirname(path.resolve(l)).toLowerCase()) && !/\\WindowsApps\\/i.test(l));
 }
 
-// One row per catalog item: installed in the pack, available elsewhere on
-// the system, downloadable here, or only via the platform's package manager.
+// One row per catalog item: installed in the pack, already in vendor/ from
+// elsewhere (older Omni installs bundled rg/fd/jq there), available elsewhere
+// on the system, downloadable here, or only via the platform's package manager.
 export function status({ checkSystem = true } = {}) {
   const m = readManifest();
   return CATALOG.map((item) => {
     const rec = m[item.id];
     const inPack = !!rec && (rec.files || []).every((f) => fs.existsSync(path.join(vendorDir(), f)));
     const build = buildFor(item);
+    const inVendor = !inPack && !!build && Object.keys(build.files).every((f) => fs.existsSync(path.join(vendorDir(), f)));
     return {
       id: item.id,
       label: item.label,
       version: item.version,
       unlocks: item.unlocks,
       installed: inPack ? rec.version : null,
-      onSystem: !inPack && checkSystem ? item.provides.every((p) => onSystemPath(p)) : false,
+      inVendor,
+      onSystem: !inPack && !inVendor && checkSystem ? item.provides.every((p) => onSystemPath(p)) : false,
       downloadable: !!build || !!item.npm,
       size: build ? build.size : item.approxSize || null,
       hint: item.hint?.[process.platform] || null,

@@ -31,7 +31,7 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-skillidx-"));
 process.env.OMNI_HOME = tmpHome;
 
 const { parseFrontmatter } = await import(u("src/core/frontmatter.mjs"));
-const { loadScannedSkills, scannedSkillCount, skillIndexPath, _resetCache } =
+const { loadScannedSkills, scannedSkillCount, skillIndexPath, applySkillIndexSetting, _resetCache } =
   await import(u("src/core/skill-index.mjs"));
 const { impl, setSessionCtx } = await import(u("src/tools/index.mjs"));
 
@@ -241,6 +241,20 @@ await ok("invoke_skill on an unknown command points back at find_skill", () => {
   _resetCache();
   setSessionCtx({ skills: BUNDLED, project: cfg, messages: [] });
   assert.match(impl.invoke_skill({ command: "/does-not-exist" }), /unknown skill/);
+});
+
+await ok("settings.skillIndex (the user's own add-on index) overrides omni.config.json", () => {
+  const project = { skillIndex: "C:/.skills/skills.json" };
+  applySkillIndexSetting(project, { skillIndex: "  C:/Users/me/.brain-skills/skills.json " });
+  assert.equal(skillIndexPath(project), "C:/Users/me/.brain-skills/skills.json");
+});
+
+await ok("no or blank settings.skillIndex leaves the shipped value alone", () => {
+  for (const settings of [{}, { skillIndex: "" }, { skillIndex: "   " }, { skillIndex: 42 }, null]) {
+    const project = { skillIndex: "C:/.skills/skills.json" };
+    applySkillIndexSetting(project, settings);
+    assert.equal(project.skillIndex, "C:/.skills/skills.json");
+  }
 });
 
 // ---------------------------------------------------------------------------
