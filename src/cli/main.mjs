@@ -183,6 +183,7 @@ export async function main(args) {
   // waits for one scan so the very first session already fits this PC.
   const machine = await loadMachineContext(settings.hardware, {
     onScan: () => infoLine("scanning this PC so Omni can fit its settings to it (one-time)…"),
+    onFail: (why) => warnLine(`hardware scan ${why} — continuing without machine info; /hardware rescan retries`),
   });
   applyMachineEnv(machine.settings);
 

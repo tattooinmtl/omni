@@ -130,6 +130,14 @@ async function main() {
     assert.equal(p.schema, hw.PROFILE_SCHEMA);
     assert.ok(["discrete", "integrated", "software", "virtual", "unknown"].includes(p.gpuKind), p.gpuKind);
     assert.ok(Array.isArray(p.gpus));
+    // When an adapter was found, gpuKind must be the best adapter's class,
+    // not a fallback "unknown".
+    if (p.gpus.length) {
+      const rank = { discrete: 3, integrated: 2, software: 1, virtual: 0 };
+      const best = [...p.gpus].sort((a, b) => rank[b.kind] - rank[a.kind])[0];
+      assert.equal(p.gpuKind, best.kind);
+      assert.equal(best.kind, hw.classifyGpu(best.name));
+    }
     assert.equal(typeof p.battery.present, "boolean");
     assert.equal(typeof p.battery.onBattery, "boolean");
     assert.equal(typeof p.tools.git, "boolean");
@@ -154,6 +162,9 @@ async function main() {
       "Intel(R) UHD Graphics 620": "integrated",
       "Intel(R) Iris(R) Xe Graphics": "integrated",
       "Intel(R) Arc(TM) Graphics": "integrated",
+      "Intel(R) Arc(TM) B580 Graphics": "discrete",
+      "AMD Radeon Graphics": "integrated",
+      "AMD Radeon 8060S Graphics": "integrated",
       "Microsoft Basic Display Adapter": "software",
       "VMware SVGA 3D": "software",
       "Parsec Virtual Display Adapter": "virtual",
@@ -185,6 +196,46 @@ async function main() {
     assert.equal(m.display.refreshHz, 144);
     assert.deepEqual(m.battery, { present: true, onBattery: true, chargePercent: 41 });
     assert.deepEqual(m.gpus.map((g) => g.kind), ["integrated", "discrete"]);
+  });
+
+  await ok("pickBestAdapter takes the graphics card on a hybrid laptop that lists the iGPU first", () => {
+    const best = hw.pickBestAdapter([
+      { Name: "Intel(R) UHD Graphics", AdapterRAM: 1073741824 },
+      { Name: "NVIDIA GeForce RTX 3060 Laptop GPU", AdapterRAM: 4293918720 },
+    ]);
+    assert.equal(best.Name, "NVIDIA GeForce RTX 3060 Laptop GPU");
+    assert.equal(hw.pickBestAdapter({ Name: "AMD Radeon(TM) Graphics", AdapterRAM: 3221225472 }).Name, "AMD Radeon(TM) Graphics");
+    assert.equal(hw.pickBestAdapter([]), null);
+  });
+
+  await ok("dedicatedMBFromDxdiag reads the chosen card's block, not the first one", () => {
+    const txt = [
+      "Display Devices", "---------------",
+      "          Card name: Intel(R) UHD Graphics", "   Dedicated Memory: 128 MB",
+      "          Card name: NVIDIA GeForce RTX 3060 Laptop GPU", "   Dedicated Memory: 5996 MB",
+    ].join("\r\n");
+    assert.equal(hw.dedicatedMBFromDxdiag(txt, "NVIDIA GeForce RTX 3060 Laptop GPU"), 5996);
+    assert.equal(hw.dedicatedMBFromDxdiag(txt, "Intel(R) UHD Graphics"), 128);
+    assert.equal(hw.dedicatedMBFromDxdiag(txt, "something else"), 5996, "no name match → largest");
+    assert.equal(hw.dedicatedMBFromDxdiag("", "x"), null);
+  });
+
+  await ok("parseLspci finds GPUs on Linux", () => {
+    const g = hw.parseLspci([
+      "00:00.0 Host bridge: Intel Corporation Device 9a14",
+      "00:02.0 VGA compatible controller: Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics] (rev 01)",
+      "01:00.0 3D controller: NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile] (rev a1)",
+    ].join("\n"));
+    assert.deepEqual(g.map((x) => x.kind), ["integrated", "discrete"]);
+  });
+
+  await ok("parseMacDisplays reads GPU and display from system_profiler", () => {
+    const m = hw.parseMacDisplays({ SPDisplaysDataType: [{
+      sppci_model: "Apple M2", spdisplays_ndrvs: [{ _spdisplays_resolution: "2560 x 1664 @ 60.00Hz" }],
+    }] });
+    assert.equal(m.gpus[0].kind, "integrated");
+    assert.deepEqual(m.display, { width: 2560, height: 1664, refreshHz: 60 });
+    assert.deepEqual(hw.parseMacDisplays("nope"), { gpus: [], display: null });
   });
 
   await ok("parseWindowsMachine returns null on garbage instead of throwing", () => {
@@ -256,11 +307,13 @@ async function main() {
     const desk = hw.summarizeForPrompt(gamingDesktop);
     assert.match(desk, /^# This machine/);
     assert.match(desk, /RTX 4080 \(discrete, 16 GB\)/);
-    assert.match(desk, /capped at 165/);
-    assert.doesNotMatch(desk, /battery —|under 8 GB|not installed/);
+    assert.match(desk, /refreshes at 165 Hz/);
+    assert.match(desk, /headless browser is not capped/);
+    assert.doesNotMatch(desk, /laptop|under 8 GB|not installed/);
 
     const lap = hw.summarizeForPrompt(laptopOnBattery);
-    assert.match(lap, /on battery \(35%\)/);
+    assert.match(lap, /on battery at 35% at scan time/);
+    assert.match(lap, /only representative when plugged in/);
     assert.match(lap, /under 8 GB RAM/);
     assert.match(lap, /not installed: python, ffmpeg, ollama, docker(?!, nvidia)/);
     assert.match(lap, /≤ 3B/);
@@ -276,6 +329,23 @@ async function main() {
     hw.applyMachineEnv(hw.deriveSettings(vm), env);
     assert.equal(env.OMNI_BROWSER_GPU, "0");
     assert.doesNotThrow(() => hw.applyMachineEnv(null, env));
+  });
+
+  await ok("applyMachineEnv never overrides a value the user set (shell or .env, read at first call)", () => {
+    const env = { OMNI_BROWSER_GPU: "0" }; // e.g. loaded from .env before the first call
+    hw.applyMachineEnv(hw.deriveSettings(gamingDesktop), env);
+    assert.equal(env.OMNI_BROWSER_GPU, "0");
+    hw.applyMachineEnv(hw.deriveSettings(gamingDesktop, { browserGpu: "on" }), env);
+    assert.equal(env.OMNI_BROWSER_GPU, "0");
+  });
+
+  await ok("loadMachineContext reports a failed scan through onFail", async () => {
+    try { fs.unlinkSync(hw.PROFILE_PATH); } catch {}
+    let failed = null;
+    const m = await hw.loadMachineContext({}, { timeoutMs: 1, onFail: (why) => { failed = why; } });
+    assert.equal(failed, "timed out");
+    assert.deepEqual(m, { profile: null, settings: null, summary: "" });
+    await hw.ensureHardwareProfile({ force: true }); // let the in-flight scan settle
   });
 
   await ok("loadMachineContext returns profile, settings and a prompt summary", async () => {

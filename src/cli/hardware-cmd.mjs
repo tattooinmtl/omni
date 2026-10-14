@@ -51,6 +51,12 @@ function printProfile(p, overrides, { stale = false } = {}) {
   console.log(`    cache:    ${c.dim(PROFILE_PATH)}`);
 }
 
+// Push the current profile + overrides to the env the browser extension
+// reads, so a rescan or an override reaches the next browser launch.
+function applyCurrent(overrides, profile = readCachedProfile()) {
+  if (profile) applyMachineEnv(deriveSettings(profile, overrides));
+}
+
 async function setOverride(ctx, key, value) {
   const name = Object.keys(HARDWARE_SETTINGS).find((k) => k.toLowerCase() === String(key || "").toLowerCase());
   if (!name) {
@@ -69,11 +75,14 @@ async function setOverride(ctx, key, value) {
   else hw[name] = v;
   if (Object.keys(hw).length) settings.hardware = hw;
   else delete settings.hardware;
+  // saveSettings() silently refuses to write when settings.json failed to
+  // load at startup; don't claim the override was saved in that case.
   await saveSettings(settings);
+  const persisted = !settings._loadError;
 
-  const profile = readCachedProfile();
-  if (profile) applyMachineEnv(deriveSettings(profile, settings.hardware));
-  infoLine(`${HARDWARE_SETTINGS[name].label}: ${v === "auto" ? "back to automatic" : v}`);
+  applyCurrent(settings.hardware);
+  infoLine(`${HARDWARE_SETTINGS[name].label}: ${v === "auto" ? "back to automatic" : v}` +
+    (persisted ? "" : c.dim(" (this session only — settings.json could not be saved)")));
   if (name === "browserGpu") infoLine(c.dim("takes effect the next time the browser starts (browser_close or /browser close)"));
 }
 
@@ -101,6 +110,7 @@ export async function hardwareCommand(ctx, sub) {
   if (action === "rescan" || action === "refresh") {
     infoLine("re-scanning hardware (a few seconds)…");
     const p = await ensureHardwareProfile({ force: true });
+    applyCurrent(overrides, p);
     printProfile(p, overrides);
     return;
   }
@@ -119,5 +129,6 @@ export async function hardwareCommand(ctx, sub) {
     infoLine("no cached profile yet — scanning…");
   }
   const p = await ensureHardwareProfile();
+  applyCurrent(overrides, p);
   printProfile(p, overrides);
 }

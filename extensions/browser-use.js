@@ -124,24 +124,84 @@ class BrowserSession {
     this._url = null;
     this._title = null;
     this._idleTimer = null;
+    this.mode = null; // { sandbox, gpu } of the running browser
+    this.browserWsUrl = null; // browser-level devtools endpoint (Browser.close)
+    this.browserPid = null;   // the real browser process, for kill-on-exit
   }
 
-  isAlive() { return !!(this.proc && this.ws && this.ws.readyState === 1); }
+  // Alive = the devtools connection is open. Not "our spawned process is
+  // running": Edge's launcher exits right away (code 0) and hands off to a
+  // separate browser process, so the process we spawned is gone while the
+  // browser keeps working.
+  isAlive() { return !!(this.ws && this.ws.readyState === 1); }
 
+  // GPU on/off is decided per PC from the hardware profile: main.mjs exports
+  // it as OMNI_BROWSER_GPU, and `/hardware set browserGpu` overrides it.
+  // Unset (scripts and tests that skip the REPL) keeps software rendering.
+  //
+  // The GPU is only ever enabled together with Chromium's sandbox: pages the
+  // agent opens are untrusted, and a GPU process without the sandbox would
+  // hand a driver bug the user's account. Where the sandbox can't start
+  // (some containers, restricted job objects), fall back to the old
+  // no-sandbox + software-rendering launch.
   async _spawn() {
-    if (this.proc) return;
+    if (this.isAlive()) return;
+    if (process.env.OMNI_BROWSER_GPU === "1") {
+      try {
+        await this._launch({ sandbox: true, gpu: true });
+        return;
+      } catch {
+        await this._reset();
+      }
+    }
+    await this._launch({ sandbox: false, gpu: false });
+  }
+
+  // Shut the real browser down: Browser.close over the browser endpoint,
+  // then kill whatever pids we know of. proc.kill() alone killed only Edge's
+  // already-exited launcher and leaked the browser.
+  async _killBrowser() {
+    const ws = this.ws;
+    this.ws = null;
+    if (this.browserWsUrl) {
+      await new Promise((resolve) => {
+        let b;
+        const done = () => { try { b?.close(); } catch { /* */ } resolve(); };
+        const t = setTimeout(done, 2000);
+        try {
+          b = new WebSocket(this.browserWsUrl);
+          b.onopen = () => b.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+          b.onmessage = () => { clearTimeout(t); done(); };
+          b.onclose = () => { clearTimeout(t); resolve(); };
+          b.onerror = () => { clearTimeout(t); resolve(); };
+        } catch { clearTimeout(t); resolve(); }
+      });
+    }
+    try { ws?.close(); } catch { /* ignore */ }
+    if (this.browserPid) try { process.kill(this.browserPid); } catch { /* already gone */ }
+    try { this.proc?.kill(); } catch { /* ignore */ }
+    this.proc = null; this.browserPid = null; this.browserWsUrl = null;
+  }
+
+  async _reset() {
+    await this._killBrowser();
+    this.mode = null;
+    this._eventHandlers.clear();
+    this._pendingEvents.clear();
+    // Let the killed process release its devtools port and profile dir.
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  async _launch({ sandbox, gpu }) {
     const exe = await findBrowser();
     // Pick a port in the ephemeral range; collisions are rare with one user.
     this.port = 9300 + Math.floor(Math.random() * 200);
     const userDataDir = path.join(os.tmpdir(), `omni-browser-${process.pid}-${Date.now()}`);
+    this.mode = { sandbox, gpu };
     this.proc = spawn(exe, [
       "--headless=new",
-      // GPU on/off is decided per PC from the hardware profile: main.mjs
-      // exports it as OMNI_BROWSER_GPU, and `/hardware set browserGpu`
-      // overrides it. Unset (scripts and tests that skip the REPL) keeps the
-      // old software-rendering default.
-      ...(process.env.OMNI_BROWSER_GPU === "1" ? [] : ["--disable-gpu"]),
-      "--no-sandbox",
+      ...(gpu ? [] : ["--disable-gpu"]),
+      ...(sandbox ? [] : ["--no-sandbox"]),
       "--disable-dev-shm-usage",
       "--no-first-run",
       "--no-default-browser-check",
@@ -153,8 +213,13 @@ class BrowserSession {
       "about:blank",
     ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 
-    this.proc.on("exit", () => { this.proc = null; this.ws = null; this._failAll("browser exited"); });
-    this.proc.on("error", (e) => { this.proc = null; this._failAll(`browser spawn error: ${e.message}`); });
+    // A failed sandboxed attempt's process can exit after the fallback has
+    // started, so only clear state if it is still the current process.
+    const child = this.proc;
+    // The launcher exiting is not the browser dying (see isAlive); the
+    // websocket's onclose reports that.
+    child.on("exit", () => { if (this.proc === child) this.proc = null; });
+    child.on("error", (e) => { if (this.proc !== child) return; this.proc = null; this._failAll(`browser spawn error: ${e.message}`); });
     this.proc.stderr.on("data", () => { /* swallow — errors come back as JSON-RPC errors */ });
 
     // Wait for /json/version to come up (up to ~10s).
@@ -168,10 +233,19 @@ class BrowserSession {
       await new Promise((res) => setTimeout(res, 100));
     }
     if (!version) throw new Error("browser started but devtools endpoint not reachable");
+    this.browserWsUrl = version.webSocketDebuggerUrl || null;
 
-    // Pick the first page target — about:blank we just spawned.
-    const targets = await (await fetch(`http://127.0.0.1:${this.port}/json`)).json();
-    const page = targets.find((t) => t.type === "page") || targets[0];
+    // Attach to the about:blank tab we spawned. Not just "the first page":
+    // Edge can open its own first-run tabs (edge://sync-confirmation-dialog/)
+    // that close moments later and take the session down with them. If our
+    // tab isn't listed, open a fresh one (PUT is required by Chromium 111+).
+    const base = `http://127.0.0.1:${this.port}`;
+    const targets = await (await fetch(`${base}/json`)).json();
+    let page = targets.find((t) => t.type === "page" && t.url === "about:blank");
+    if (!page) {
+      try { page = await (await fetch(`${base}/json/new?about:blank`, { method: "PUT" })).json(); }
+      catch { page = null; }
+    }
     if (!page?.webSocketDebuggerUrl) throw new Error("no browser targets available");
     this.targetId = page.id;
     if (typeof WebSocket === "undefined") {
@@ -193,11 +267,17 @@ class BrowserSession {
       }, 8000);
     });
     this.ws.onmessage = (ev) => this._onMessage(ev);
-    this.ws.onclose = () => { this.ws = null; this._failAll("websocket closed"); };
+    const ws = this.ws;
+    ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this._failAll("websocket closed"); };
 
     // Enable Page + Runtime domains up-front.
     await this._send("Page.enable");
     await this._send("Runtime.enable");
+    // Remember the real browser pid so a crash or Ctrl+C can still kill it.
+    try {
+      const info = await this._send("SystemInfo.getProcessInfo", {}, { timeoutMs: 3000 });
+      this.browserPid = info?.processInfo?.find((p) => p.type === "browser")?.id || null;
+    } catch { this.browserPid = null; }
     // Keep _url / _title fresh.
     this._eventHandlers.set("Page.frameNavigated", (msg) => {
       const f = msg.params?.frame;
@@ -390,13 +470,13 @@ class BrowserSession {
 
   async status() {
     if (!this.isAlive()) return { alive: false };
-    return { alive: true, url: this._url, title: this._title, port: this.port };
+    return { alive: true, url: this._url, title: this._title, port: this.port, sandbox: !!this.mode?.sandbox, gpu: !!this.mode?.gpu };
   }
 
   async close() {
-    if (this.ws) try { this.ws.close(); } catch { /* ignore */ }
-    if (this.proc) try { this.proc.kill(); } catch { /* ignore */ }
-    this.ws = null; this.proc = null; this._failAll("closed");
+    await this._killBrowser();
+    this.mode = null;
+    this._failAll("closed");
     return { closed: true };
   }
 }
@@ -404,8 +484,12 @@ class BrowserSession {
 // One session for the lifetime of the Omni process.
 const session = new BrowserSession();
 // Make sure we don't leak a Chrome process if Node exits mid-session.
-process.on("exit", () => { try { session.proc?.kill(); } catch { /* */ } });
-process.on("SIGINT", () => { try { session.proc?.kill(); } catch { /* */ } });
+const killOnExit = () => {
+  try { if (session.browserPid) process.kill(session.browserPid); } catch { /* */ }
+  try { session.proc?.kill(); } catch { /* */ }
+};
+process.on("exit", killOnExit);
+process.on("SIGINT", killOnExit);
 
 // ---------------------------------------------------------------------------
 // Omni extension contract

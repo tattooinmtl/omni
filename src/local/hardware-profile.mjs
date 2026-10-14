@@ -54,6 +54,7 @@ export function browserCandidates() {
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
     "/usr/bin/microsoft-edge",
   ].filter(Boolean);
 }
@@ -145,8 +146,37 @@ async function detectCpuCoresPhysical() {
 
 // ── Detection: GPU + VRAM (Windows only, with fallback chain) ────────────
 
+// Best adapter from a Win32_VideoController list (one object or an array):
+// highest GPU class first, then most AdapterRAM.
+export function pickBestAdapter(list) {
+  const arr = (Array.isArray(list) ? list : [list]).filter((a) => a && a.Name);
+  return arr.sort((a, b) =>
+    (GPU_RANK[classifyGpu(b.Name)] - GPU_RANK[classifyGpu(a.Name)]) ||
+    ((Number(b.AdapterRAM) || 0) - (Number(a.AdapterRAM) || 0)))[0] || null;
+}
+
+// dxdiag /t lists one "Card name:" block per display device; take the
+// "Dedicated Memory" from the block for `name` (else the largest), not just
+// the first device in the file.
+export function dedicatedMBFromDxdiag(txt, name) {
+  const blocks = String(txt).split(/(?=^\s*Card name:)/mi).slice(1);
+  const parsed = blocks.map((b) => ({
+    name: (/Card name:\s*(.+)/i.exec(b)?.[1] || "").trim(),
+    mb: parseInt(/Dedicated Memory:\s*(\d+)\s*MB/i.exec(b)?.[1], 10),
+  })).filter((x) => Number.isFinite(x.mb));
+  const match = name && parsed.find((x) => x.name.toLowerCase() === String(name).trim().toLowerCase());
+  if (match) return match.mb;
+  return parsed.length ? Math.max(...parsed.map((x) => x.mb)) : null;
+}
+
 async function detectGpuWindows() {
-  // Try nvidia-smi first — accurate on NVIDIA and returns MB directly.
+  const nv = await detectNvidia();
+  if (nv) return nv;
+  return detectGpuWindowsWmi();
+}
+
+// nvidia-smi is accurate and returns MB directly, on Windows and Linux.
+async function detectNvidia() {
   const nv = await runCapture("nvidia-smi", [
     "--query-gpu=name,memory.total", "--format=csv,noheader,nounits",
   ]);
@@ -158,19 +188,26 @@ async function detectGpuWindows() {
       return { name: parts[0] || "NVIDIA GPU", vramGB: +(mb / 1024).toFixed(1), vramSource: "nvidia-smi" };
     }
   }
+  return null;
+}
 
-  // WMI (AdapterRAM caps at ~4GB but always available and returns *a* card).
+async function detectGpuWindowsWmi() {
+  // WMI (AdapterRAM caps at ~4GB but always available). Read every adapter
+  // and keep the best one, the same pick scanHardware makes for gpuKind —
+  // hybrid laptops often list the iGPU first.
   const wmi = await runCapture("powershell", [
     "-NoProfile", "-Command",
-    "Get-CimInstance Win32_VideoController | Select-Object -First 1 -Property Name,AdapterRAM | ConvertTo-Json -Compress",
+    "@(Get-CimInstance Win32_VideoController | Select-Object -Property Name,AdapterRAM) | ConvertTo-Json -Compress",
   ]);
   let wmiName = null;
   let wmiBytes = null;
   if (wmi.ok && wmi.stdout.trim()) {
     try {
-      const parsed = JSON.parse(wmi.stdout.trim());
-      wmiName = parsed.Name || null;
-      wmiBytes = Number.isFinite(parsed.AdapterRAM) ? parsed.AdapterRAM : null;
+      const best = pickBestAdapter(JSON.parse(wmi.stdout.trim()));
+      if (best) {
+        wmiName = best.Name || null;
+        wmiBytes = Number.isFinite(best.AdapterRAM) ? best.AdapterRAM : null;
+      }
     } catch { /* leave nulls */ }
   }
 
@@ -193,9 +230,7 @@ async function detectGpuWindows() {
         await new Promise((r) => setTimeout(r, 100));
       }
       if (fs.existsSync(tmp)) {
-        const txt = fs.readFileSync(tmp, "utf8");
-        const m = /Dedicated Memory:\s*(\d+)\s*MB/i.exec(txt);
-        if (m) dxMB = parseInt(m[1], 10);
+        dxMB = dedicatedMBFromDxdiag(fs.readFileSync(tmp, "utf8"), wmiName);
         try { fs.unlinkSync(tmp); } catch { /* leave temp file */ }
       }
     } catch { /* dxdiag missing or unreadable */ }
@@ -222,8 +257,8 @@ export function classifyGpu(name) {
   if (/microsoft basic (display|render)|swiftshader|llvmpipe|softpipe|vmware svga|virtualbox|hyper-v|qxl|cirrus/i.test(n)) return "software";
   // Intel Arc A-series cards are discrete; "Intel(R) Arc(TM) Graphics" is the
   // Core Ultra iGPU, and every other Intel adapter is integrated.
-  if (/^intel/i.test(n)) return /arc\(tm\) a\d|arc a\d/i.test(n) ? "discrete" : "integrated";
-  if (/^amd radeon\(tm\)( \d+m)? graphics$|radeon\(tm\) (vega|\d{3}m|\d{4}s)|radeon (vega|\d{3}m|\d{4}s)\b|^apple\b/i.test(n)) return "integrated";
+  if (/^intel/i.test(n)) return /arc(\(tm\))? [ab]\d/i.test(n) ? "discrete" : "integrated";
+  if (/^amd radeon(\(tm\))?( \d+m)? graphics$|radeon\(tm\) (vega|\d{3}m|\d{4}s)|radeon (vega|\d{3}m|\d{4}s)\b|^apple\b/i.test(n)) return "integrated";
   return "discrete";
 }
 
@@ -286,7 +321,33 @@ async function detectMachineWindows() {
   return parseWindowsMachine(res.stdout.trim());
 }
 
-function detectMachineOther() {
+// `lspci` lines like "00:02.0 VGA compatible controller: Intel Corporation …".
+export function parseLspci(txt) {
+  return String(txt || "").split(/\r?\n/)
+    .filter((l) => /VGA compatible controller|3D controller|Display controller/i.test(l))
+    .map((l) => l.replace(/^.*?(VGA compatible controller|3D controller|Display controller)[^:]*:\s*/i, "").trim())
+    .filter(Boolean)
+    .map((name) => ({ name, kind: classifyGpu(name), refreshHz: null, width: null, height: null }));
+}
+
+// `system_profiler SPDisplaysDataType -json` on macOS.
+export function parseMacDisplays(raw) {
+  let j;
+  try { j = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return { gpus: [], display: null }; }
+  const gpus = [];
+  let display = null;
+  for (const card of j?.SPDisplaysDataType || []) {
+    const name = card.sppci_model || card._name;
+    if (name) gpus.push({ name, kind: classifyGpu(name), refreshHz: null, width: null, height: null });
+    for (const d of card.spdisplays_ndrvs || []) {
+      const m = /(\d+)\s*x\s*(\d+)(?:.*?@\s*([\d.]+)\s*Hz)?/i.exec(d._spdisplays_resolution || d.spdisplays_resolution || "");
+      if (m && !display) display = { width: +m[1], height: +m[2], refreshHz: m[3] ? Math.round(+m[3]) : null };
+    }
+  }
+  return { gpus, display };
+}
+
+async function detectMachineOther() {
   const cpuName = os.cpus()[0]?.model?.trim() || null;
   let battery = { present: false, onBattery: false, chargePercent: null };
   if (process.platform === "linux") {
@@ -300,11 +361,20 @@ function detectMachineOther() {
       }
     } catch { /* no sysfs battery info */ }
   }
-  // Apple Silicon always has an on-die GPU; elsewhere we can't name it cheaply.
-  const gpus = process.platform === "darwin" && process.arch === "arm64"
-    ? [{ name: "Apple GPU", kind: "integrated", refreshHz: null, width: null, height: null }]
-    : [];
-  return { cpuName, osName: `${os.type()} ${os.release()}`, gpus, display: null, battery, powerPlan: null };
+  let gpus = [];
+  let display = null;
+  if (process.platform === "linux") {
+    const r = await runCapture("lspci", [], 4000);
+    if (r.ok) gpus = parseLspci(r.stdout);
+  } else if (process.platform === "darwin") {
+    const r = await runCapture("system_profiler", ["SPDisplaysDataType", "-json"], 8000);
+    if (r.ok) ({ gpus, display } = parseMacDisplays(r.stdout));
+    // Apple Silicon always has an on-die GPU.
+    if (!gpus.length && process.arch === "arm64") {
+      gpus = [{ name: "Apple GPU", kind: "integrated", refreshHz: null, width: null, height: null }];
+    }
+  }
+  return { cpuName, osName: `${os.type()} ${os.release()}`, gpus, display, battery, powerPlan: null };
 }
 
 // Tools the agent would otherwise assume exist. Presence only; versions are
@@ -352,15 +422,18 @@ export async function scanHardware() {
   const { physical, source: coreSource } = await detectCpuCoresPhysical();
 
   const isWin = process.platform === "win32";
-  const [gpu, machineRes, tools] = await Promise.all([
-    isWin ? detectGpuWindows() : Promise.resolve({ name: "n/a", vramGB: 0, vramSource: "unsupported-platform" }),
-    isWin ? detectMachineWindows() : Promise.resolve(detectMachineOther()),
+  const [gpuRes, machineRes, tools] = await Promise.all([
+    isWin ? detectGpuWindows() : detectNvidia(),
+    isWin ? detectMachineWindows() : detectMachineOther(),
     detectTools(),
   ]);
-  const machine = machineRes || detectMachineOther();
+  const machine = machineRes || await detectMachineOther();
   // Best adapter wins: a graphics card over the iGPU, a real GPU over a
   // remote-desktop or VM display driver.
   const primary = [...machine.gpus].sort((a, b) => GPU_RANK[b.kind] - GPU_RANK[a.kind])[0] || null;
+  // Off Windows only nvidia-smi reports VRAM; otherwise name the GPU from
+  // lspci / system_profiler with no VRAM figure (so local models stay on CPU).
+  const gpu = gpuRes || { name: primary ? primary.name : "unknown", vramGB: 0, vramSource: primary ? "none" : "unsupported-platform" };
 
   const recommendedBackend = gpu.vramGB >= VRAM_FLOOR_GB ? "vulkan" : "cpu";
   const notes = [];
@@ -429,20 +502,31 @@ export function refreshInBackground() {
 
 // Boot entry point: the profile (cached, or one scan if missing/stale), the
 // settings derived from it plus the user's overrides, and the prompt block.
-// Never throws — a failed or slow scan just means the session starts without
-// machine context, the way it did before.
-export async function loadMachineContext(overrides = {}, { onScan, timeoutMs = 20000 } = {}) {
+// Never throws — a failed or slow scan means the session starts without
+// machine context (onFail says so), the way it did before.
+//
+// The cheap fingerprint can't see a swapped GPU, a new monitor or a tool
+// installed since the last scan, so a cached profile older than a day is
+// also rescanned — in the background, for the next session, never blocking
+// this one.
+const BACKGROUND_RESCAN_MS = 24 * 60 * 60 * 1000;
+export async function loadMachineContext(overrides = {}, { onScan, onFail, timeoutMs = 20000 } = {}) {
   let profile = getHardwareProfileSync();
-  if (!profile) {
+  if (profile) {
+    const age = Date.now() - Date.parse(profile.scannedAt || 0);
+    if (!(age < BACKGROUND_RESCAN_MS)) ensureHardwareProfile({ force: true }).catch(() => { /* next boot retries */ });
+  } else {
     try { onScan?.(); } catch { /* display only */ }
     let timer;
+    let why = "timed out";
     try {
       profile = await Promise.race([
         ensureHardwareProfile(),
         new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); }),
       ]);
-    } catch { profile = null; }
+    } catch (e) { profile = null; why = e?.message || "failed"; }
     clearTimeout(timer);
+    if (!profile) { try { onFail?.(why); } catch { /* display only */ } }
   }
   if (!profile) return { profile: null, settings: null, summary: "" };
   const settings = deriveSettings(profile, overrides);
@@ -450,12 +534,15 @@ export async function loadMachineContext(overrides = {}, { onScan, timeoutMs = 2
 }
 
 // Export the derived settings to the environment the extensions read. An
-// OMNI_BROWSER_GPU the user set before launching always wins, including over
-// a later `/hardware set` (which calls this again).
-const USER_SET_BROWSER_GPU = process.env.OMNI_BROWSER_GPU !== undefined;
+// OMNI_BROWSER_GPU the user set before launching (shell or .env) always wins,
+// including over a later `/hardware set` (which calls this again). Captured
+// on the first call, not at import: main.mjs calls this after loadSettings()
+// has loaded .env, which happens after this module is imported.
+const userSetEnv = new WeakMap();
 export function applyMachineEnv(settings, env = process.env) {
   if (!settings) return;
-  if (env === process.env && USER_SET_BROWSER_GPU) return;
+  if (!userSetEnv.has(env)) userSetEnv.set(env, env.OMNI_BROWSER_GPU !== undefined);
+  if (userSetEnv.get(env)) return;
   env.OMNI_BROWSER_GPU = settings.browserGpu ? "1" : "0";
 }
 
@@ -517,7 +604,9 @@ export function summarizeForPrompt(profile, eff) {
   const disp = p.display?.width ? ` · display ${p.display.width}×${p.display.height} @ ${p.display.refreshHz} Hz` : "";
   lines.push(`- GPU: ${p.gpuName || "unknown"} (${p.gpuKind || "unknown"}${vram})${disp}`);
   const bat = p.battery?.present
-    ? (p.battery.onBattery ? `on battery${p.battery.chargePercent != null ? ` (${p.battery.chargePercent}%)` : ""}` : "plugged in")
+    // Plugged-in state changes between sessions, so it is reported as of the
+    // scan, not as the current state.
+    ? `laptop (has a battery; ${p.battery.onBattery ? `on battery${p.battery.chargePercent != null ? ` at ${p.battery.chargePercent}%` : ""}` : "plugged in"} at scan time)`
     : "no battery";
   lines.push(`- Power: ${bat}${p.powerPlan ? ` · plan ${p.powerPlan}` : ""}`);
   const t = p.tools || {};
@@ -533,8 +622,8 @@ export function summarizeForPrompt(profile, eff) {
   const notes = [];
   if (p.gpuKind === "integrated") notes.push("integrated GPU — keep games/WebGL scenes light; performance here is lower than on PCs with a graphics card");
   if (p.gpuKind === "software" || p.gpuKind === "unknown") notes.push("no hardware GPU detected — WebGL/canvas FPS measured here is not meaningful");
-  if (e.refreshHz) notes.push(`browser FPS is capped at ${e.refreshHz} by the display refresh rate`);
-  if (e.onBattery) notes.push("running on battery — CPU/GPU are throttled; warn before heavy builds or benchmarks");
+  if (e.refreshHz) notes.push(`the display refreshes at ${e.refreshHz} Hz, so FPS in a visible browser tops out there (the headless browser is not capped by it)`);
+  if (p.battery?.present) notes.push("laptop — unplugged, the CPU/GPU throttle; benchmarks are only representative when plugged in");
   if (e.lowMemory) notes.push(`under ${LOW_RAM_GB} GB RAM — avoid running dev servers, local models and the browser all at once`);
   if (e.localBackend === "cpu") notes.push(`local LLMs run on CPU — prefer small quantized models (${Number(p.totalRamGB) >= 16 ? "≤ 8B" : "≤ 3B"} at Q4)`);
   if (missing.length) notes.push(`don't assume ${missing.join("/")} exist; tell the user to install one if the task needs it`);
