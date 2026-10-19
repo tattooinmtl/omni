@@ -188,6 +188,16 @@ await test("saved pre-M3 models are pruned and a default on one moves to M3.1 Fl
   assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
 });
 
+await test("a default or last-used Preview key with no saved entry moves to M3.1 Flash", async () => {
+  const { setLastProvider, getLastProvider } = await import(u("core/last-provider.mjs"));
+  writeLegacySettings({ defaultModel: "minimax.io/m3.1-flash-preview" });
+  setLastProvider("minimax.io/m3.1-flash-preview", "test");
+  const s = await loadSettings();
+  assert.equal(s.defaultModel, "minimax.io/m3.1-flash");
+  assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
+  assert.equal(getLastProvider()?.modelKey, "minimax.io/m3.1-flash");
+});
+
 await test("a retired id saved under the default's key leaves the shipped default", async () => {
   writeLegacySettings();
   const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));

@@ -727,6 +727,13 @@ function migrateMiniMax(settings) {
     if (settings.defaultModel === key) settings.defaultModel = target;
     if (lastKey === key && key !== target) setLastProvider(target, "minimax migration");
   }
+  // The Preview used to ship as a default, so a saved default or last-used
+  // model can name its key with no saved entry behind it.
+  const PREVIEW_KEY = `${MINIMAX_PROVIDER}/m3.1-flash-preview`;
+  if (!models[PREVIEW_KEY]) {
+    if (settings.defaultModel === PREVIEW_KEY) settings.defaultModel = MINIMAX_DEFAULT_MODEL;
+    if (lastKey === PREVIEW_KEY) setLastProvider(MINIMAX_DEFAULT_MODEL, "minimax migration");
+  }
 
   // Repair the shipped-then-saved 977000 output cap (and anything else past
   // the ceiling). Left alone, every MiniMax request 400s before it is sent.
