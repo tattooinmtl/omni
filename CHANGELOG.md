@@ -23,7 +23,8 @@ entries were rebuilt from git history).
 - `/getmodel` no longer saves a second entry for a model that is already
   configured under another key (`minimax.io/MiniMax-M3` beside the shipped
   `minimax.io/m3`). Existing duplicates of a shipped MiniMax model fold
-  back into the shipped key on load, keeping its health status.
+  back into the shipped key on load, keeping its health status. The
+  last-used model follows a folded or retired key instead of being cleared.
 - Reasoning that a provider streams in `reasoning_content` (M3.1 Flash,
   DeepSeek-style APIs) was dropped: nothing showed while the model
   thought, and `/thinking last` was empty. It now goes through the same

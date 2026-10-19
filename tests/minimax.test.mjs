@@ -174,7 +174,7 @@ await test("MiniMax-M3.1-Flash ships and is the MiniMax default", () => {
   assert.equal(m.provider, "minimax.io");
   assert.equal(m.vision, true);
   assert.equal(m.contextWindow, 1000000);
-  assert.ok(m.maxTokens > 0 && m.maxTokens <= MINIMAX_MAX_OUTPUT_TOKENS);
+  assert.equal(m.maxTokens, 128000);
   assert.equal(resolveModel(DEFAULT_SETTINGS, MINIMAX_DEFAULT_MODEL).id, "MiniMax-M3.1-Flash");
 });
 
@@ -200,6 +200,35 @@ await test("saved pre-M3 models are pruned and a default on one moves to M3.1 Fl
   assert.deepEqual(left.map((m) => m.id), []);
   assert.equal(s.defaultModel, "minimax.io/m3.1-flash");
   assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
+});
+
+await test("a retired id saved under the default's key leaves the shipped default", async () => {
+  writeLegacySettings();
+  const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  raw.models["minimax.io/m3.1-flash"] = { provider: "minimax.io", id: "MiniMax-M2.7", maxTokens: 8192 };
+  fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+  const s = await loadSettings();
+  assert.equal(s.models["minimax.io/m3.1-flash"].id, "MiniMax-M3.1-Flash");
+  assert.doesNotThrow(() => resolveModel(s, "minimax.io/m3.1-flash"));
+});
+
+await test("the last-used model follows a folded or retired key", async () => {
+  const { setLastProvider, getLastProvider } = await import(u("core/last-provider.mjs"));
+  for (const [from, to] of [["minimax.io/MiniMax-M3", "minimax.io/m3"], ["minimax.io/MiniMax-M2.5", "minimax.io/m3.1-flash"]]) {
+    writeLegacySettings();
+    const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    raw.models["minimax.io/MiniMax-M2.5"] = { provider: "minimax.io", id: "MiniMax-M2.5", maxTokens: 8192 };
+    fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+    setLastProvider(from, "test");
+    await loadSettings();
+    assert.equal(getLastProvider()?.modelKey, to, from);
+  }
+});
+
+await test("/model never offers a configured pre-M3 model", () => {
+  const settings = { models: { ...DEFAULT_SETTINGS.models, "minimax.io/old": { provider: "minimax.io", id: "MiniMax-M2.7" } } };
+  const rows = providerModelRows(settings, "minimax.io", ["MiniMax-M3.1-Flash"]);
+  assert.ok(!rows.some((r) => r.id === "MiniMax-M2.7"));
 });
 
 await test("a fetched duplicate of a shipped model folds into the shipped key", async () => {

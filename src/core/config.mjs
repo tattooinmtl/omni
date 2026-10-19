@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { knownContextWindow } from "./context.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { providerKeyEnvVar } from "./env-keys.mjs";
+import { getLastProvider, setLastProvider } from "./last-provider.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
@@ -714,7 +715,9 @@ function migrateMiniMax(settings) {
 
   // Drop the pre-M3 models, and the second entry /getmodel used to save for a
   // shipped model under the live id ("minimax.io/MiniMax-M3" beside
-  // "minimax.io/m3"). A setting that pointed at either follows it.
+  // "minimax.io/m3"). A setting that pointed at either follows it, and so
+  // does the last-used model, which would otherwise be cleared as stale.
+  const lastKey = getLastProvider()?.modelKey;
   const shippedKeyById = new Map();
   for (const [key, entry] of Object.entries(DEFAULT_SETTINGS.models)) {
     if (entry.provider === MINIMAX_PROVIDER) shippedKeyById.set(entry.id, key);
@@ -728,7 +731,10 @@ function migrateMiniMax(settings) {
     delete models[key];
     // The shipped entry wins; the duplicate only fills gaps (its health).
     if (target !== MINIMAX_DEFAULT_MODEL) models[target] = { ...entry, ...models[target] };
+    // A retired id saved under the default's own key must not take it away.
+    if (!models[target]) models[target] = { ...DEFAULT_SETTINGS.models[target] };
     if (settings.defaultModel === key) settings.defaultModel = target;
+    if (lastKey === key && key !== target) setLastProvider(target, "minimax migration");
   }
 
   // Repair the shipped-then-saved 977000 output cap (and anything else past

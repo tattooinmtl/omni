@@ -185,6 +185,7 @@ export function providerModelRows(settings, provKey, liveIds) {
   const configured = new Map();
   for (const [key, m] of Object.entries(settings.models || {})) {
     if (m?.provider !== provKey || !m.id || configured.has(m.id)) continue;
+    if (provKey === MINIMAX_PROVIDER && isRetiredMiniMaxId(m.id)) continue;
     configured.set(m.id, key);
   }
   const ids = new Set([...liveIds, ...configured.keys()]);
