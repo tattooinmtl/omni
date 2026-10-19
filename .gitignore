@@ -83,3 +83,5 @@ omni-home/
 buddy/
 # the /omnibots launcher's per-PC choice of Python
 extensions/omnibots-launcher.json
+# Next-gen Omni, developed alongside this install - not shipped from here.
+rea-main/
