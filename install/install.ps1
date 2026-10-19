@@ -213,7 +213,10 @@ function Update-FromGit([string]$Root) {
     }
 
     # Uncommitted work is the user's. Never move the tree out from under it.
-    $dirty = @(git status --porcelain)
+    # Only tracked files count: an untracked folder (a side project dropped in
+    # the install dir) used to block every update, and a fast-forward can't
+    # lose one anyway - git refuses to overwrite an untracked file.
+    $dirty = @(git status --porcelain --untracked-files=no)
     if ($dirty.Count -gt 0 -and -not $Force) {
       Write-Warning "$Root has $($dirty.Count) uncommitted change(s) - NOT updating."
       Write-Warning "Commit or stash them, then re-run. (-Force updates anyway.)"

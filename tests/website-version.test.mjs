@@ -58,6 +58,14 @@ ok("the installer's default branch is the one the website reads", () => {
     "the banner reads main/package.json — an installer on another branch would serve a different version than the site advertises");
 });
 
+ok("an untracked folder in the install dir does not block the update", () => {
+  // `git status --porcelain` lists untracked files too, so a side project
+  // dropped into ~/.omni (rea-main/) left every install pinned at 3.5.19.
+  const check = /\$dirty\s*=\s*@\(git status ([^)]*)\)/.exec(installer);
+  assert.ok(check, "installer must check for local changes before updating");
+  assert.match(check[1], /--untracked-files=no/, "only tracked changes may block the update");
+});
+
 const shimPath = path.join(root, "install", "web-install.ps1");
 ok("the deployed shim hands off to the real installer on the same repo/branch", () => {
   const shim = fs.readFileSync(shimPath, "utf8");

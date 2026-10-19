@@ -8,9 +8,24 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.22 — 2026-10-19
+
+- **Shipped:** this PR · — · TattooAI/installer-ignore-untracked · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- The installer no longer refuses to update because of an untracked folder
+  in the install directory. Its local-changes check used
+  `git status --porcelain`, which lists untracked files too, so one side
+  folder printed "1 uncommitted change(s) - NOT updating" and left the
+  install at 3.5.19 while main was at 3.5.21. Only changes to tracked files
+  block the update now; the fast-forward itself still refuses to overwrite
+  an untracked file.
+- `rea-main/` (the next-gen Omni, developed in the install directory) is
+  gitignored.
+- Tests: `website-version` checks the installer's local-changes test
+  ignores untracked files.
+
 ## 3.5.21 — 2026-10-19
 
-- **Shipped:** this PR · — · TattooAI/minimax-flash-preview-default · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- **Shipped:** [#34](https://github.com/tattooinmtl/omni/pull/34) · `17b1bb7` · TattooAI/minimax-flash-preview-default · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
 - minimax.io now offers exactly two models: `minimax.io/m3` (MiniMax-M3)
   and `minimax.io/m3.1-flash` (MiniMax-M3.1-Flash). MiniMax-M3.1-Flash-Preview
   is removed: the released M3.1 Flash replaces it. A saved Preview entry is
