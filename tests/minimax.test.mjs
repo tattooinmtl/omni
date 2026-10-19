@@ -148,25 +148,9 @@ await test("every shipped minimax.io model is within the ceiling", () => {
   }
 });
 
-await test("MiniMax-M3.1-Flash-Preview is on the shipped minimax.io list", () => {
-  const m = DEFAULT_SETTINGS.models["minimax.io/m3.1-flash-preview"];
-  assert.ok(m, "missing from DEFAULT_SETTINGS.models");
-  assert.equal(m.provider, "minimax.io");
-  // The API id is case-sensitive. "M3.1-flash-preview" is not a model.
-  assert.equal(m.id, "MiniMax-M3.1-Flash-Preview");
-  assert.equal(m.contextWindow, 1000000);
-  assert.equal(m.vision, true);
-  assert.ok(m.maxTokens > 0 && m.maxTokens <= MINIMAX_MAX_OUTPUT_TOKENS);
-  const resolved = resolveModel(DEFAULT_SETTINGS, "minimax.io/m3.1-flash-preview");
-  assert.equal(resolved.id, "MiniMax-M3.1-Flash-Preview");
-  assert.equal(resolved.contextWindow, 1000000);
-  assert.equal(resolved.vision, true);
-});
-
-console.log("\nMiniMax M3.1 Flash, and nothing before M3:");
-
 await test("MiniMax-M3.1-Flash ships and is the MiniMax default", () => {
   assert.equal(MINIMAX_DEFAULT_MODEL, "minimax.io/m3.1-flash");
+  assert.equal(DEFAULT_SETTINGS.models["minimax.io/m3.1-flash-preview"], undefined, "the preview no longer ships");
   const m = DEFAULT_SETTINGS.models[MINIMAX_DEFAULT_MODEL];
   assert.ok(m, "missing from DEFAULT_SETTINGS.models");
   // Case-sensitive published id, verified live on 2026-10-19.
@@ -182,7 +166,9 @@ await test("pre-M3 ids are retired, M3 and later are not", () => {
   for (const id of ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2.5", "MiniMax-M2.7-highspeed", "minimax-m1"]) {
     assert.equal(isRetiredMiniMaxId(id), true, id);
   }
-  for (const id of ["MiniMax-M3", "MiniMax-M3.1-Flash", "MiniMax-M3.1-Flash-Preview", "MiniMax-M10", "abab6.5", ""]) {
+  // The preview is superseded by the released M3.1 Flash.
+  assert.equal(isRetiredMiniMaxId("MiniMax-M3.1-Flash-Preview"), true);
+  for (const id of ["MiniMax-M3", "MiniMax-M3.1-Flash", "MiniMax-M10", "abab6.5", ""]) {
     assert.equal(isRetiredMiniMaxId(id), false, id);
   }
   for (const entry of Object.values(DEFAULT_SETTINGS.models)) {
@@ -202,6 +188,16 @@ await test("saved pre-M3 models are pruned and a default on one moves to M3.1 Fl
   assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
 });
 
+await test("a default or last-used Preview key with no saved entry moves to M3.1 Flash", async () => {
+  const { setLastProvider, getLastProvider } = await import(u("core/last-provider.mjs"));
+  writeLegacySettings({ defaultModel: "minimax.io/m3.1-flash-preview" });
+  setLastProvider("minimax.io/m3.1-flash-preview", "test");
+  const s = await loadSettings();
+  assert.equal(s.defaultModel, "minimax.io/m3.1-flash");
+  assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
+  assert.equal(getLastProvider()?.modelKey, "minimax.io/m3.1-flash");
+});
+
 await test("a retired id saved under the default's key leaves the shipped default", async () => {
   writeLegacySettings();
   const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
@@ -214,10 +210,11 @@ await test("a retired id saved under the default's key leaves the shipped defaul
 
 await test("the last-used model follows a folded or retired key", async () => {
   const { setLastProvider, getLastProvider } = await import(u("core/last-provider.mjs"));
-  for (const [from, to] of [["minimax.io/MiniMax-M3", "minimax.io/m3"], ["minimax.io/MiniMax-M2.5", "minimax.io/m3.1-flash"]]) {
+  for (const [from, to] of [["minimax.io/MiniMax-M3", "minimax.io/m3"], ["minimax.io/MiniMax-M2.5", "minimax.io/m3.1-flash"], ["minimax.io/m3.1-flash-preview", "minimax.io/m3.1-flash"]]) {
     writeLegacySettings();
     const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
     raw.models["minimax.io/MiniMax-M2.5"] = { provider: "minimax.io", id: "MiniMax-M2.5", maxTokens: 8192 };
+    raw.models["minimax.io/m3.1-flash-preview"] = { provider: "minimax.io", id: "MiniMax-M3.1-Flash-Preview", maxTokens: 128000 };
     fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
     setLastProvider(from, "test");
     await loadSettings();
@@ -254,17 +251,22 @@ await test("/model reuses the configured key for every live id", () => {
     "no second key minted for a configured id");
 });
 
-await test("/model lists m3.1-flash-preview although MiniMax's /models omits it", () => {
-  // What api.minimax.io/v1/models actually returned on 2026-10-11: no preview.
-  const live = ["MiniMax-M2", "MiniMax-M2.7", "MiniMax-M3"];
-  const rows = providerModelRows(DEFAULT_SETTINGS, "minimax.io", live);
-  const flash = rows.find((r) => r.id === "MiniMax-M3.1-Flash-Preview");
-  assert.ok(flash, "configured preview model missing from the picker rows");
-  assert.equal(flash.key, "minimax.io/m3.1-flash-preview", "must reuse the configured key, not mint a duplicate");
-  // Live ids still come through once each; the configured m3 (same id) isn't doubled.
-  assert.equal(rows.filter((r) => r.id === "MiniMax-M3").length, 1);
-  for (const id of live) assert.ok(rows.some((r) => r.id === id), id);
-  // Other providers' models stay out.
+await test("minimax.io offers exactly MiniMax-M3 and MiniMax-M3.1-Flash", () => {
+  const ids = Object.values(DEFAULT_SETTINGS.models).filter((m) => m.provider === "minimax.io").map((m) => m.id).sort();
+  assert.deepEqual(ids, ["MiniMax-M3", "MiniMax-M3.1-Flash"]);
+  // What api.minimax.io/v1/models returned on 2026-10-19, before filtering.
+  const live = ["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2"].filter((id) => !isRetiredMiniMaxId(id));
+  assert.deepEqual(providerModelRows(DEFAULT_SETTINGS, "minimax.io", live).map((r) => r.key),
+    ["minimax.io/m3", "minimax.io/m3.1-flash"]);
+});
+
+await test("a configured model the live list omits is still offered", () => {
+  const settings = { models: { ...DEFAULT_SETTINGS.models, "minimax.io/custom": { provider: "minimax.io", id: "MiniMax-M3-custom" } } };
+  const rows = providerModelRows(settings, "minimax.io", ["MiniMax-M3.1-Flash", "MiniMax-M3"]);
+  const extra = rows.find((r) => r.id === "MiniMax-M3-custom");
+  assert.ok(extra, "configured model missing from the picker rows");
+  assert.equal(extra.key, "minimax.io/custom", "must reuse the configured key, not mint a duplicate");
   assert.ok(rows.every((r) => !r.key.startsWith("openai/")));
 });
 

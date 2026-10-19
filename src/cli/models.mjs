@@ -175,9 +175,9 @@ export function modelHealthLabel(ctx, key) {
 
 // The rows the picker offers for one provider: its live /models list, plus
 // every configured model on that provider the list leaves out. Providers don't
-// always advertise what they serve — MiniMax's /v1/models omits
-// MiniMax-M3.1-Flash-Preview, which made minimax.io/m3.1-flash-preview
-// impossible to pick from /model even though it ships in the defaults.
+// always advertise what they serve — MiniMax's /v1/models once omitted
+// MiniMax-M3.1-Flash-Preview, which made it impossible to pick from /model
+// even though it shipped in the defaults.
 // Every row reuses the key of a configured model with the same id, so a live
 // id never mints a second entry ("minimax.io/MiniMax-M3" beside the shipped
 // "minimax.io/m3").
