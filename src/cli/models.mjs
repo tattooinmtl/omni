@@ -2,7 +2,7 @@
 // Every function takes the mutable CLI context `ctx` (see main.mjs).
 
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
-import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey } from "../core/config.mjs";
+import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey, isRetiredMiniMaxId, MINIMAX_PROVIDER } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
 import { listProviderModels, probeModel } from "../core/provider.mjs";
@@ -178,17 +178,20 @@ export function modelHealthLabel(ctx, key) {
 // always advertise what they serve — MiniMax's /v1/models omits
 // MiniMax-M3.1-Flash-Preview, which made minimax.io/m3.1-flash-preview
 // impossible to pick from /model even though it ships in the defaults.
-// Configured extras keep their own key, so no duplicate entry is saved.
+// Every row reuses the key of a configured model with the same id, so a live
+// id never mints a second entry ("minimax.io/MiniMax-M3" beside the shipped
+// "minimax.io/m3").
 export function providerModelRows(settings, provKey, liveIds) {
-  const rows = liveIds.map((id) => ({ id, key: modelKeyFor(provKey, id) }));
-  const seen = new Set(liveIds);
-  const extras = [];
+  const configured = new Map();
   for (const [key, m] of Object.entries(settings.models || {})) {
-    if (m?.provider !== provKey || !m.id || seen.has(m.id)) continue;
-    seen.add(m.id);
-    extras.push({ id: m.id, key });
+    if (m?.provider !== provKey || !m.id || configured.has(m.id)) continue;
+    if (provKey === MINIMAX_PROVIDER && isRetiredMiniMaxId(m.id)) continue;
+    configured.set(m.id, key);
   }
-  return [...rows, ...extras].sort((a, b) => a.id.localeCompare(b.id));
+  const ids = new Set([...liveIds, ...configured.keys()]);
+  return [...ids]
+    .map((id) => ({ id, key: configured.get(id) || modelKeyFor(provKey, id) }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "" } = {}) {
@@ -204,6 +207,7 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     if (!ids.includes("nvidia/nemotron-3-ultra-550b-a55b")) ids.push("nvidia/nemotron-3-ultra-550b-a55b");
     ids.sort((a, b) => a.localeCompare(b));
   }
+  if (provKey === MINIMAX_PROVIDER) ids = ids.filter((id) => !isRetiredMiniMaxId(id));
   if (provKey === "agnes") {
     const knownAgnes = ["agnes-2.5-flash", "agnes-2.5-pro-alpha", "agnes-2.0-flash"];
     for (const m of knownAgnes) {

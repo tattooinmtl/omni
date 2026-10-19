@@ -303,6 +303,15 @@ async function consumeStream(res, onToken) {
   const toolCallsMap = new Map(); // index -> { id, name, arguments }
   let finishReason = null;
   let usage = null;
+  let inReasoning = false;
+  const emit = (text) => {
+    content += text;
+    if (onToken) onToken(text);
+  };
+  const closeReasoning = () => {
+    if (inReasoning) emit("</think>");
+    inReasoning = false;
+  };
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -335,14 +344,23 @@ async function consumeStream(res, onToken) {
 
       const delta = choice.delta;
 
+      // Reasoning sent in its own field (MiniMax-M3.1-Flash, DeepSeek) rather
+      // than as <think> tags in content. Wrapped in tags here so the think
+      // splitter, /thinking last and the history strip treat it like M3's.
+      if (delta && delta.reasoning_content) {
+        emit((inReasoning ? "" : "<think>") + delta.reasoning_content);
+        inReasoning = true;
+      }
+
       // Content delta — stream to terminal immediately
       if (delta && delta.content) {
-        content += delta.content;
-        if (onToken) onToken(delta.content);
+        closeReasoning();
+        emit(delta.content);
       }
 
       // Tool call deltas — accumulate by index
       if (delta && delta.tool_calls) {
+        closeReasoning();
         for (const tc of delta.tool_calls) {
           const idx = tc.index ?? 0;
           if (!toolCallsMap.has(idx)) {
@@ -371,6 +389,8 @@ async function consumeStream(res, onToken) {
       usage = chunk.usage;
     }
   }
+
+  closeReasoning(); // a reply that was all reasoning
 
   // Assemble the final message (same shape a non-streaming completion returns).
   const message = { role: "assistant", content };

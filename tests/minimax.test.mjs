@@ -35,6 +35,7 @@ delete process.env.OMNI_MINIMAX_IO_KEY;
 const settingsPath = path.join(home, "settings.json");
 const {
   loadSettings, resolveModel, DEFAULT_SETTINGS, MINIMAX_MAX_OUTPUT_TOKENS,
+  MINIMAX_DEFAULT_MODEL, isRetiredMiniMaxId,
 } = await import(u("core/config.mjs"));
 const {
   resolveProviderAlias, defaultMaxTokensFor, maxTokensForFetched,
@@ -58,6 +59,7 @@ function writeLegacySettings(extra = {}) {
     models: {
       "minimax/m3": { provider: "minimax", id: "MiniMax-M3", maxTokens: 977000, contextWindow: 1000000 },
       "minimax/MiniMax-M2.5": { provider: "minimax", id: "MiniMax-M2.5", maxTokens: 8192 },
+      "minimax/MiniMax-M3-custom": { provider: "minimax", id: "MiniMax-M3-custom", maxTokens: 8192 },
       "sk-cp-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMM": { provider: "minimax", id: "M3", maxTokens: 8192 },
       "minimax.io/MiniMax-M3": { provider: "minimax.io", id: "MiniMax-M3", maxTokens: 8192 },
     },
@@ -95,7 +97,7 @@ await test("models on the legacy provider move to minimax.io", async () => {
   assert.equal(s.models["minimax/m3"], undefined);
   assert.equal(s.models["minimax/MiniMax-M2.5"], undefined);
   assert.equal(s.models["minimax.io/m3"].provider, "minimax.io");
-  assert.equal(s.models["minimax.io/MiniMax-M2.5"].id, "MiniMax-M2.5");
+  assert.equal(s.models["minimax.io/MiniMax-M3-custom"].id, "MiniMax-M3-custom");
   for (const entry of Object.values(s.models)) {
     assert.notEqual(entry.provider, "minimax", "no model may still name the legacy provider");
   }
@@ -161,6 +163,97 @@ await test("MiniMax-M3.1-Flash-Preview is on the shipped minimax.io list", () =>
   assert.equal(resolved.vision, true);
 });
 
+console.log("\nMiniMax M3.1 Flash, and nothing before M3:");
+
+await test("MiniMax-M3.1-Flash ships and is the MiniMax default", () => {
+  assert.equal(MINIMAX_DEFAULT_MODEL, "minimax.io/m3.1-flash");
+  const m = DEFAULT_SETTINGS.models[MINIMAX_DEFAULT_MODEL];
+  assert.ok(m, "missing from DEFAULT_SETTINGS.models");
+  // Case-sensitive published id, verified live on 2026-10-19.
+  assert.equal(m.id, "MiniMax-M3.1-Flash");
+  assert.equal(m.provider, "minimax.io");
+  assert.equal(m.vision, true);
+  assert.equal(m.contextWindow, 1000000);
+  assert.equal(m.maxTokens, 128000);
+  assert.equal(resolveModel(DEFAULT_SETTINGS, MINIMAX_DEFAULT_MODEL).id, "MiniMax-M3.1-Flash");
+});
+
+await test("pre-M3 ids are retired, M3 and later are not", () => {
+  for (const id of ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2.5", "MiniMax-M2.7-highspeed", "minimax-m1"]) {
+    assert.equal(isRetiredMiniMaxId(id), true, id);
+  }
+  for (const id of ["MiniMax-M3", "MiniMax-M3.1-Flash", "MiniMax-M3.1-Flash-Preview", "MiniMax-M10", "abab6.5", ""]) {
+    assert.equal(isRetiredMiniMaxId(id), false, id);
+  }
+  for (const entry of Object.values(DEFAULT_SETTINGS.models)) {
+    if (entry.provider === "minimax.io") assert.equal(isRetiredMiniMaxId(entry.id), false, entry.id);
+  }
+});
+
+await test("saved pre-M3 models are pruned and a default on one moves to M3.1 Flash", async () => {
+  writeLegacySettings({ defaultModel: "minimax.io/MiniMax-M2.7-highspeed" });
+  const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  raw.models["minimax.io/MiniMax-M2.7-highspeed"] = { provider: "minimax.io", id: "MiniMax-M2.7-highspeed", maxTokens: 128000 };
+  fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+  const s = await loadSettings();
+  const left = Object.values(s.models).filter((m) => m.provider === "minimax.io" && isRetiredMiniMaxId(m.id));
+  assert.deepEqual(left.map((m) => m.id), []);
+  assert.equal(s.defaultModel, "minimax.io/m3.1-flash");
+  assert.doesNotThrow(() => resolveModel(s, s.defaultModel));
+});
+
+await test("a retired id saved under the default's key leaves the shipped default", async () => {
+  writeLegacySettings();
+  const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  raw.models["minimax.io/m3.1-flash"] = { provider: "minimax.io", id: "MiniMax-M2.7", maxTokens: 8192 };
+  fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+  const s = await loadSettings();
+  assert.equal(s.models["minimax.io/m3.1-flash"].id, "MiniMax-M3.1-Flash");
+  assert.doesNotThrow(() => resolveModel(s, "minimax.io/m3.1-flash"));
+});
+
+await test("the last-used model follows a folded or retired key", async () => {
+  const { setLastProvider, getLastProvider } = await import(u("core/last-provider.mjs"));
+  for (const [from, to] of [["minimax.io/MiniMax-M3", "minimax.io/m3"], ["minimax.io/MiniMax-M2.5", "minimax.io/m3.1-flash"]]) {
+    writeLegacySettings();
+    const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    raw.models["minimax.io/MiniMax-M2.5"] = { provider: "minimax.io", id: "MiniMax-M2.5", maxTokens: 8192 };
+    fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+    setLastProvider(from, "test");
+    await loadSettings();
+    assert.equal(getLastProvider()?.modelKey, to, from);
+  }
+});
+
+await test("/model never offers a configured pre-M3 model", () => {
+  const settings = { models: { ...DEFAULT_SETTINGS.models, "minimax.io/old": { provider: "minimax.io", id: "MiniMax-M2.7" } } };
+  const rows = providerModelRows(settings, "minimax.io", ["MiniMax-M3.1-Flash"]);
+  assert.ok(!rows.some((r) => r.id === "MiniMax-M2.7"));
+});
+
+await test("a fetched duplicate of a shipped model folds into the shipped key", async () => {
+  writeLegacySettings({ defaultModel: "minimax.io/MiniMax-M3" });
+  const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  raw.models["minimax.io/MiniMax-M3"].health = { ok: true };
+  fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
+  const s = await loadSettings();
+  assert.equal(s.models["minimax.io/MiniMax-M3"], undefined);
+  assert.equal(s.defaultModel, "minimax.io/m3");
+  assert.deepEqual(s.models["minimax.io/m3"].health, { ok: true }, "the duplicate's health fills the gap");
+  assert.equal(s.models["minimax.io/m3"].maxTokens, 128000, "the shipped entry's own fields win");
+});
+
+await test("/model reuses the configured key for every live id", () => {
+  // What api.minimax.io/v1/models returned on 2026-10-19, pre-M3 filtered out.
+  const live = ["MiniMax-M3.1-Flash", "MiniMax-M3"];
+  const rows = providerModelRows(DEFAULT_SETTINGS, "minimax.io", live);
+  assert.equal(rows.find((r) => r.id === "MiniMax-M3.1-Flash").key, "minimax.io/m3.1-flash");
+  assert.equal(rows.find((r) => r.id === "MiniMax-M3").key, "minimax.io/m3");
+  assert.equal(rows.length, new Set(rows.map((r) => r.id)).size, "one row per id");
+  assert.ok(!rows.some((r) => r.key === "minimax.io/MiniMax-M3" || r.key === "minimax.io/MiniMax-M3.1-Flash"),
+    "no second key minted for a configured id");
+});
+
 await test("/model lists m3.1-flash-preview although MiniMax's /models omits it", () => {
   // What api.minimax.io/v1/models actually returned on 2026-10-11: no preview.
   const live = ["MiniMax-M2", "MiniMax-M2.7", "MiniMax-M3"];
@@ -187,10 +280,10 @@ await test("a saved over-cap maxTokens is repaired on load", async () => {
 await test("a maxTokens already under the ceiling is left alone", async () => {
   writeLegacySettings();
   const raw = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-  raw.models["minimax.io/MiniMax-M3"].maxTokens = 32768;
+  raw.models["minimax.io/m3"] = { provider: "minimax.io", id: "MiniMax-M3", maxTokens: 32768 };
   fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2));
   const s = await loadSettings();
-  assert.equal(s.models["minimax.io/MiniMax-M3"].maxTokens, 32768);
+  assert.equal(s.models["minimax.io/m3"].maxTokens, 32768);
 });
 
 await test("newly fetched minimax.io models get a usable output cap", () => {
