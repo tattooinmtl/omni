@@ -247,6 +247,18 @@ export const DEFAULT_SETTINGS = {
     "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
     "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
     "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768, free: true },
+    // MiniMax's default model: the GA M3.1 Flash, and the one /v1/models
+    // advertises. Verified against api.minimax.io on 2026-10-19: chat, tool
+    // calls and image input all work, and max_tokens above
+    // MINIMAX_MAX_OUTPUT_TOKENS 400s as on the rest of the line.
+    "minimax.io/m3.1-flash": {
+      provider: "minimax.io",
+      id: "MiniMax-M3.1-Flash",
+      maxTokens: 128000,
+      contextWindow: 1000000,
+      vision: true,
+      maxToolIterations: 200,
+    },
     "minimax.io/m3": {
       provider: "minimax.io",
       id: "MiniMax-M3",
@@ -648,6 +660,18 @@ export const MINIMAX_MAX_OUTPUT_TOKENS = 524288;
 // What an over-cap entry gets repaired to. Verified good for M2 / M2.1 / M2.7 / M3.
 const MINIMAX_SAFE_OUTPUT_TOKENS = 128000;
 
+// Where a setting that pointed at a removed MiniMax model is sent instead.
+export const MINIMAX_DEFAULT_MODEL = "minimax.io/m3.1-flash";
+
+// MiniMax is discontinuing everything before M3 (M2, M2.1, M2.5, M2.7 and
+// their -highspeed variants), but /v1/models still lists them. They are
+// filtered out of /getmodel and pruned from saved settings so nobody picks a
+// model that is about to stop answering.
+export function isRetiredMiniMaxId(id) {
+  const m = /^MiniMax-M(\d+(?:\.\d+)?)(?![\d.])/i.exec(String(id || ""));
+  return Boolean(m) && Number(m[1]) < 3;
+}
+
 // Model keys that are really credentials. These get created by typing the API
 // key into the <key> slot — `/addmodel <api-key> minimax M3` — and then sit in
 // settings.json as an object key forever. Migrating one would just relocate
@@ -687,6 +711,25 @@ function migrateMiniMax(settings) {
     delete providers[MINIMAX_LEGACY_PROVIDER];
   }
   if (settings.defaultProvider === MINIMAX_LEGACY_PROVIDER) settings.defaultProvider = MINIMAX_PROVIDER;
+
+  // Drop the pre-M3 models, and the second entry /getmodel used to save for a
+  // shipped model under the live id ("minimax.io/MiniMax-M3" beside
+  // "minimax.io/m3"). A setting that pointed at either follows it.
+  const shippedKeyById = new Map();
+  for (const [key, entry] of Object.entries(DEFAULT_SETTINGS.models)) {
+    if (entry.provider === MINIMAX_PROVIDER) shippedKeyById.set(entry.id, key);
+  }
+  for (const [key, entry] of Object.entries(models)) {
+    if (entry?.provider !== MINIMAX_PROVIDER) continue;
+    let target = null;
+    if (isRetiredMiniMaxId(entry.id)) target = MINIMAX_DEFAULT_MODEL;
+    else if (shippedKeyById.has(entry.id) && shippedKeyById.get(entry.id) !== key) target = shippedKeyById.get(entry.id);
+    if (!target) continue;
+    delete models[key];
+    // The shipped entry wins; the duplicate only fills gaps (its health).
+    if (target !== MINIMAX_DEFAULT_MODEL) models[target] = { ...entry, ...models[target] };
+    if (settings.defaultModel === key) settings.defaultModel = target;
+  }
 
   // Repair the shipped-then-saved 977000 output cap (and anything else past
   // the ceiling). Left alone, every MiniMax request 400s before it is sent.

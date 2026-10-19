@@ -8,9 +8,34 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.20 — 2026-10-19
+
+- **Shipped:** this PR · — · TattooAI/minimax-m3-1-flash-f1cbda · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- **MiniMax-M3.1-Flash** ships as `minimax.io/m3.1-flash`, the MiniMax
+  default (1M context, 128000 output cap, image input, 200 tool iterations).
+  Checked live against api.minimax.io before adding: it is listed by
+  `/v1/models`, chats, makes tool calls, reads images, and 400s above the
+  same 524288 output ceiling as M3.
+- **Models before M3 are gone.** MiniMax is discontinuing M2, M2.1, M2.5,
+  M2.7 and their `-highspeed` variants. `/getmodel minimax` no longer lists
+  them, and saved entries are removed on load; a default model that pointed
+  at one moves to `minimax.io/m3.1-flash`. M3 and M3.1-Flash-Preview stay.
+- `/getmodel` no longer saves a second entry for a model that is already
+  configured under another key (`minimax.io/MiniMax-M3` beside the shipped
+  `minimax.io/m3`). Existing duplicates of a shipped MiniMax model fold
+  back into the shipped key on load, keeping its health status.
+- Reasoning that a provider streams in `reasoning_content` (M3.1 Flash,
+  DeepSeek-style APIs) was dropped: nothing showed while the model
+  thought, and `/thinking last` was empty. It now goes through the same
+  `<think>` handling as M3's inline reasoning: collapsed or shown live,
+  kept for `/thinking last`, and stripped from history.
+- Tests: `minimax` covers the new model, the pre-M3 cut-off, pruning,
+  default re-pointing and duplicate folding; new `reasoning-stream` covers
+  `reasoning_content` before an answer, before a tool call, and alone.
+
 ## 3.5.19 — 2026-10-13
 
-- **Shipped:** this PR · — · TattooAI/omni-local-skill-index · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
+- **Shipped:** [#32](https://github.com/tattooinmtl/omni/pull/32) · `2372395` · TattooAI/omni-local-skill-index · session `fc4bcfdc-fdbf-4797-a8a9-2b8f33610bd4`
 - A personal skill index (an add-on such as brain-skills) can now be set in
   your own `agent/settings.json` as `"skillIndex": "<path>"`, which wins
   over the shipped default in `omni.config.json`. Before, the only place
