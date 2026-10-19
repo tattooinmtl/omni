@@ -248,9 +248,9 @@ export const DEFAULT_SETTINGS = {
     "agnes/agnes-2.5-flash": { provider: "agnes", id: "agnes-2.5-flash", maxTokens: 16384, contextWindow: 131072, free: true },
     "agnes/agnes-2.5-pro-alpha": { provider: "agnes", id: "agnes-2.5-pro-alpha", maxTokens: 16384, contextWindow: 131072 },
     "agnes/agnes-2.0-flash": { provider: "agnes", id: "agnes-2.0-flash", maxTokens: 16384, contextWindow: 32768, free: true },
-    // MiniMax's default model: the GA M3.1 Flash, and the one /v1/models
-    // advertises. Verified against api.minimax.io on 2026-10-19: chat, tool
-    // calls and image input all work, and max_tokens above
+    // MiniMax's default model: the released M3.1 Flash, the one /v1/models
+    // advertises. It replaces MiniMax-M3.1-Flash-Preview. Verified against
+    // api.minimax.io on 2026-10-19: chat, tool calls and image input all work, and max_tokens above
     // MINIMAX_MAX_OUTPUT_TOKENS 400s as on the rest of the line.
     "minimax.io/m3.1-flash": {
       provider: "minimax.io",
@@ -276,19 +276,6 @@ export const DEFAULT_SETTINGS = {
       // 30 default most providers use. Letting the loop run that long is
       // the difference between finishing the task and giving up mid-way
       // on a long edit/refactor session.
-      maxToolIterations: 200,
-    },
-    "minimax.io/m3.1-flash-preview": {
-      provider: "minimax.io",
-      // Published id. MiniMax rejects anything else, including the shorter
-      // "M3.1-flash-preview" spelling.
-      id: "MiniMax-M3.1-Flash-Preview",
-      // Same output ceiling as M3. The API 400s max_tokens above
-      // MINIMAX_MAX_OUTPUT_TOKENS (524288) on this line.
-      maxTokens: 128000,
-      contextWindow: 1000000,
-      // Image input. Without this, agent.mjs strips image parts before send.
-      vision: true,
       maxToolIterations: 200,
     },
     // maxTokens is the OUTPUT half of the context, not a second budget:
@@ -664,12 +651,16 @@ const MINIMAX_SAFE_OUTPUT_TOKENS = 128000;
 // Where a setting that pointed at a removed MiniMax model is sent instead.
 export const MINIMAX_DEFAULT_MODEL = "minimax.io/m3.1-flash";
 
-// MiniMax is discontinuing everything before M3 (M2, M2.1, M2.5, M2.7 and
-// their -highspeed variants), but /v1/models still lists them. They are
-// filtered out of /getmodel and pruned from saved settings so nobody picks a
-// model that is about to stop answering.
+// minimax.io has two active models: MiniMax-M3 and MiniMax-M3.1-Flash.
+// Everything before M3 (M2, M2.1, M2.5, M2.7 and their -highspeed variants)
+// is discontinued, though /v1/models still lists it, and the released
+// M3.1 Flash replaces M3.1-Flash-Preview. All of these are filtered out of
+// /getmodel and pruned from saved settings.
+const SUPERSEDED_MINIMAX_IDS = new Set(["minimax-m3.1-flash-preview"]);
 export function isRetiredMiniMaxId(id) {
-  const m = /^MiniMax-M(\d+(?:\.\d+)?)(?![\d.])/i.exec(String(id || ""));
+  const s = String(id || "");
+  if (SUPERSEDED_MINIMAX_IDS.has(s.toLowerCase())) return true;
+  const m = /^MiniMax-M(\d+(?:\.\d+)?)(?![\d.])/i.exec(s);
   return Boolean(m) && Number(m[1]) < 3;
 }
 

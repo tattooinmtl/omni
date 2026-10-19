@@ -8,9 +8,21 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.21 — 2026-10-19
+
+- **Shipped:** this PR · — · TattooAI/minimax-flash-preview-default · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- minimax.io now offers exactly two models: `minimax.io/m3` (MiniMax-M3)
+  and `minimax.io/m3.1-flash` (MiniMax-M3.1-Flash). MiniMax-M3.1-Flash-Preview
+  is removed: the released M3.1 Flash replaces it. A saved Preview entry is
+  pruned on load, and a default or last-used model that pointed at it
+  moves to `minimax.io/m3.1-flash`.
+- Tests: `minimax` pins the shipped minimax.io list to those two ids,
+  checks that the live list (still carrying M2.x) filters down to them,
+  and covers the Preview's migration.
+
 ## 3.5.20 — 2026-10-19
 
-- **Shipped:** this PR · — · TattooAI/minimax-m3-1-flash-f1cbda · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- **Shipped:** [#33](https://github.com/tattooinmtl/omni/pull/33) · `b855379` · TattooAI/minimax-m3-1-flash-f1cbda · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
 - **MiniMax-M3.1-Flash** ships as `minimax.io/m3.1-flash`, the MiniMax
   default (1M context, 128000 output cap, image input, 200 tool iterations).
   Checked live against api.minimax.io before adding: it is listed by
