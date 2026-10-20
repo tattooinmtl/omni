@@ -8,6 +8,24 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.23 — 2026-10-20
+
+- **Shipped:** this PR · — · TattooAI/reflection-provider · session `mvs_7f08f91d50584929a32315c1e41e4870`
+- **Reflection AI** ships as a first-class provider. `Beam-1.0-501B-A23B` is a
+  1M-context model that reasons on every request, so Omni keeps the standard
+  `reasoning_effort` parameter against `https://api.reflection.ai/openai/v1`
+  instead of skipping it. Set the key with `/apikey reflection <key>`,
+  `OMNI_REFLECTION_KEY`, or Reflection's own `REFLECTION_API_KEY`; switch with
+  `/provider reflection`. The model ships with the context window Reflection
+  documents (1,048,576) and its own default output cap (32,768), well under
+  the provider's 131,072 ceiling.
+- Tests: `provider-keys` pins the provider's endpoint, model id, context window,
+  output cap, and the `REFLECTION_API_KEY` alias — live at runtime, never
+  written to `settings.json`.
+- One thing to know: Reflection reasons on every request, and `/effort off`
+  only omits the parameter — so the server applies its own default of `max`,
+  the most expensive tier. Use `/effort low` to actually scale it down.
+
 ## 3.5.22 — 2026-10-19
 
 - **Shipped:** this PR · — · TattooAI/installer-ignore-untracked · session `e47ed03a-177f-4114-b238-4d94d0d7923a`

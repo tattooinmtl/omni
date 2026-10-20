@@ -26,6 +26,9 @@ export const PROVIDER_PRESETS = {
   // Atria ASI — OpenAI-compatible chat/completions with Bearer auth.
   // Keys (atr_…) also read from the vendor's own ATRIA_API_KEY env var.
   atria:   { baseUrl: "https://api.atria-asi.ai/v1", label: "Atria ASI", reasoningParam: "none" },
+  // Reflection AI — OpenAI-compatible chat/completions with Bearer auth.
+  // Keys also read from the vendor's own REFLECTION_API_KEY env var.
+  reflection: { baseUrl: "https://api.reflection.ai/openai/v1", label: "Reflection AI", reasoningParam: "reasoning_effort" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",
@@ -95,6 +98,9 @@ export function resolveProviderAlias(settings, name) {
 // 400s the request outright when max_tokens is too large (see config.mjs).
 const PROVIDER_DEFAULT_MAX_TOKENS = {
   "minimax.io": 128000,
+  // Reflection's Beam models default to 32,768 output tokens of their own —
+  // the 8192 floor would truncate long edits for nothing.
+  reflection: 32768,
 };
 export const FALLBACK_MAX_TOKENS = 8192;
 
