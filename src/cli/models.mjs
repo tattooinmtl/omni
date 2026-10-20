@@ -98,6 +98,9 @@ export function resolveProviderAlias(settings, name) {
 // 400s the request outright when max_tokens is too large (see config.mjs).
 const PROVIDER_DEFAULT_MAX_TOKENS = {
   "minimax.io": 128000,
+  // Reflection's Beam models default to 32,768 output tokens of their own —
+  // the 8192 floor would truncate long edits for nothing.
+  reflection: 32768,
 };
 export const FALLBACK_MAX_TOKENS = 8192;
 

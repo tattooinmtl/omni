@@ -22,6 +22,9 @@ entries were rebuilt from git history).
 - Tests: `provider-keys` pins the provider's endpoint, model id, context window,
   output cap, and the `REFLECTION_API_KEY` alias — live at runtime, never
   written to `settings.json`.
+- One thing to know: Reflection reasons on every request, and `/effort off`
+  only omits the parameter — so the server applies its own default of `max`,
+  the most expensive tier. Use `/effort low` to actually scale it down.
 
 ## 3.5.22 — 2026-10-19
 

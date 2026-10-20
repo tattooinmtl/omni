@@ -66,6 +66,8 @@ const FAMILY_WINDOWS = [
   [/grok/i, 131072],
   // Nemotron (NVIDIA family)
   [/nemotron/i, 131072],
+  // Reflection AI — Beam-1.0 class
+  [/beam/i, 1048576],
   // Agnes AI
   [/agnes-2\.5/i, 131072],
   [/agnes/i, 32768],

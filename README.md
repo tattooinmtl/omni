@@ -4,7 +4,7 @@ Omni-present harness for agents
 
 A from-scratch terminal coding agent for Windows. It talks to any
 **OpenAI-compatible** provider (NVIDIA NIM, xKiro, MiniMax, Agnes, Atria,
-OpenRouter, local llama.cpp, Ollama, …) and runs a tool-calling agent loop with
+Reflection, OpenRouter, local llama.cpp, Ollama, …) and runs a tool-calling agent loop with
 per-tool permissions, sub-agents, self-review, layered memory, goal mode and a
 live neural view. It has **zero npm dependencies**: pure Node ≥ 20 and the
 built-in `fetch`.
@@ -171,8 +171,9 @@ logs.
 ## Providers
 
 Shipped presets: `xkiro` (default), `nvidia`, `minimax.io`, `agnes`, `atria`,
-`openai`, `openrouter`, `groq`, `deepseek`, `google`, `xai`, `grok`, `mistral`,
-`kimi`, `claude`, `cursor`, `together`, `fireworks`, `ollama` and `local`.
+`reflection`, `openai`, `openrouter`, `groq`, `deepseek`, `google`, `xai`,
+`grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `ollama`
+and `local`.
 Any other OpenAI-compatible endpoint works through `/addprovider`.
 
 ```text
