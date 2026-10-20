@@ -149,6 +149,19 @@ export const DEFAULT_SETTINGS = {
       label: "Atria ASI",
       reasoningParam: "none",
     },
+    reflection: {
+      // Reflection AI — OpenAI-compatible /chat/completions (Bearer auth).
+      // Beam-1.0-501B-A23B: 1,048,576-token context, 131,072 max output, and
+      // reasoning is always on (reasoning_effort max|xhigh|high|medium|low,
+      // default "max"), so this provider sends the standard reasoning_effort
+      // parameter rather than skipping it.
+      // Set the key with `/apikey reflection <key>`, OMNI_REFLECTION_KEY, or
+      // the vendor's own REFLECTION_API_KEY (see PROVIDER_ENV_ALIASES).
+      baseUrl: "https://api.reflection.ai/openai/v1",
+      apiKey: "",
+      label: "Reflection AI",
+      reasoningParam: "reasoning_effort",
+    },
     "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
@@ -316,6 +329,11 @@ export const DEFAULT_SETTINGS = {
     // from provider metadata on first use, see core/context.mjs) and maxTokens
     // stays conservative. Raise either with /context once you have a key.
     "atria/dawn-preview": { provider: "atria", id: "Atria-Dawn-Preview", maxTokens: 8192 },
+    // Reflection states Beam-1.0-501B-A23B's limits in its API reference:
+    // 1,048,576 context tokens, 131,072 max output. maxTokens stays at the
+    // provider's own default max_tokens (32,768) rather than its ceiling —
+    // raise it with /context once you have a key.
+    "reflection/beam-1.0-501b-a23b": { provider: "reflection", id: "Beam-1.0-501B-A23B", maxTokens: 32768, contextWindow: 1048576 },
   },
   // Intent router — classifies each turn as "coding" or "assistant" using a
   // warm Python sidecar + local ML (sub-ms, free, no network).
@@ -1026,6 +1044,7 @@ export { providerKeyEnvVar };
 // providers whose own docs tell you to export that exact name.
 const PROVIDER_ENV_ALIASES = {
   atria: ["ATRIA_API_KEY"],
+  reflection: ["REFLECTION_API_KEY"],
 };
 
 // Every env var that can supply this provider's key, canonical name first.

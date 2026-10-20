@@ -26,6 +26,9 @@ export const PROVIDER_PRESETS = {
   // Atria ASI — OpenAI-compatible chat/completions with Bearer auth.
   // Keys (atr_…) also read from the vendor's own ATRIA_API_KEY env var.
   atria:   { baseUrl: "https://api.atria-asi.ai/v1", label: "Atria ASI", reasoningParam: "none" },
+  // Reflection AI — OpenAI-compatible chat/completions with Bearer auth.
+  // Keys also read from the vendor's own REFLECTION_API_KEY env var.
+  reflection: { baseUrl: "https://api.reflection.ai/openai/v1", label: "Reflection AI", reasoningParam: "reasoning_effort" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",

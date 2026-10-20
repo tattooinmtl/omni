@@ -26,6 +26,7 @@ const KEY_VARS = [
   "OMNI_AGNES_KEY", "OMNI_AGNES1_KEY", "OMNI_AGNES2_KEY", "OMNI_AGNES_KEY2",
   "OMNI_MINIMAX_IO_KEY", "OMNI_MINIMAX_KEY",
   "OMNI_ATRIA_KEY", "ATRIA_API_KEY",
+  "OMNI_REFLECTION_KEY", "REFLECTION_API_KEY",
 ];
 function clearEnvKeys() {
   for (const k of KEY_VARS) process.env[k] = "";
@@ -247,6 +248,59 @@ async function main() {
     clearEnvKeys();
     ok("/apikey atria overrides the ATRIA_API_KEY alias and persists", () => {
       assert.equal(json.providers.atria.apiKey, "atr_user-typed");
+      assert.ok(!raw.includes("ENV-SECRET"));
+    });
+  }
+
+  // 10. Reflection ships as a first-class provider. Beam-1.0-501B-A23B is a
+  //     1M-context model that reasons on every request, so the provider keeps
+  //     the standard reasoning_effort parameter (unlike the providers whose
+  //     endpoints would reject it), and its key can come from the vendor's own
+  //     REFLECTION_API_KEY as well as OMNI_REFLECTION_KEY. The alias has to be
+  //     honoured on BOTH sides: filled in on load, stripped back out on save.
+  reset();
+  {
+    const settings = await loadSettings();
+    ok("/provider reflection has an endpoint and a model to switch to", () => {
+      assert.equal(settings.providers.reflection.baseUrl, "https://api.reflection.ai/openai/v1");
+      assert.equal(settings.providers.reflection.reasoningParam, "reasoning_effort");
+      const m = resolveModel(settings, "reflection/beam-1.0-501b-a23b");
+      assert.equal(m.id, "Beam-1.0-501B-A23B");
+      assert.equal(m.providerName, "reflection");
+      assert.equal(m.contextWindow, 1048576);
+      assert.ok(m.maxTokens <= 131072, `maxTokens ${m.maxTokens} exceeds the provider's output ceiling`);
+    });
+    ok("REFLECTION_API_KEY is an accepted alias, after the canonical name", () => {
+      assert.deepEqual(providerKeyEnvVars("reflection"), ["OMNI_REFLECTION_KEY", "REFLECTION_API_KEY"]);
+    });
+  }
+
+  reset();
+  {
+    process.env.REFLECTION_API_KEY = "ENV-SECRET-reflection_alias";
+    const settings = await loadSettings();
+    const runtime = settings.providers.reflection.apiKey;
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("REFLECTION_API_KEY is live at runtime but never lands in settings.json", () => {
+      assert.equal(runtime, "ENV-SECRET-reflection_alias");
+      assert.ok(!raw.includes("ENV-SECRET"), "settings.json contains the alias-sourced secret");
+      assert.equal(json.providers.reflection.apiKey, "");
+    });
+  }
+
+  // 11. /apikey reflection <key> still wins over the alias and persists.
+  reset();
+  {
+    process.env.REFLECTION_API_KEY = "ENV-SECRET-reflection_alias";
+    const settings = await loadSettings();
+    setProviderKey(settings.providers.reflection, "refl_user-typed");
+    await saveSettings(settings);
+    const { raw, json } = readDisk();
+    clearEnvKeys();
+    ok("/apikey reflection overrides the REFLECTION_API_KEY alias and persists", () => {
+      assert.equal(json.providers.reflection.apiKey, "refl_user-typed");
       assert.ok(!raw.includes("ENV-SECRET"));
     });
   }
