@@ -41,7 +41,10 @@ function flattenToolMessages(messages = []) {
         const fn = call.function || {};
         return `Tool call requested: ${fn.name || ""}\nArguments: ${fn.arguments || "{}"}`;
       }).join("\n\n");
-      return { role: "assistant", content: [m.content, calls].filter(Boolean).join("\n\n") };
+      const flat = { role: "assistant", content: [m.content, calls].filter(Boolean).join("\n\n") };
+      // Carried through so applyReasoningEcho can echo or strip it.
+      if (m.reasoning_content !== undefined) flat.reasoning_content = m.reasoning_content;
+      return flat;
     }
     return m;
   });
@@ -57,6 +60,43 @@ function sanitizeForNativeTools(messages) {
   return messages.map((m) => {
     if (m.role !== "tool" || m.name === undefined) return m;
     const { name, ...rest } = m;
+    return rest;
+  });
+}
+
+// Some providers require every earlier assistant message to carry back the
+// reasoning that produced it. Reflection's Beam rejects the request
+// otherwise: "Missing required parameter: 'messages[2].reasoning_content'.
+// This model needs the reasoning of every earlier assistant message."
+//
+// The field is not part of the OpenAI chat spec, and a strict provider
+// validator can reject an unknown field, so echoing it back is opt-in per
+// provider (`echoReasoning: true` on the provider) and stripped from every
+// other provider's request. The strip happens at the wire, not in history —
+// switching providers mid-session keeps the reasoning available.
+export function applyReasoningEcho(messages = [], provider) {
+  if (provider?.echoReasoning === true) {
+    // The provider wants the reasoning of every earlier assistant message.
+    // An empty string does not satisfy it either (measured against
+    // api.reflection.ai), so a message without usable reasoning is a dead
+    // end for the request — say so plainly instead of letting the provider
+    // answer with a bare "missing required parameter" 400.
+    const orphan = messages.find(
+      (m) => m && m.role === "assistant" && !String(m.reasoning_content || "").trim(),
+    );
+    if (orphan) {
+      throw new Error(
+        `${provider.label || "This provider"} needs the reasoning of every earlier assistant message, `
+        + "and this conversation has a reply without any stored reasoning "
+        + "(a session started before the reasoning echo was added, or a reply that was cut off). "
+        + "Start a fresh conversation with /clear to use this provider.",
+      );
+    }
+    return messages;
+  }
+  return messages.map((m) => {
+    if (!m || m.role !== "assistant" || m.reasoning_content === undefined) return m;
+    const { reasoning_content, ...rest } = m;
     return rest;
   });
 }
@@ -93,7 +133,10 @@ export function buildChatBody({ model, messages, tools }) {
   const wire = hoistSystemMessages(messages);
   const body = {
     model: model.id,
-    messages: nativeTools ? sanitizeForNativeTools(wire) : flattenToolMessages(wire),
+    messages: applyReasoningEcho(
+      nativeTools ? sanitizeForNativeTools(wire) : flattenToolMessages(wire),
+      model.provider,
+    ),
     max_tokens: model.maxTokens,
     temperature: 0.2,
     stream: true,
@@ -300,6 +343,10 @@ async function consumeCompletionStream(res, onToken) {
 async function consumeStream(res, onToken) {
   // Accumulators for the final message
   let content = "";
+  // The raw reasoning, without the <think> tags. The tags are for display and
+  // get stripped from the stored content; this copy is what a provider that
+  // echoes reasoning back needs (see applyReasoningEcho).
+  let reasoning = "";
   const toolCallsMap = new Map(); // index -> { id, name, arguments }
   let finishReason = null;
   let usage = null;
@@ -348,6 +395,7 @@ async function consumeStream(res, onToken) {
       // than as <think> tags in content. Wrapped in tags here so the think
       // splitter, /thinking last and the history strip treat it like M3's.
       if (delta && delta.reasoning_content) {
+        reasoning += delta.reasoning_content;
         emit((inReasoning ? "" : "<think>") + delta.reasoning_content);
         inReasoning = true;
       }
@@ -397,6 +445,11 @@ async function consumeStream(res, onToken) {
   if (toolCallsMap.size > 0) {
     message.tool_calls = [...toolCallsMap.values()];
   }
+  // The reasoning that produced this message, kept raw. Reflection's Beam
+  // refuses a request whose earlier assistant messages lost their reasoning
+  // ("Missing required parameter: messages[N].reasoning_content"), so the
+  // harness has to be able to send it back (see applyReasoningEcho).
+  if (reasoning) message.reasoning_content = reasoning;
 
   return {
     message,

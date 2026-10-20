@@ -208,7 +208,10 @@ function messagesWithTextTools(messages) {
     }
     if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       const calls = m.tool_calls.map(serializeToolCall).join("\n");
-      return { role: "assistant", content: [m.content, calls].filter(Boolean).join("\n") };
+      const flat = { role: "assistant", content: [m.content, calls].filter(Boolean).join("\n") };
+      // Carried through so applyReasoningEcho can echo or strip it.
+      if (m.reasoning_content !== undefined) flat.reasoning_content = m.reasoning_content;
+      return flat;
     }
     return m;
   });
