@@ -92,10 +92,14 @@
     // has a 1M context and reasons on every request. Set with /apikey
     // reflection <key>, OMNI_REFLECTION_KEY, or Reflection's own
     // REFLECTION_API_KEY. Switch to it with /provider reflection.
+    // "echoReasoning": Beam requires every earlier assistant message to carry
+    // back the reasoning that produced it, or the request 400s. Other
+    // providers must NOT set this — the field is not in the OpenAI chat spec.
     "reflection": {
       "baseUrl": "https://api.reflection.ai/openai/v1",
       "apiKey": "",
-      "reasoningParam": "reasoning_effort"
+      "reasoningParam": "reasoning_effort",
+      "echoReasoning": true
     }
   },
 

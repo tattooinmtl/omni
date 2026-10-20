@@ -8,6 +8,36 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.24 — 2026-10-20
+
+- **Shipped:** this PR · — · TattooAI/reflection-reasoning-echo · session `mvs_7f08f91d50584929a32315c1e41e4870`
+- **Reasoning is now sent back to providers that require it.** Reflection's
+  Beam models reject a request whose earlier assistant messages lost their
+  reasoning — *"Missing required parameter: 'messages[2].reasoning_content'.
+  This model needs the reasoning of every earlier assistant message"* — so
+  every turn after the first failed with a 400. The harness folded the
+  reasoning into `<think>` tags for display and then threw it away; the raw
+  text is now kept on the message and echoed back on the wire.
+- The echo is **opt-in per provider** (`echoReasoning: true`), because
+  `reasoning_content` is not part of the OpenAI chat spec and a strict
+  provider validator can reject an unknown field. Every other provider has it
+  stripped before the request leaves, and the strip happens at the wire
+  rather than in history, so switching providers mid-session keeps the
+  reasoning available.
+- Compaction is unaffected: it replaces the dropped middle with a *user*
+  digest message, and the kept tail keeps the reasoning it already had.
+- A conversation started before this change has no stored reasoning to send
+  back, and an empty `reasoning_content` does not satisfy the requirement
+  either — so such a request now fails with a plain explanation and the way
+  out (`/clear`) instead of the provider's bare 400.
+- The two text-tools rebuilds of an assistant tool-call message (provider
+  `flattenToolMessages`, agent `messagesWithTextTools`) now carry the
+  reasoning through too, so a `nativeTools: false` setup doesn't lose it on
+  every tool turn and trip the refusal above.
+- Tests: `reasoning-stream` pins the raw reasoning on the message, the echo
+  for a provider that asks for it, and the strip for every provider that
+  does not.
+
 ## 3.5.23 — 2026-10-20
 
 - **Shipped:** [#36](https://github.com/tattooinmtl/omni/pull/36) · `65f4115` · TattooAI/reflection-provider · session `mvs_7f08f91d50584929a32315c1e41e4870`
