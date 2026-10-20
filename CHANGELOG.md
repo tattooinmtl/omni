@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.5.23 — 2026-10-20
 
-- **Shipped:** this PR · — · TattooAI/reflection-provider · session `mvs_7f08f91d50584929a32315c1e41e4870`
+- **Shipped:** [#36](https://github.com/tattooinmtl/omni/pull/36) · `65f4115` · TattooAI/reflection-provider · session `mvs_7f08f91d50584929a32315c1e41e4870`
 - **Reflection AI** ships as a first-class provider. `Beam-1.0-501B-A23B` is a
   1M-context model that reasons on every request, so Omni keeps the standard
   `reasoning_effort` parameter against `https://api.reflection.ai/openai/v1`
