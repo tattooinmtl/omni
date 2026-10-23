@@ -3,6 +3,7 @@
 import { infoLine, warnLine } from "../ui.mjs";
 import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH, Session } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
+import { effectiveRecords } from "../core/session-export.mjs";
 
 // Split a SKILL.md body into heading-anchored chunks so lean mode can BM25-rank
 // them against the user's current request. A chunk starts at every top-level
@@ -162,8 +163,9 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
 // resume (it was ephemeral in the original session and would defeat the
 // purpose to reload 26KB per resume). The prior conversation carries what
 // the skill actually produced; the invocation line preserves intent.
+// /rewind cuts recorded in the log are applied first (effectiveRecords).
 export function restoreSessionMessages(records, msgs) {
-  for (const rec of records) {
+  for (const rec of effectiveRecords(records)) {
     if (rec.type === "user") {
       msgs.push({ role: "user", content: rec.content });
     } else if (rec.type === "assistant" && rec.message) {
@@ -192,15 +194,21 @@ export async function resumeSessionInto(ctx, file) {
   if (!saved) throw new Error(`could not read ${file}`);
   ctx.messages.length = ctx.messages[0]?.role === "system" ? 1 : 0;
   restoreSessionMessages(saved.records, ctx.messages);
-  await ctx.session.append({ type: "resumed_from", file });
-  for (const rec of saved.records) {
-    if (rec.type === "user" || rec.type === "assistant" || rec.type === "tool" || rec.type === "skill") {
-      const { eventId, schemaVersion, ...rest } = rec;
-      await ctx.session.append(rest);
-    }
-  }
+  await copyConversation(saved.records, ctx.session, { type: "resumed_from", file });
   ctx.session.setContextTokens?.(0);
   return ctx.messages.length - (ctx.messages[0]?.role === "system" ? 1 : 0);
+}
+
+// Make `session`'s log replay as exactly the conversation in `records`:
+// a rewind to zero clears whatever the log held before, then the messages
+// still in effect are copied in.
+export async function copyConversation(records, session, marker) {
+  await session.append({ type: "rewind", keep: 0 });
+  if (marker) await session.append(marker);
+  for (const rec of effectiveRecords(records)) {
+    const { eventId, schemaVersion, ...rest } = rec;
+    await session.append(rest);
+  }
 }
 
 // Print setup guidance when the active model's provider has no API key.

@@ -13,6 +13,7 @@
 // input box, which stays on screen while the agent works.
 
 import readline from "node:readline";
+import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import {
@@ -20,7 +21,7 @@ import {
   promptTop, promptBottom, statusBar, statusBarText, setPersonaIndicator, setStatusSink,
 } from "../ui.mjs";
 import { runTurn, steeringMessage } from "../core/agent.mjs";
-import { Session, turnMaxIterations } from "../core/config.mjs";
+import { Session, turnMaxIterations, resolveSessionCode, describeSession } from "../core/config.mjs";
 import { disconnectAll, setMcpConfirm } from "../integrations/mcp.mjs";
 import { disconnectBridge } from "../integrations/bridge.mjs";
 import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
@@ -33,6 +34,8 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
+import { getPermissionMode, cyclePermissionMode, modeLabel } from "../core/permission-mode.mjs";
+import { Checkpointer } from "../core/checkpoints.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
 import { createFooter, stripAnsi } from "./footer.mjs";
@@ -153,13 +156,23 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   // --resume: rebuild the conversation from the last session before prompting.
   // The session just created for this launch is the newest log in the folder,
   // so it is excluded; otherwise --resume would restore itself (nothing).
+  // `--resume <code>` picks that exact conversation, from any folder.
   if (resumeMode) {
-    const [latest] = Session.list({ exclude: ctx.session.file, limit: 1 });
-    if (!latest) {
-      warnLine("--resume: no previous session found for this directory");
+    let target = null;
+    if (typeof resumeMode === "string") {
+      const file = resolveSessionCode(resumeMode);
+      if (!file) warnLine(`--resume: no session with the code ${resumeMode}`);
+      else target = describeSession(file);
     } else {
-      const n = await resumeSessionInto(ctx, latest.file);
-      infoLine(`resumed "${latest.title || latest.id}": ${n} message(s) from ${latest.file}`);
+      [target] = Session.list({ exclude: ctx.session.file, limit: 1 });
+      if (!target) warnLine("--resume: no previous session found for this directory");
+    }
+    if (target) {
+      const n = await resumeSessionInto(ctx, target.file);
+      infoLine(`resumed "${target.title || target.id}": ${n} message(s) · ${target.code}`);
+      if (target.cwd && path.resolve(target.cwd).toLowerCase() !== process.cwd().toLowerCase()) {
+        warnLine(`that conversation happened in ${target.cwd}; you are in ${process.cwd()}`);
+      }
       console.log("");
     }
   }
@@ -216,13 +229,35 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   let multiLineDisplay = "";
   let menuShown = [];        // rows the footer menu is showing right now
 
+  function modeTag() {
+    const m = getPermissionMode();
+    if (m === "default") return "";
+    const label = modeLabel(m);
+    return "  " + (m === "plan" ? c.cyan(`⏸ ${label}`) : m === "auto" ? c.red(`⏵⏵ ${label}`) : c.yellow(`⏵ ${label}`)) + c.dim(" (shift+tab)");
+  }
+
   function idleActivity() {
     if (ctx.currentAbort) {
-      return "  " + c.cyan("(•‿•)⌨") + "  " + c.magenta("Omi: on it…") +
+      return "  " + c.cyan("(•‿•)⌨") + "  " + c.magenta("Omi: on it…") + modeTag() +
         c.dim("   esc to interrupt · enter queues a message · /btw <note> steers now");
     }
-    return "  " + c.cyan("(•‿•)ᕗ") + "  " + c.dim("Omi ready · / for commands · end a line with \\ for more lines");
+    return "  " + c.cyan("(•‿•)ᕗ") + "  " + c.dim("Omi ready · / for commands") + modeTag() + c.dim(" · shift+tab for plan mode");
   }
+
+  // Say which mode is on now. Leaving plan mode re-arms the brainstorming
+  // offer for the next time it's entered.
+  function announceMode(m) {
+    if (m !== "plan") ctx.brainstormOffered = false;
+    const text = {
+      default: "default mode: your permission settings apply",
+      "accept-edits": "accept edits: file edits run without asking",
+      plan: "plan mode: read-only until you approve a plan",
+      auto: "auto: nothing asks except high-risk shell commands",
+    }[m] || m;
+    if (footer) flashNote(text);
+    else { process.stdout.write("\n"); infoLine(text); if (promptActive) rl.prompt(true); }
+  }
+  ctx.announceMode = announceMode;
 
   const footer = boxMode ? createFooter({
     out: process.stdout,
@@ -296,6 +331,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     onStdinData = (chunk) => {
       const s = typeof chunk === "string" ? chunk : decoder.write(chunk);
       if (ctx.currentAbort && isInterruptKey(s)) { ctx.currentAbort.abort(); return; }
+      // Shift+Tab cycles the permission mode, idle or mid-turn. Caught here,
+      // before readline, which would also treat it as Tab and complete.
+      if (s === "\x1b[Z") { announceMode(cyclePermissionMode()); return; }
       // readline raises Ctrl-C itself while it has the keyboard; when it's
       // paused (plain-mode generation) nobody would see it.
       if (rl.paused && ctx.currentAbort && s.includes("\x03")) { ctx.currentAbort.abort(); return; }
@@ -334,7 +372,22 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
 
   // Permission "ask" confirmation, asked in the prompt itself mid-turn.
   ctx.confirmToolUse = async function confirmToolUse(name, summary) {
-    const q = c.yellow(`  allow ${name}${summary ? ` (${String(summary).slice(0, 80)})` : ""}? [y/N/a=always] `);
+    return ctx.askLine(c.yellow(`  allow ${name}${summary ? ` (${String(summary).slice(0, 80)})` : ""}? [y/N/a=always] `));
+  };
+
+  // The agent's ask_user (and exit_plan_mode's approval) land here. Options
+  // are numbered; typing a number picks one, anything else is a free answer.
+  ctx.askUser = async function askUser({ question, options = [] }) {
+    console.log("");
+    console.log(c.bold("  " + String(question).trim().split("\n").join("\n  ")));
+    options.forEach((o, i) => console.log(`    ${c.cyan(String(i + 1))}. ${o}`));
+    const answer = String(await ctx.askLine(c.yellow(options.length ? `  your answer (1-${options.length}, or type one): ` : "  your answer: ")) || "").trim();
+    const n = /^\d+$/.test(answer) ? Number(answer) : 0;
+    return n >= 1 && n <= options.length ? options[n - 1] : answer;
+  };
+
+  // One line of input asked in the prompt box, keeping any half-typed draft.
+  ctx.askLine = async function askLine(q) {
     // readline's question() would glue a half-typed draft onto the answer.
     const draft = { line: rl.line || "", cursor: rl.cursor || 0 };
     rl.line = "";
@@ -542,6 +595,20 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     });
   }
 
+  // Snapshot the workspace before a turn first changes something (/rewind).
+  // Off with settings.checkpoints:false; after one failure (no git, a huge
+  // folder) it stays off for the session and says so once.
+  ctx.checkpointer = ctx.settings.checkpoints === false ? null : new Checkpointer();
+  function takeCheckpoint(turnStart) {
+    const cp = ctx.checkpointer;
+    if (!cp || cp.disabled) return;
+    try {
+      cp.snapshot({ ...turnStart, session: ctx.session.file });
+    } catch (e) {
+      warnLine(`checkpoints off for this session: ${e.message}`);
+    }
+  }
+
   // Run one agent turn, then keep going while goal mode queues continuations.
   async function runAgentTurns() {
     // Plain mode: readline would echo keystrokes into the streaming output, so
@@ -551,6 +618,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     while (keepGoing) {
       ctx.currentAbort = new AbortController();
       renderFooter();
+      // Where this turn starts, for /rewind: the prompt that triggered it is
+      // the last message (and the last conversation record in the log).
+      let promptAt = ctx.messages.length - 1;
+      while (promptAt > 0 && ctx.messages[promptAt].role !== "user") promptAt--;
+      const turnStart = {
+        messageIndex: promptAt,
+        recordCount: Math.max(0, ctx.session.conversationLength - 1),
+        label: typeof ctx.messages[promptAt]?.content === "string" ? ctx.messages[promptAt].content : "(prompt)",
+      };
       await runTurn({
         model: ctx.model,
         settings: ctx.settings,
@@ -565,6 +641,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         showThinking: ctx.settings.showThinking,
         contextMode: ctx.contextMode,
         takeSteering: () => ctx.steerQueue.splice(0),
+        beforeMutation: () => takeCheckpoint(turnStart),
       });
       const aborted = ctx.currentAbort.signal.aborted;
       ctx.currentAbort = null;
@@ -674,6 +751,21 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
       return showPrompt();
     }
+    // The first prompt in plan mode: offer to explore it with the
+    // brainstorming skill before the agent starts planning.
+    if (getPermissionMode() === "plan" && !ctx.brainstormOffered) {
+      ctx.brainstormOffered = true;
+      const brainstorm = ctx.skillByCommand?.get("/brainstorming");
+      if (brainstorm) {
+        const yes = /^y(es)?$/i.test(String(await ctx.askLine(c.cyan("  plan mode: load the brainstorming skill to explore this first? [y/N] ")) || "").trim());
+        if (yes) {
+          infoLine(skillLoadedLine(brainstorm));
+          await applySkill(brainstorm, hooked.content, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
+          if (!reportMissingKey(ctx.model) && !activeModelBlockedByHealth(ctx)) await runAgentTurns();
+          return showPrompt();
+        }
+      }
+    }
     ctx.messages.push({ role: "user", content: hooked.content });
     await ctx.session.append({ type: "user", content: hooked.content });
     if (ctx.routerCfg.enabled && ctx.routeMode === "auto" && !ctx.routePinned) {
@@ -755,6 +847,10 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     replClosed = true;
     if (onStdinData) process.stdin.off("data", onStdinData);
     if (footer) { footer.disable(); setStatusSink(null); }
+    // Only worth saying when there is something to come back to.
+    if (ctx.session?.conversationLength > 0 && ctx.session.code) {
+      console.log(c.dim(`\n  come back to this conversation: omni --resume ${ctx.session.code}`));
+    }
     if (tty) {
       if (bracketPaste) process.stdout.write("\x1b[?2004l");
       try { process.stdin.setRawMode(false); } catch { /* already closed */ }

@@ -8,9 +8,62 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.26 — 2026-10-22
+
+- **Shipped:** this PR · — · TattooAI/safety-controls · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- Phase 2 of the harness parity plan: safety and controls, plus sessions.
+- **Permission modes.** `default`, `accept-edits`, `plan` and `auto`, cycled
+  with Shift+Tab (caught before readline, so it doesn't also tab-complete) or
+  set with `/mode`, `/plan [prompt]`, `--mode`, or `settings.permissionMode`.
+  The prompt box shows the mode, and a note in the system prompt tells the
+  model. No mode overrides a `deny`; `auto` still asks for high-risk shell
+  commands and `create_tool`, and `/mode auto` confirms first. The mode is
+  process-wide, so sub-agents spawned in plan mode are read-only too.
+- **Plan mode.** Only reads, searches and single read-only shell commands run
+  (no chaining or redirection); edits, writes, other commands, unknown
+  extension tools and `mcp` are refused with a message telling the model to
+  plan instead. The new `exit_plan_mode` tool shows the plan and asks you:
+  implement, implement with accept-edits, keep planning, or type changes. An
+  approved plan's steps are added to `project_todo`. The first prompt sent in
+  plan mode offers to load the brainstorming skill.
+- **Checkpoints and `/rewind`.** Before a turn first changes something, the
+  workspace is snapshotted into a shadow git store in
+  `agent/checkpoints/<project>/` (never the project's own `.git`; works in
+  folders that aren't repos; `.gitignore` and `node_modules/` etc. skipped;
+  catches shell-made changes too). `/rewind` restores files, the conversation
+  (and puts the prompt back in the box), or both; a rewind snapshots first so
+  it can be undone. One failure (no git, a folder too large for 30 s) turns
+  checkpoints off for the session with one warning. `"checkpoints": false`
+  turns them off.
+- **Session codes.** Every conversation has a code
+  (`omni-session-<time>-<folder>`), derived from its log name so old sessions
+  have one too. `omni --resume <code>` and `/resume <code>` work from any
+  folder. `/status` shows the code and Omni prints it on exit. Search hits
+  and the `/resume` list show codes.
+- **`/fork`** continues in a copy and leaves the original log untouched.
+  **`/export [md|html|json] [file]`** writes the conversation, with the HTML
+  a single page with no external fonts, scripts or links, escaped, and in
+  light and dark. **`/clear`** now starts a new log, so the cleared
+  conversation stays resumable whole.
+- The log now records rewinds (`{type:"rewind", keep}`). Resume, fork and
+  export apply them, and resume/fork copy only the messages still in effect,
+  so a log always replays to what you saw.
+- **Fixed: `ask_user` never reached the user.** The tool looked for
+  `ctx.askUser`, which the REPL never set, so every question got "no
+  interactive user". The REPL now asks in the prompt box, with numbered
+  options.
+- **Fixed:** two sessions started in the same millisecond (parallel
+  sub-agents) shared one log file.
+- Tests: `permission-mode` (17, including plan-mode refusal and
+  `beforeMutation` inside a real `runTurn`), `checkpoints` (10, a real shadow
+  store: edits, deletions, new files, CRLF byte-for-byte, undo, `/rewind`
+  both/code-only) and `session-tools` (11: codes across folders, fork,
+  resume into a used session, md/html/json export, `/clear`).
+  `session-picker` now expects codes in search hits.
+
 ## 3.5.25 — 2026-10-22
 
-- **Shipped:** this PR · — · TattooAI/claw-code-harness-audit-74f6c1 · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Shipped:** [#38](https://github.com/tattooinmtl/omni/pull/38) · `df48c25` · TattooAI/claw-code-harness-audit-74f6c1 · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
 - Phase 1 of the harness parity plan (Claude Code, Hermes Agent, Pi).
 - **Project instructions.** Omni now follows `OMNI.md`, or an existing
   `AGENTS.md` / `CLAUDE.md`, from the repo root down to the cwd, plus

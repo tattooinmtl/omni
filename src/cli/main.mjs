@@ -31,6 +31,8 @@ import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
 import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
 import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
+import { setPermissionMode } from "../core/permission-mode.mjs";
+import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 
@@ -185,12 +187,20 @@ export async function main(args) {
     }
   }
 
-  // --resume flag: continue last session
+  // --resume [code]: continue the last session here, or the one with that
+  // code (omni-session-…) from any folder.
   let resumeMode = false;
   const ri = args.indexOf("--resume");
   if (ri !== -1) {
-    args.splice(ri, 1);
-    resumeMode = true;
+    resumeMode = isSessionCode(args[ri + 1]) ? args[ri + 1].trim().toLowerCase() : true;
+    args.splice(ri, resumeMode === true ? 1 : 2);
+  }
+
+  // --mode default|accept-edits|plan|auto, else settings.permissionMode.
+  const modeIdx = args.indexOf("--mode");
+  const modeArg = modeIdx !== -1 ? args.splice(modeIdx, 2)[1] : settings.permissionMode;
+  if (modeArg) {
+    try { setPermissionMode(modeArg); } catch (e) { warnLine(`${e.message}; starting in default mode`); }
   }
 
   let model;

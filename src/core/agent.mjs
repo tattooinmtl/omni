@@ -27,6 +27,9 @@ import {
 import fs from "node:fs";
 import { runHooks, hasHooks } from "./hooks.mjs";
 import { forgeCompact, planCompaction, mechanicalDigest } from "./compaction.mjs";
+import {
+  getPermissionMode, planModeAllows, PLAN_DENIED, EDIT_TOOLS, syncModeGuidance, isMutatingCall,
+} from "./permission-mode.mjs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -689,12 +692,19 @@ const alwaysAllowed = new Set();
 // Resolve a tool call against the user's permission settings.
 // States: "allow" (silent), "deny" (blocked with an error message the model
 // sees), "ask" (interactive confirmation via the REPL). "*" sets the default
-// for unlisted tools; no entry at all means allow.
-async function checkPermission(name, summary, permissions, confirmTool) {
-  const state = (permissions && (permissions[name] ?? permissions["*"])) || "allow";
+// for unlisted tools; no entry at all means allow. The permission mode
+// (core/permission-mode.mjs) applies on top: plan refuses anything that
+// changes state, accept-edits and auto turn some "ask"s into "allow", and no
+// mode ever overrides a "deny".
+// Exported for testing (tests/permission-mode.test.mjs).
+export async function checkPermission(name, summary, permissions, confirmTool, args = {}) {
+  const mode = getPermissionMode();
+  if (mode === "plan" && !planModeAllows(name, args)) return { allowed: false, message: PLAN_DENIED };
+  let state = (permissions && (permissions[name] ?? permissions["*"])) || "allow";
   if (state === "deny") {
     return { allowed: false, message: `DENIED: the user's permission settings block the "${name}" tool. Do not retry it; use another approach or ask the user.` };
   }
+  if (state === "ask" && (mode === "auto" || (mode === "accept-edits" && EDIT_TOOLS.has(name)))) state = "allow";
   if (state !== "ask" || alwaysAllowed.has(name)) return { allowed: true };
   if (!confirmTool) {
     return { allowed: false, message: `DENIED: "${name}" requires interactive confirmation (permission "ask") but this session is non-interactive.` };
@@ -754,7 +764,10 @@ export function steeringMessage(note) {
   return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null }) {
+  // beforeMutation: called once, right before the first call this turn that
+  // changes something runs. The REPL takes its /rewind checkpoint there.
+  let mutationSeen = false;
   // Lean-mode bookkeeping — the goal is the first non-synthesized user turn
   // this session, and the tool trail feeds state.json + the compaction
   // digest. Both live inside runTurn's closure so nothing leaks between
@@ -831,6 +844,10 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         }
       }
     }
+
+    // The mode can change mid-turn (Shift+Tab, an approved plan), so the
+    // note telling the model which mode it's in is refreshed every step.
+    syncModeGuidance(messages);
 
     // Notes the user sent with /btw while this turn was running: hand them to
     // the model before its next step, so it can steer without being stopped.
@@ -1085,7 +1102,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // Resolve permissions sequentially BEFORE parallel execution so "ask"
     // confirmations don't interleave on the terminal.
     for (const p of parsed) {
-      p.permission = await checkPermission(p.name, argSummary(p.name, p.args), permissions, confirmTool);
+      p.permission = await checkPermission(p.name, argSummary(p.name, p.args), permissions, confirmTool, p.args);
       if (p.permission.allowed) {
         const riskGate = await checkCommandRisk(p.name, p.args, confirmTool);
         if (riskGate) {
@@ -1110,6 +1127,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         if (hook.context) p.hookNote = hook.context;
       }
       if (!p.permission.allowed) warnLine(`${p.name}: ${p.permission.message.split(":")[0].toLowerCase()} by permissions`);
+    }
+
+    if (beforeMutation && !mutationSeen && parsed.some((p) => p.permission.allowed && isMutatingCall(p.name, p.args))) {
+      mutationSeen = true;
+      try { await beforeMutation(); } catch (e) { warnLine(`checkpoint skipped: ${e.message}`); }
     }
 
     const toolCategory = statusForTools(calls);

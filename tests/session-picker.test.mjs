@@ -145,23 +145,22 @@ await ok("at most two hits per session, newest log first on ties", () => {
   assert.ok(perFile.has(migrateFile) && perFile.has(fixFile));
 });
 
-await ok("scope 'all' reaches other projects and points at their log instead of /resume", () => {
+await ok("scope 'all' reaches other projects; their session code resumes them from here", () => {
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "omni-sesspick-other-"));
   const otherFile = writeSession([user("tune the vulkan backend threads")], { cwd: other });
   assert.deepEqual(searchSessions("vulkan backend"), []);
   const hits = searchSessions("vulkan backend", { scope: "all" });
   assert.equal(hits[0].session.file, otherFile);
   const text = formatHits(hits, { scope: "all" });
-  assert.match(text, /log: /);
-  assert.doesNotMatch(text, /resume: \/resume/);
+  assert.ok(text.includes(`resume: /resume ${describeSession(otherFile).code}  (from another folder)`), text);
 });
 
-await ok("session_search tool excludes the running session and offers /resume ids", async () => {
+await ok("session_search tool excludes the running session and offers session codes", async () => {
   const ctx = ctxFor();
   await ctx.session.append(user("flaky retry flaky retry flaky retry"));
   setSessionCtx(ctx);
   const out = await runTool("session_search", { query: "flaky retry" });
-  assert.match(out, new RegExp(`resume: /resume ${path.basename(fixFile, ".jsonl")}`));
+  assert.match(out, new RegExp(`resume: /resume ${describeSession(fixFile).code}`));
   assert.ok(!out.includes(path.basename(ctx.session.file, ".jsonl")), "must not find the conversation it is part of");
   setSessionCtx(null);
   fs.rmSync(ctx.session.file);
