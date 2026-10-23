@@ -143,7 +143,10 @@ function runCommand(hook, payload) {
         cwd: process.cwd(),
         windowsHide: true,
         env: { ...process.env, OMNI_HOOK_EVENT: hook.event, OMNI_PROJECT_DIR: process.cwd() },
-        stdio: ["pipe", "pipe", "pipe"],
+        // A background hook's output is ignored, so it gets no stdout/stderr
+        // pipes: an open pipe to a child that outlives Omni can abort Node's
+        // exit on Windows.
+        stdio: hook.background ? ["pipe", "ignore", "ignore"] : ["pipe", "pipe", "pipe"],
         detached: hook.background && process.platform !== "win32",
       });
     } catch (e) {
@@ -152,9 +155,8 @@ function runCommand(hook, payload) {
     }
     if (hook.background) {
       child.on("error", () => {});
+      child.stdin.on("error", () => {});
       try { child.stdin.end(JSON.stringify(payload)); } catch { /* ignore */ }
-      child.stdout.resume();
-      child.stderr.resume();
       child.unref?.();
       const t = setTimeout(() => killTree(child), hook.timeoutMs);
       t.unref?.();

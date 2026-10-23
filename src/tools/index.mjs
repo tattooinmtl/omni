@@ -23,6 +23,9 @@ import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
 import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
+import { searchSessions, formatHits } from "../core/session-search.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
+import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -1098,6 +1101,25 @@ export const tools = [
         properties: {
           limit: { type: "integer", description: "Max entries, default 20" },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "session_search",
+      description:
+        "Search past conversations with the user: what they asked and what you answered in earlier sessions. " +
+        "Use it when the user refers to earlier work (\"like last time\", \"the bug we fixed yesterday\", \"what did we decide about X\") " +
+        "or when a decision may already have been made in a previous session. Returns dated snippets with a /resume id per session.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Words to look for, e.g. 'retry policy apiClient'" },
+          scope: { type: "string", enum: ["project", "all"], description: "'project' (default) searches sessions started in this folder; 'all' searches every project." },
+          limit: { type: "integer", description: "Max snippets, default 8" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -2371,6 +2393,20 @@ export const impl = {
     const hits = provider.search(query, {}, { limit: Math.max(1, Math.min(Number(limit) || 8, 50)) });
     if (!hits.length) return `(no memories matched "${query}")`;
     return clip(hits.map(formatMemoryRecord).join("\n"));
+  },
+
+  session_search({ query, scope = "project", limit = 8 } = {}) {
+    const n = Math.max(1, Math.min(Number(limit) || 8, 30));
+    const s = scope === "all" ? "all" : "project";
+    const hits = searchSessions(query, { scope: s, limit: n, exclude: _sessionCtx?.session?.file });
+    // Each matching session lights up under the Sessions hub in /neuralview.
+    for (const h of hits) {
+      publishActivity({
+        kind: "live_node", op: "add", nodeId: "session-" + h.session.id, parent: SESSIONS_HUB_ID,
+        label: h.session.title || h.session.id, detail: h.session.file, nodeKind: "session", meta: { file: h.session.file },
+      });
+    }
+    return formatHits(hits, { scope: s });
   },
 
   memory_list({ limit = 20 } = {}) {

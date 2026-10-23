@@ -40,7 +40,13 @@ export async function startMockProvider(script = []) {
     baseUrl,
     requests,
     push: (...r) => queue.push(...r),
-    close: () => new Promise((resolve) => server.close(resolve)),
+    // Drop fetch's idle keep-alive sockets, then give them a moment to finish
+    // closing: process.exit() while one is mid-close aborts Node 24 on Windows
+    // ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)").
+    close: async () => {
+      await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    },
   };
 }
 

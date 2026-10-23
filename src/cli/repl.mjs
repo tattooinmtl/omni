@@ -28,7 +28,7 @@ import { classifyIntent, killSidecar } from "../integrations/router.mjs";
 import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
 import { stopNeuralView } from "../local/neuralview-server.mjs";
-import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
+import { applySkill, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
@@ -151,13 +151,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   detectContextWindow(ctx).catch(() => {});
 
   // --resume: rebuild the conversation from the last session before prompting.
+  // The session just created for this launch is the newest log in the folder,
+  // so it is excluded; otherwise --resume would restore itself (nothing).
   if (resumeMode) {
-    const lastSession = await Session.findLast();
-    if (!lastSession) {
+    const [latest] = Session.list({ exclude: ctx.session.file, limit: 1 });
+    if (!latest) {
       warnLine("--resume: no previous session found for this directory");
     } else {
-      restoreSessionMessages(lastSession.records, ctx.messages);
-      infoLine(`resumed ${ctx.messages.length} message(s) from ${lastSession.file}`);
+      const n = await resumeSessionInto(ctx, latest.file);
+      infoLine(`resumed "${latest.title || latest.id}": ${n} message(s) from ${latest.file}`);
       console.log("");
     }
   }

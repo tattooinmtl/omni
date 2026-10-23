@@ -130,10 +130,12 @@ await ok("a command hook reads the event as JSON on stdin and can block with exi
 
 await ok("a background command returns at once and its answer is ignored", async () => {
   clearHooks();
-  registerHook({ event: "SessionStart", background: true, command: scriptHook(`setTimeout(() => { process.stdout.write('{"decision":"deny"}'); process.exit(2); }, 3000);`) });
+  registerHook({ event: "SessionStart", background: true, command: scriptHook(`setTimeout(() => { process.stdout.write('{"decision":"deny"}'); process.exit(2); }, 1200);`) });
   const t = Date.now();
   const r = await runHooks("SessionStart", {});
-  assert.ok(Date.now() - t < 1500, "must not wait for the background hook");
+  assert.ok(Date.now() - t < 1000, "must not wait for the background hook");
+  // Let the child finish so the suite never exits with it still running.
+  await new Promise((r) => setTimeout(r, 1500));
   assert.equal(r.denied, false);
 });
 

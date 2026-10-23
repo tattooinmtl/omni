@@ -49,6 +49,9 @@ import { providerKeyEnvVar } from "../core/config.mjs";
 import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
 import { listHooks } from "../core/hooks.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
+import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
+import { runArrowPicker } from "./models.mjs";
+import { resumeSessionInto } from "./helpers.mjs";
 
 function pkgVersion() {
   try {
@@ -182,14 +185,45 @@ export const COMMANDS = [
     },
   },
   {
-    name: "resume", aliases: [], usage: "/resume", category: "Session",
-    summary: "restore the last session for this directory",
-    handler: async (ctx) => {
-      const lastSession = await Session.findLast();
-      if (!lastSession) { warnLine("no previous session found"); return; }
-      infoLine("resuming from " + lastSession.file);
-      restoreSessionMessages(lastSession.records, ctx.messages);
-      infoLine("restored " + ctx.messages.length + " messages");
+    name: "resume", aliases: [], usage: "/resume [latest|<number>|<session id>]", category: "Session",
+    summary: "pick an earlier conversation in this folder and continue it",
+    handler: async (ctx, arg) => {
+      const sessions = Session.list({ exclude: ctx.session?.file });
+      if (!sessions.length) { warnLine("no earlier conversation in this folder to resume"); return; }
+      const want = arg.trim();
+      let pick = null;
+      if (want === "latest") pick = sessions[0];
+      else if (/^\d+$/.test(want)) pick = sessions[Number(want) - 1] || null;
+      else if (want) pick = sessions.find((s) => s.id === want) || null;
+      else if (ctx.canRaw) {
+        const file = await runArrowPicker(
+          sessions.map((s) => ({ id: s.file, label: `${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"}`, dim: `${s.prompts} prompt(s)` })),
+          { ctx, title: "Resume a conversation", hint: "↑/↓ to choose, Enter to resume, Esc to cancel" },
+        );
+        if (!file) { infoLine("resume cancelled"); return; }
+        pick = sessions.find((s) => s.file === file);
+      } else {
+        infoLine("earlier conversations in this folder, newest first:");
+        sessions.slice(0, 15).forEach((s, i) => console.log(`  ${String(i + 1).padStart(2)}. ${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"} ${c.dim(`· ${s.prompts} prompt(s) · ${s.id}`)}`));
+        infoLine("/resume <number> continues one");
+        return;
+      }
+      if (!pick) { warnLine(`no session "${want}" here — /resume lists them`); return; }
+      const n = await resumeSessionInto(ctx, pick.file);
+      infoLine(`resumed "${pick.title || pick.id}" from ${formatWhen(pick.started || pick.updated)}: ${n} message(s)`);
+    },
+  },
+  {
+    name: "history", aliases: [], usage: "/history <words> [--all]", category: "Session",
+    summary: "search what was said in earlier conversations (this folder, or --all)",
+    handler: (ctx, arg) => {
+      let query = arg.trim();
+      const all = /(^|\s)--all(\s|$)/.test(query);
+      query = query.replace(/(^|\s)--all(\s|$)/, " ").trim();
+      if (!query) { warnLine("usage: /history <words> [--all] — /resume lists recent conversations"); return; }
+      const scope = all ? "all" : "project";
+      const hits = searchSessions(query, { scope, exclude: ctx.session?.file, limit: 10 });
+      console.log(formatHits(hits, { scope }));
     },
   },
   {
