@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.28
+# OMNI-AGENT 3.5.29
 
 Omni-present harness for agents
 
@@ -22,6 +22,18 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+**3.5.29**
+- **Learned skills:** after a long task that passed review, Omni offers to
+  save how it was done as a `/command`. Skills you stop using fade.
+- **Scheduled runs:** `/schedule add weekdays 09:00 <prompt>` runs unattended
+  through Windows Task Scheduler; results land in `/inbox` with a
+  notification.
+- **RPC mode:** `omni --rpc` lets another program hold a conversation over
+  stdio, including answering tool approvals and the agent's questions.
+- **`/tree`** shows how your conversations forked and resumed.
+- **Extensions** can add slash commands and status-bar items.
+- **`/route learn`** trains the persona router on your own prompts.
 
 **3.5.28**
 - **Named sub-agents:** `explorer`, `reviewer` and `tester` ship with Omni;
@@ -275,6 +287,52 @@ a hook blocked the prompt), `3` it reached `--max-turns` first. Headless runs
 never stop to ask: tools set to `ask` are refused, and a `--model` given to a
 script doesn't become your next session's model.
 
+### RPC (drive Omni from another program)
+
+`omni --rpc` keeps a whole conversation open over stdio, one JSON object per
+line each way, for an editor, the OmniBots tray or a script. Everything the
+terminal would show goes to stderr.
+
+```jsonc
+// you send                                              // Omni sends
+{"id":1,"method":"prompt","params":{"text":"fix the test"}}
+                                                         {"type":"user", …}
+                                                         {"type":"confirm","requestId":1,"tool":"write_file", …}
+{"id":2,"method":"confirm","params":{"requestId":1,"answer":"y"}}
+                                                         {"type":"assistant","text":"Fixed it.", …}
+                                                         {"id":1,"result":{"stop":"done","result":"Fixed it.", …}}
+```
+
+Methods: `prompt` (queued, replies when the turn ends), `steer`, `abort`,
+`command` (any slash command, e.g. `/mode plan`), `status`, `set_mode`,
+`set_model`, `confirm` (answer a tool approval: `y`, `n` or `a`), `answer`
+(answer the agent's question) and `exit`. Events: `ready`, then `user`,
+`assistant`, `tool_result` and `error` as they happen (the same shapes as
+`--output stream-json`), `confirm` when a tool needs your OK, and `question`
+when the agent asks you something.
+
+### Scheduled runs
+
+```
+/schedule add daily 09:00 run the tests and tell me what fails
+/schedule add weekdays 18:30 --agent reviewer review today's commits
+/schedule add every 2h --mode plan check the build and report
+/schedule                     list jobs, when they last ran and how it went
+/schedule run <id>            run one now, in the background
+/schedule remove <id>
+/inbox [clear]                results, newest first
+```
+
+Timetables: `daily HH:MM`, `weekdays HH:MM`, `weekly mon HH:MM`, `hourly`,
+`every 30m`, `every 2h`. On Windows each job is registered with Task
+Scheduler as `\Omni\<id>`, so it runs whether or not Omni is open; elsewhere
+`/schedule add` prints the crontab line to add. A run is a headless Omni in
+the folder you added the job from (`--mode` and `--agent` apply). The result
+goes to `/inbox` with a Windows notification, and Omni tells you at startup
+when there are results you haven't seen. Unattended runs never stop to ask,
+so tools set to `ask` are refused. `omni schedule list | run <id> | run-due`
+work from outside Omni too.
+
 ## Commands
 
 Tab completes `/commands`, typing `/` opens a live menu, and `/help` lists
@@ -282,8 +340,8 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 
 | Category | Commands |
 |---|---|
-| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
@@ -486,9 +544,33 @@ omni --resume                 the latest one in this folder
 /resume 2 | latest | <code>   skip the picker
 /history <words> [--all]      search what was said (the agent has session_search)
 /fork                         carry on in a copy; the original stays as it was
+/tree                         how this folder's conversations forked and resumed; pick one
 /export [md|html|json] [file] save it (html is one standalone page)
 /clear                        start fresh; the old conversation stays resumable
 ```
+
+### Learned skills
+
+When a run took 8 or more tool calls and passed `self_review` (or finished a
+`/goal`), Omni asks whether to save how it was done. Say yes and the agent
+writes the procedure as a skill (general steps, commands that worked, how to
+check, traps to avoid) with the `skill_create` tool, shows it to you, and
+saves it once you approve, under `~/.omni/agent/skills/learned/`. From then
+on it is a `/command` and `find_skill` finds it.
+
+Each use adds weight, and the weight halves every 30 days a skill goes
+unused. One that has faded drops out of the prompt, `find_skill` and the `/`
+menu, but keeps working if you type it. `/learned` lists them by weight;
+`/learned forget <name>` deletes one.
+
+### Training the router on your sessions
+
+The router picks the coding or assistant persona for each prompt.
+`/route learn` (or `/route learn --all` for every folder) labels the prompts
+you typed by what the agent then did, editing and running things or just
+answering, and writes them to `router/data/sessions.jsonl`. That file is
+gitignored because it holds your prompts. `python router/train.py` reads it
+on top of the shipped examples.
 
 ### Rewind
 

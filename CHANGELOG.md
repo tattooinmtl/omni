@@ -8,9 +8,67 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.29 — 2026-10-23
+
+- **Shipped:** this PR · — · TattooAI/learning-reach · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- Phase 4 of the harness parity plan (learning and reach) and the `/tree`
+  view left from phase 3.
+- **Learned skills.** After a run of 8+ tool calls that passed `self_review`
+  (or a `/goal` that completed), the REPL offers to save how it was done.
+  - The agent drafts the skill with the new `skill_create` tool, and you
+    approve, decline or reply with changes.
+  - Skills are stored in `<HOME>/skills/learned/<name>/SKILL.md` and load as
+    slash commands at startup. A bundled skill wins a name clash, and a learned
+    skill can never take a built-in command, template or bundled skill name.
+  - Uses are counted (a `/command` or `invoke_skill`), and weight halves
+    every 30 days without use, with a 14-day grace period. A faded skill
+    leaves the prompt, `find_skill` and the `/` menu but still runs by name.
+  - `find_skill` tags them `[learned, used N×]`. `/learned [forget <name>]`.
+- **Local scheduler.** `/schedule add <daily HH:MM|weekdays HH:MM|weekly
+  <day> HH:MM|hourly|every Nm|Nh> [--mode m] [--model m] [--agent a] <prompt>`,
+  plus `/schedule`, `remove <id>` and `run <id>`.
+  - Jobs live in `<HOME>/schedule.json`. On Windows each is registered with
+    Task Scheduler as `\Omni\<id>` running `omni schedule run <id>`;
+    elsewhere Omni prints the crontab line.
+  - A run is a headless Omni in the job's folder. Results go to
+    `<HOME>/inbox/` with a Windows notification (WinRT toast through
+    PowerShell, no module), and a failed run still leaves an entry.
+  - `/inbox [clear]` shows them, and the REPL mentions unread results at
+    startup. `omni schedule list|run <id>|run-due` for other runners;
+    `OMNI_SCHEDULER=none` and `OMNI_NO_TOAST=1` turn the system parts off.
+- **RPC mode.** `omni --rpc`: one JSON object per line each way, with the
+  terminal UI on stderr.
+  - Methods: `prompt` (queued, replies with `{stop, result, session}`),
+    `steer`, `abort`, `command`, `status`, `set_mode`, `set_model`, `confirm`,
+    `answer`, `exit`.
+  - Events: `ready`; the stream-json session events; `confirm` for tool
+    approvals; `question` for `ask_user`.
+  - Checkpoints work as in the REPL. The model chosen isn't saved as the
+    next session's.
+- **`/tree`** links this folder's logs by their `forked_from` /
+  `resumed_from` records into a tree, marks where you are, lets you pick one
+  to continue, and draws the branches as edges in the neural view.
+- **Extension API.** Extensions can export `commands` (a returned string
+  goes to the agent as a prompt) and `statusItems` (short text in the status
+  bar).
+  - Built-ins always win a name clash, and a bad entry is reported and
+    skipped. A hot reload replaces what the extension added.
+  - `/help` lists them under Extensions. Documented in `docs/EXTENDING.md`.
+- **Router training data.** `/route learn [--all]` labels each prompt you
+  typed `coding` or `assistant` by what the agent did next. Rewound turns,
+  notes and sub-agent logs are skipped, and duplicates are dropped.
+  - It writes `router/data/sessions.jsonl` (gitignored), which
+    `router/train.py` and `router/train_intent_model.py` now read on top of
+    the seed.
+- Tests: `skill-learn` (8), `scheduler` (10, including a real `omni schedule
+  run` through a child Omni against a mock provider), `session-tree` (5),
+  `ext-api` (6), `rpc` (9, driving `omni --rpc`: events, a tool approval
+  accepted and refused, an `ask_user` answer, commands, errors, exit) and
+  `router-data` (4).
+
 ## 3.5.28 — 2026-10-23
 
-- **Shipped:** this PR · — · TattooAI/agents-worktrees · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Shipped:** [#41](https://github.com/tattooinmtl/omni/pull/41) · `118c390` · TattooAI/agents-worktrees · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
 - **Named sub-agents.** Markdown definitions in `agents/` (shipped),
   `<HOME>/agents/` (personal) and `.omni/agents/` (project; replaces a shipped
   one of the same name) with frontmatter `description`, `tools`, `readonly`,

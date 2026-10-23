@@ -219,6 +219,35 @@ export default {
 };
 ```
 
+## Slash commands and status-bar items from an extension
+
+Besides `tools`, `impl` and `hooks`, an extension can add commands and short
+items in the status bar:
+
+```js
+let lastBuild = "?";
+export default {
+  name: "deployer",
+  tools: [], impl: {},
+  commands: [
+    {
+      name: "deploy", usage: "/deploy <env>", summary: "deploy to an environment",
+      // Return a string to send it to the agent as a prompt; anything else
+      // (or nothing) and the command just runs.
+      handler: (ctx, arg) => `Deploy to ${arg || "staging"} with npm run deploy, then check /health.`,
+    },
+    { name: "build-status", summary: "refresh the build badge", handler: () => { lastBuild = "✓"; } },
+  ],
+  statusItems: [() => `build ${lastBuild}`], // under 30 characters; called on every redraw
+};
+```
+
+Commands are listed under **Extensions** in `/help` and in the `/` menu. A
+built-in command of the same name always wins. A bad entry is reported and
+skipped, and the rest of the extension still loads. A hot reload (or
+`create_tool` rewriting the file) replaces what the extension added rather
+than duplicating it. Status items that throw or return nothing are skipped.
+
 ## Themes (color palette)
 
 A theme is a JSON file in `themes/` describing the terminal UI palette:
