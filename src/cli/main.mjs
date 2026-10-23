@@ -29,6 +29,8 @@ import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
 import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
+import { loadInstructions } from "../core/instructions.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
 
 // Every child process the CLI may have started. Safe to call more than once
 // and safe when nothing was ever started — each teardown is a no-op then.
@@ -201,7 +203,17 @@ export async function main(args) {
   applyMachineEnv(machine.settings);
 
   const session = new Session();
-  const preamble = [machine.summary, memoryPreamble()].filter(Boolean).join("\n\n");
+  // OMNI.md / AGENTS.md / CLAUDE.md from ~/.omni/agent and the repo root down
+  // to the cwd. Each file also becomes a node under this project in /neuralview.
+  const instructions = loadInstructions();
+  for (const f of instructions.files) {
+    publishActivity({
+      kind: "live_node", op: "add", nodeId: "instr-" + f.path.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(-60),
+      parent: session._liveProjectId, label: f.label, detail: `Instructions (${f.scope}) — ${f.path}`,
+      nodeKind: "file", meta: { path: f.path },
+    });
+  }
+  const preamble = [machine.summary, instructions.text, memoryPreamble()].filter(Boolean).join("\n\n");
   const messages = [{ role: "system", content: buildSystemPrompt(project, skills, preamble) }];
 
   // Persist the current model as "last good" on every clean exit (Ctrl+C,
@@ -250,6 +262,7 @@ export async function main(args) {
     // mode live without restarting. Every code path that gates on lean
     // behaviour reads ctx.contextMode — never settings.contextMode direct.
     contextMode: readContextMode(settings),
+    instructionFiles: instructions.files,
   };
   setSessionCtx(ctx);
   registerGoalTool(ctx);

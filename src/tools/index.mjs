@@ -21,6 +21,7 @@ import { rankChunks } from "../core/bm25.mjs";
 import { loadScannedSkills } from "../core/skill-index.mjs";
 import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
+import { loadInstructions } from "../core/instructions.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -3027,7 +3028,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
       model: resolved,
       settings,
       messages,
-      session: new Session(),
+      session: new Session({ kind: "review" }),
       maxIterations: 12,
       diffPreview: false,
       signal: controller.signal,
@@ -3078,11 +3079,13 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
       const settings = await loadSettings();
       const resolved = resolveModel(settings, model || settings.defaultModel);
       rec.model = resolved.key;
+      // The project's OMNI.md / AGENTS.md rules bind a sub-agent too.
+      const rules = loadInstructions().text;
       const messages = [
-        { role: "system", content: systemPrompt() },
+        { role: "system", content: systemPrompt() + (rules ? "\n\n" + rules : "") },
         { role: "user", content: String(prompt) },
       ];
-      const session = new Session();
+      const session = new Session({ kind: "subagent" });
       // Forward the parent's permission gate to the sub-agent's runTurn.
       // Without this, runTurn defaults permissions=null → checkPermission
       // defaults to "allow" for every tool, and run_shell/start_process skip

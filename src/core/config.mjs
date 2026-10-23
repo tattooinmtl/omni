@@ -1131,15 +1131,19 @@ export function stableEventId() {
 }
 
 export class Session {
-  constructor() {
+  // kind: "main" for the conversation you type into, "subagent" / "review"
+  // for the logs spawn_agent and self_review write next to it. /resume and
+  // session_search only offer the main ones.
+  constructor({ kind = "main" } = {}) {
     ensureHome();
     const dir = path.join(SESSIONS_DIR, cwdSlug());
     fs.mkdirSync(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     this.file = path.join(dir, `${ts}.jsonl`);
+    this.kind = kind;
     this._cost = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this._contextTokens = 0; // tokens in the CURRENT conversation (last request)
-    this.append({ type: "session_start", cwd: process.cwd(), time: new Date().toISOString() });
+    this.append({ type: "session_start", cwd: process.cwd(), time: new Date().toISOString(), kind });
     // Live-layer session + project nodes for /neuralview — one per launch
     // and one per cwd, so the graph gains a visible root the moment omni
     // starts and every tool call / file touch this turn produces later can

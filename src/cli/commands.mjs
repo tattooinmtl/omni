@@ -46,6 +46,7 @@ import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
+import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
 
 function pkgVersion() {
   try {
@@ -368,6 +369,41 @@ export const COMMANDS = [
       ctx.diffPreview = !ctx.diffPreview;
       infoLine("diff preview: " + (ctx.diffPreview ? "on" : "off"));
     },
+  },
+  {
+    name: "instructions", aliases: ["omnimd"], usage: "/instructions [reload|add <rule>]", category: "Agent",
+    summary: "show the OMNI.md / AGENTS.md files Omni follows here, reload them, or add a rule",
+    handler: (ctx, arg) => {
+      const [sub, ...rest] = arg.trim().split(/\s+/);
+      const action = (sub || "").toLowerCase();
+      if (action === "add") {
+        let file;
+        try { file = addInstruction(rest.join(" ")); } catch (e) { errorLine(e.message); return; }
+        infoLine(`added to ${file}`);
+      }
+      if (action === "add" || action === "reload") {
+        const loaded = loadInstructions();
+        syncInstructions(ctx.messages, loaded.text);
+        ctx.instructionFiles = loaded.files;
+      } else if (action) {
+        warnLine("usage: /instructions [reload|add <rule>]");
+        return;
+      }
+      const files = ctx.instructionFiles || [];
+      if (!files.length) {
+        infoLine("no instruction files here. /init writes an OMNI.md for this project, or /instructions add <rule> starts one.");
+        return;
+      }
+      infoLine(`following ${files.length} instruction file(s), outermost first:`);
+      for (const f of files) {
+        console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "init", aliases: [], usage: "/init", category: "Agent",
+    summary: "have the agent study this project and write its OMNI.md",
+    handler: () => ({ startTurn: true, prompt: initPrompt() }),
   },
   {
     name: "memory", aliases: ["mem"], usage: "/memory [search <q>|forget <id>|provider [name]|extract|atoms|explain <id>|deprecate <id>]", category: "Agent",
