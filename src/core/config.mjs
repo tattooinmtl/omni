@@ -16,6 +16,7 @@ import { knownContextWindow } from "./context.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { providerKeyEnvVar } from "./env-keys.mjs";
 import { getLastProvider, setLastProvider } from "./last-provider.mjs";
+import { isConversationRecord } from "./session-export.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
@@ -1094,6 +1095,47 @@ function isTypedPrompt(content) {
   return typeof content === "string" && content.trim() && !/^(\(btw|\[)/.test(content.trim());
 }
 
+// A session's shareable code: omni-session-<start time, base36>-<folder
+// hash>. Derived from the log's own path, so every log has one (old ones
+// too) and the code alone finds the file again, from any folder.
+const CODE_RE = /^omni-session-([0-9a-z]+)-([0-9a-z]{7})$/;
+
+function folderHash(dirName) {
+  return BigInt("0x" + crypto.createHash("sha1").update(dirName.toLowerCase()).digest("hex").slice(0, 12)).toString(36).padStart(7, "0").slice(-7);
+}
+
+function fileTimeMs(file) {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/.exec(path.basename(file));
+  return m ? Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) : NaN;
+}
+
+export function sessionCode(file) {
+  const ms = fileTimeMs(file);
+  if (!Number.isFinite(ms)) return null;
+  return `omni-session-${ms.toString(36)}-${folderHash(path.basename(path.dirname(file)))}`;
+}
+
+export function isSessionCode(text) {
+  return CODE_RE.test(String(text || "").trim().toLowerCase());
+}
+
+// The log file a code points at, in any project folder, or null.
+export function resolveSessionCode(code) {
+  const m = CODE_RE.exec(String(code || "").trim().toLowerCase());
+  if (!m) return null;
+  const ms = parseInt(m[1], 36);
+  if (!Number.isFinite(ms)) return null;
+  const name = new Date(ms).toISOString().replace(/[:.]/g, "-") + ".jsonl";
+  let dirs = [];
+  try { dirs = fs.readdirSync(SESSIONS_DIR); } catch { return null; }
+  for (const d of dirs) {
+    if (folderHash(d) !== m[2]) continue;
+    const file = path.join(SESSIONS_DIR, d, name);
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
+}
+
 // One line of facts about a session log, for /resume and session search.
 // kind comes from session_start; logs from before it was recorded count as
 // "main" when they hold a prompt you typed.
@@ -1114,6 +1156,7 @@ export function describeSession(file, records = readSessionRecords(file)) {
   try { mtime = fs.statSync(file).mtime.toISOString(); } catch { /* gone */ }
   return {
     id: path.basename(file, ".jsonl"),
+    code: sessionCode(file),
     file,
     cwd: start.cwd || null,
     started: start.time || null,
@@ -1182,6 +1225,10 @@ export function stableEventId() {
 }
 
 export class Session {
+  // Log names handed out in this process whose first write may not have
+  // landed yet (the constructor's append is not awaited).
+  static _claimed = new Set();
+
   // kind: "main" for the conversation you type into, "subagent" / "review"
   // for the logs spawn_agent and self_review write next to it. /resume and
   // session_search only offer the main ones.
@@ -1189,8 +1236,12 @@ export class Session {
     ensureHome();
     const dir = path.join(SESSIONS_DIR, cwdSlug());
     fs.mkdirSync(dir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    this.file = path.join(dir, `${ts}.jsonl`);
+    // Two sessions started in the same millisecond (parallel sub-agents)
+    // would share one log and one session code; take the next free one.
+    let ms = Date.now();
+    while (fs.existsSync(path.join(dir, `${new Date(ms).toISOString().replace(/[:.]/g, "-")}.jsonl`)) || Session._claimed.has(`${dir}|${ms}`)) ms++;
+    Session._claimed.add(`${dir}|${ms}`);
+    this.file = path.join(dir, `${new Date(ms).toISOString().replace(/[:.]/g, "-")}.jsonl`);
     this.kind = kind;
     this._cost = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this._contextTokens = 0; // tokens in the CURRENT conversation (last request)
@@ -1220,6 +1271,11 @@ export class Session {
     } catch { /* live-graph publish is decorative — never block startup */ }
   }
 
+  // The code to come back to this conversation with: omni --resume <code>.
+  get code() {
+    return sessionCode(this.file);
+  }
+
   get totalTokens() {
     return this._cost.totalTokens;
   }
@@ -1235,7 +1291,15 @@ export class Session {
     if (Number.isFinite(n) && n >= 0) this._contextTokens = n;
   }
 
+  // How many conversation messages the log holds right now (what a
+  // {type:"rewind", keep} record counts in). Counted as records are written.
+  get conversationLength() {
+    return this._conversationLength || 0;
+  }
+
   async append(record) {
+    if (record?.type === "rewind" && Number.isInteger(record.keep)) this._conversationLength = Math.min(this.conversationLength, record.keep);
+    else if (isConversationRecord(record)) this._conversationLength = this.conversationLength + 1;
     try {
       const stamped = deepRedact({
         eventId: stableEventId(),

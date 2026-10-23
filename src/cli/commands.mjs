@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { c, infoLine, warnLine, errorLine, costLine } from "../ui.mjs";
 import {
   saveSettings, resolveModel, SETTINGS_PATH, HOME, Session,
+  isSessionCode, resolveSessionCode, describeSession, readSessionRecords,
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
@@ -51,7 +52,9 @@ import { listHooks } from "../core/hooks.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
-import { resumeSessionInto } from "./helpers.mjs";
+import { resumeSessionInto, copyConversation } from "./helpers.mjs";
+import { exportSession } from "../core/session-export.mjs";
+import { getPermissionMode, setPermissionMode, normalizeMode, modeLabel } from "../core/permission-mode.mjs";
 
 function pkgVersion() {
   try {
@@ -135,6 +138,8 @@ export const COMMANDS = [
       infoLine(`goal:     ${goalStatusLine(ctx)}`);
       const perms = Object.entries(ctx.settings.permissions || {});
       infoLine(`perms:    ${perms.length ? perms.map(([t, s]) => `${t}=${s}`).join(", ") : "all allowed"}`);
+      infoLine(`mode:     ${modeLabel()} (shift+tab or /mode to change)`);
+      infoLine(`session:  ${ctx.session.code || "(unsaved)"}  · omni --resume <code> brings it back`);
       const mem = await runTool("memory_list", { limit: 1 });
       const provName = resolveProviderName(ctx.settings);
       const atomNote = provName === "layered-okf"
@@ -146,11 +151,20 @@ export const COMMANDS = [
   },
   {
     name: "clear", aliases: [], usage: "/clear", category: "Session",
-    summary: "reset the conversation (keeps the system prompt)",
+    summary: "start a fresh conversation (the old one stays resumable)",
     handler: (ctx) => {
       ctx.messages.length = 1;
-      ctx.session.resetCost();
-      infoLine("conversation cleared");
+      // A new log, so resuming the old conversation later still brings it
+      // back whole instead of a log that holds both.
+      const old = ctx.session;
+      if (old instanceof Session) {
+        ctx.session = new Session();
+        if (old.conversationLength > 0) infoLine(`conversation cleared · the old one is ${old.code} (/resume ${old.code})`);
+        else infoLine("conversation cleared");
+      } else {
+        ctx.session.resetCost?.();
+        infoLine("conversation cleared");
+      }
     },
   },
   {
@@ -185,27 +199,37 @@ export const COMMANDS = [
     },
   },
   {
-    name: "resume", aliases: [], usage: "/resume [latest|<number>|<session id>]", category: "Session",
-    summary: "pick an earlier conversation in this folder and continue it",
+    name: "resume", aliases: [], usage: "/resume [latest|<number>|<omni-session code>]", category: "Session",
+    summary: "pick an earlier conversation and continue it (a session code works from any folder)",
     handler: async (ctx, arg) => {
+      const want = arg.trim();
+      // A session code finds its conversation wherever it happened.
+      if (isSessionCode(want)) {
+        const file = resolveSessionCode(want);
+        if (!file) { warnLine(`no session with the code ${want}`); return; }
+        const info = describeSession(file);
+        const n = await resumeSessionInto(ctx, file);
+        infoLine(`resumed "${info.title || info.code}" from ${formatWhen(info.started || info.updated)}: ${n} message(s)`);
+        if (info.cwd && path.resolve(info.cwd).toLowerCase() !== process.cwd().toLowerCase()) warnLine(`that conversation happened in ${info.cwd}`);
+        return;
+      }
       const sessions = Session.list({ exclude: ctx.session?.file });
       if (!sessions.length) { warnLine("no earlier conversation in this folder to resume"); return; }
-      const want = arg.trim();
       let pick = null;
       if (want === "latest") pick = sessions[0];
       else if (/^\d+$/.test(want)) pick = sessions[Number(want) - 1] || null;
-      else if (want) pick = sessions.find((s) => s.id === want) || null;
+      else if (want) pick = sessions.find((s) => s.id === want || s.code === want.toLowerCase()) || null;
       else if (ctx.canRaw) {
         const file = await runArrowPicker(
-          sessions.map((s) => ({ id: s.file, label: `${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"}`, dim: `${s.prompts} prompt(s)` })),
+          sessions.map((s) => ({ id: s.file, label: `${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"}`, dim: `${s.prompts} prompt(s) · ${s.code}` })),
           { ctx, title: "Resume a conversation", hint: "↑/↓ to choose, Enter to resume, Esc to cancel" },
         );
         if (!file) { infoLine("resume cancelled"); return; }
         pick = sessions.find((s) => s.file === file);
       } else {
         infoLine("earlier conversations in this folder, newest first:");
-        sessions.slice(0, 15).forEach((s, i) => console.log(`  ${String(i + 1).padStart(2)}. ${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"} ${c.dim(`· ${s.prompts} prompt(s) · ${s.id}`)}`));
-        infoLine("/resume <number> continues one");
+        sessions.slice(0, 15).forEach((s, i) => console.log(`  ${String(i + 1).padStart(2)}. ${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"} ${c.dim(`· ${s.prompts} prompt(s) · ${s.code}`)}`));
+        infoLine("/resume <number> or /resume <code> continues one");
         return;
       }
       if (!pick) { warnLine(`no session "${want}" here — /resume lists them`); return; }
@@ -224,6 +248,140 @@ export const COMMANDS = [
       const scope = all ? "all" : "project";
       const hits = searchSessions(query, { scope, exclude: ctx.session?.file, limit: 10 });
       console.log(formatHits(hits, { scope }));
+    },
+  },
+  {
+    name: "fork", aliases: ["branch"], usage: "/fork", category: "Session",
+    summary: "branch the conversation: carry on in a copy, the original stays as it is",
+    handler: async (ctx) => {
+      const from = ctx.session;
+      if (!from?.file || !from.conversationLength) { warnLine("nothing to fork yet: say something first"); return; }
+      const records = readSessionRecords(from.file);
+      const fork = new Session();
+      await copyConversation(records, fork, { type: "forked_from", file: from.file, code: from.code });
+      fork._cost = { ...from.cost };
+      fork.setContextTokens(from.contextTokens);
+      ctx.session = fork;
+      infoLine(`forked: you are now in ${fork.code}`);
+      infoLine(`the original is unchanged: /resume ${from.code} goes back to it`);
+    },
+  },
+  {
+    name: "export", aliases: [], usage: "/export [md|html|json] [file]", category: "Session",
+    summary: "save this conversation as Markdown, a standalone HTML page, or JSON",
+    handler: (ctx, arg) => {
+      // "/export html", "/export notes.html", "/export html notes" all work:
+      // an explicit format wins, else the file's extension, else Markdown.
+      const parts = arg.trim().split(/\s+/).filter(Boolean);
+      let format = null;
+      if (parts[0] && /^(md|markdown|html|json)$/i.test(parts[0])) format = parts.shift().toLowerCase().replace("markdown", "md");
+      let file = parts.join(" ") || undefined;
+      const ext = file && /\.(md|html|json)$/i.exec(file)?.[1].toLowerCase();
+      format = format || ext || "md";
+      if (file && !ext) file += "." + format;
+      if (!ctx.session?.file) { warnLine("nothing to export"); return; }
+      const records = readSessionRecords(ctx.session.file);
+      const info = describeSession(ctx.session.file, records);
+      try {
+        const out = exportSession(records, { format, file, title: info.title || "Omni session", code: info.code, started: formatWhen(info.started) });
+        infoLine(`exported to ${out}`);
+      } catch (e) {
+        warnLine(e.message);
+      }
+    },
+  },
+  {
+    name: "rewind", aliases: ["undo"], usage: "/rewind [checkpoint #] [code|chat|both]", category: "Session",
+    summary: "put files (and/or the conversation) back the way they were before an earlier turn",
+    handler: async (ctx, arg) => {
+      const cp = ctx.checkpointer;
+      if (!cp) { warnLine("checkpoints are off (settings.checkpoints is false)"); return; }
+      const all = cp.list({ limit: 40 }).filter((e) => e.kind !== "undo" || e.session === ctx.session?.file);
+      if (!all.length) { infoLine("no checkpoints yet: one is taken before each turn that changes something"); return; }
+      const [idArg, whatArg] = arg.trim().split(/\s+/);
+      let entry = null;
+      if (idArg && /^#?\d+$/.test(idArg)) {
+        entry = all.find((e) => e.id === Number(idArg.replace("#", "")));
+        if (!entry) { warnLine(`no checkpoint #${idArg.replace("#", "")} — /rewind lists them`); return; }
+      } else if (ctx.canRaw) {
+        const picked = await runArrowPicker(
+          all.map((e) => ({ id: e.id, label: `#${e.id}  ${formatWhen(e.time)}  ${e.label || e.kind}`, dim: e.session === ctx.session?.file ? "this conversation" : "earlier conversation" })),
+          { ctx, title: "Rewind to before…", hint: "↑/↓ to choose, Enter to pick, Esc to cancel" },
+        );
+        if (picked == null) { infoLine("rewind cancelled"); return; }
+        entry = all.find((e) => e.id === picked);
+      } else {
+        infoLine("checkpoints, newest first (each one is the state just before that prompt ran):");
+        for (const e of all.slice(0, 15)) console.log(`  #${String(e.id).padEnd(4)} ${formatWhen(e.time)}  ${e.label || e.kind}`);
+        infoLine("/rewind <#> [code|chat|both] restores one");
+        return;
+      }
+      const sameSession = entry.session && ctx.session?.file && path.resolve(entry.session).toLowerCase() === path.resolve(ctx.session.file).toLowerCase();
+      let what = (whatArg || "").toLowerCase();
+      if (!what && ctx.canRaw) {
+        const choices = [{ id: "both", label: "files and conversation" }, { id: "code", label: "files only" }, { id: "chat", label: "conversation only" }]
+          .filter((r) => sameSession || r.id === "code");
+        what = await runArrowPicker(choices, { ctx, title: `Rewind to before #${entry.id}: what to restore?` }) || "";
+        if (!what) { infoLine("rewind cancelled"); return; }
+      }
+      if (!what) what = sameSession ? "both" : "code";
+      if (!["both", "code", "chat"].includes(what)) { warnLine("say what to restore: code, chat or both"); return; }
+      if (what !== "code" && !sameSession) { warnLine("that checkpoint is from another conversation, so only its files can be restored (/rewind <#> code)"); return; }
+
+      if (what === "both" || what === "code") {
+        let changes;
+        try { changes = cp.changesSince(entry); } catch (e) { warnLine(e.message); return; }
+        if (!changes.length) infoLine("files: already as they were at that checkpoint");
+        else {
+          const r = cp.restore(entry, { session: ctx.session?.file, messageIndex: ctx.messages.length });
+          infoLine(`files: restored ${r.restored.length}, removed ${r.removed.length} created since then`);
+          infoLine(`changed your mind? /rewind ${r.undo.id} code puts them back`);
+        }
+      }
+      if (what === "both" || what === "chat") {
+        if (Number.isInteger(entry.messageIndex) && entry.messageIndex > 0 && entry.messageIndex <= ctx.messages.length) {
+          ctx.messages.length = entry.messageIndex;
+        }
+        if (Number.isInteger(entry.recordCount)) await ctx.session.append({ type: "rewind", keep: entry.recordCount, checkpoint: entry.id });
+        ctx.session.setContextTokens(estimateTokens(ctx.messages));
+        infoLine("conversation: back to just before that prompt");
+        // Put the prompt back in the box so it can be edited and resent.
+        if (ctx.rl && entry.label) { ctx.rl.line = entry.label; ctx.rl.cursor = entry.label.length; }
+      }
+    },
+  },
+  {
+    name: "mode", aliases: [], usage: "/mode [default|accept-edits|plan|auto]", category: "Agent",
+    summary: "how much the agent may do without asking (shift+tab cycles)",
+    handler: async (ctx, arg) => {
+      const want = arg.trim();
+      if (!want) {
+        infoLine(`mode: ${modeLabel()}`);
+        console.log(c.dim("  default       your /perm settings as they are\n  accept-edits  file edits run without asking\n  plan          read-only until you approve a plan\n  auto          nothing asks except high-risk shell commands"));
+        return;
+      }
+      const next = normalizeMode(want);
+      if (!next) { warnLine(`unknown mode "${want}" — default, accept-edits, plan or auto`); return; }
+      if (next === "auto" && ctx.askLine) {
+        const ok = /^y(es)?$/i.test(String(await ctx.askLine(c.yellow("  auto mode runs tools without asking you (high-risk shell commands still ask). Turn it on? [y/N] ")) || "").trim());
+        if (!ok) { infoLine("mode unchanged"); return; }
+      }
+      setPermissionMode(next);
+      if (ctx.announceMode) ctx.announceMode(next);
+      else infoLine(`mode: ${modeLabel(next)}`);
+    },
+  },
+  {
+    name: "plan", aliases: [], usage: "/plan [what to plan]", category: "Agent",
+    summary: "switch to plan mode (read-only until you approve), optionally with a prompt",
+    handler: (ctx, arg) => {
+      if (getPermissionMode() !== "plan") {
+        setPermissionMode("plan");
+        if (ctx.announceMode) ctx.announceMode("plan");
+        else infoLine("plan mode: read-only until you approve a plan");
+      }
+      const prompt = arg.trim();
+      return prompt ? { startTurn: true, prompt } : undefined;
     },
   },
   {

@@ -110,7 +110,7 @@ export function formatHits(hits, { scope = "project", cwd = process.cwd() } = {}
     const elsewhere = s.cwd && path.resolve(s.cwd).toLowerCase() !== here;
     lines.push(`${formatWhen(s.started || s.updated)} · "${s.title || "(untitled)"}"${elsewhere ? ` · in ${s.cwd}` : ""}`);
     lines.push(`  ${h.role}: ${h.snippet}`);
-    lines.push(elsewhere ? `  log: ${s.file}` : `  resume: /resume ${s.id}`);
+    lines.push(`  resume: /resume ${s.code}${elsewhere ? "  (from another folder)" : ""}`);
   }
   if (scope !== "all") lines.push("", "(searched this project only; scope \"all\" searches every project)");
   return lines.join("\n");
