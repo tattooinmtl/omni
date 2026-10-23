@@ -54,6 +54,7 @@ import { loadAgents } from "../core/agents.mjs";
 import { loadLearnedSkills, forgetLearnedSkill } from "../core/skill-learn.mjs";
 import * as sched from "../core/scheduler.mjs";
 import { buildSessionTree, flattenTree } from "../core/session-tree.mjs";
+import { extensionCommand, extensionCommands } from "../core/ext-registry.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { stripAnsi } from "./footer.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
@@ -1463,11 +1464,12 @@ for (const cmd of COMMANDS) {
 }
 
 export function findCommand(name) {
-  return byName.get(String(name || "").toLowerCase()) || null;
+  // Built-ins first; an extension command can never shadow one.
+  return byName.get(String(name || "").toLowerCase()) || extensionCommand(name) || null;
 }
 
 export function commandNames() {
-  return COMMANDS.flatMap((cmd) => [cmd.name, ...cmd.aliases.filter(Boolean)]).map((n) => "/" + n);
+  return [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))].flatMap((cmd) => [cmd.name, ...cmd.aliases.filter(Boolean)]).map((n) => "/" + n);
 }
 
 // Rows for the live "/" suggestion menu in the REPL: every command whose name
@@ -1476,7 +1478,7 @@ export function commandNames() {
 export function commandMenu(prefix = "") {
   const p = String(prefix || "").toLowerCase();
   const rows = [];
-  for (const cmd of COMMANDS) {
+  for (const cmd of [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))]) {
     if (!cmd.name) continue;
     const names = [cmd.name, ...cmd.aliases.filter(Boolean)];
     if (!names.some((n) => n.startsWith(p))) continue;
@@ -1513,11 +1515,12 @@ export function printHelp(ctx) {
   // Known categories first, in this order, then any other category a command
   // declares — so a new category (like "Tools" for /browser) can't be hidden.
   const categories = ["Session", "Agent", "Models & Providers", "Packages & Integrations"];
-  for (const cmd of COMMANDS) if (!categories.includes(cmd.category)) categories.push(cmd.category);
+  const all = [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))];
+  for (const cmd of all) if (!categories.includes(cmd.category)) categories.push(cmd.category);
   console.log("");
   for (const cat of categories) {
     console.log(c.bold(`  ${cat}`));
-    for (const cmd of COMMANDS.filter((x) => x.category === cat)) {
+    for (const cmd of all.filter((x) => x.category === cat)) {
       console.log(`    ${cmd.usage.padEnd(46)} ${c.dim(cmd.summary)}`);
     }
     console.log("");

@@ -1,4 +1,6 @@
-// Minimal ANSI color + output helpers (no dependencies).
+// Minimal ANSI color + output helpers (no npm dependencies).
+
+import { statusItemsText } from "./core/ext-registry.mjs";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 
@@ -328,7 +330,9 @@ export function statusBarText(model, session, width = (process.stdout.columns ||
     ? c.yellow(`[${_activePersona.label}] `)
     : "";
 
-  const left = `ctx ${fmtK(used)}/${fmtK(cap)} (${pct}%)`;
+  // Extensions' status items (core/ext-registry.mjs) ride after the context.
+  const extra = statusItemsText();
+  const left = `ctx ${fmtK(used)}/${fmtK(cap)} (${pct}%)` + (extra ? `  ${extra}` : "");
   const provider = model?.providerLabel || model?.providerName || "?";
   let id = model?.id || model?.key || "?";
   let right = `(${provider}) ${id}`;

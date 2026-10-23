@@ -27,6 +27,7 @@ import { searchSessions, formatHits } from "../core/session-search.mjs";
 import { getPermissionMode, setPermissionMode, modeBeforePlan, modeLabel, planSteps } from "../core/permission-mode.mjs";
 import { loadAgents, agentAllowedTools, agentPermissions, agentSystemPrompt, agentCatalog } from "../core/agents.mjs";
 import { saveLearnedSkill, recordSkillUse } from "../core/skill-learn.mjs";
+import { registerExtensionCommand, registerStatusItem, clearExtension } from "../core/ext-registry.mjs";
 import { createAgentWorktree, runHeadlessAgent, commitAgentWork, branchDiff, mergeAgentBranch, removeAgentWorktree } from "../core/worktree-agent.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
@@ -3839,7 +3840,21 @@ async function loadExtensionFile(root, rel) {
   }
   extensionToolNames.set(rel, names);
   registerExtensionHooks(rel, ext);
+  registerExtensionUi(rel, ext);
   return ext.name || rel;
+}
+
+// Slash commands and status-bar items an extension adds (core/ext-registry.mjs).
+// A bad entry is reported and skipped; the rest of the extension still loads.
+function registerExtensionUi(rel, ext) {
+  const source = `extension:${rel}`;
+  clearExtension(source);
+  for (const cmd of Array.isArray(ext.commands) ? ext.commands : []) {
+    try { registerExtensionCommand(cmd, source); } catch (e) { console.error(`[extension ${rel}] ${e.message}`); }
+  }
+  for (const fn of Array.isArray(ext.statusItems) ? ext.statusItems : []) {
+    try { registerStatusItem(fn, source); } catch (e) { console.error(`[extension ${rel}] ${e.message}`); }
+  }
 }
 
 // An extension can also export `hooks: { PreToolUse: fn, PostToolUse: { matcher, run } }`
