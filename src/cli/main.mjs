@@ -101,7 +101,13 @@ export async function main(args) {
     errorLine(e.message);
     process.exit(1);
   }
-  const jsonOut = headless.output === "text" ? null : captureStdout();
+  // --rpc: JSON lines over stdio (rpc.mjs). Like json output, it needs stdout
+  // to itself, so the terminal UI goes to stderr.
+  const rpcIdx = args.indexOf("--rpc");
+  const rpcMode = rpcIdx !== -1;
+  if (rpcMode) args.splice(rpcIdx, 1);
+  const rpcOut = rpcMode ? captureStdout() : null;
+  const jsonOut = rpcMode || headless.output === "text" ? null : captureStdout();
 
   const settings = await loadSettings();
 
@@ -114,7 +120,7 @@ export async function main(args) {
     await initWorkspace({
       settings,
       // A headless run must never stop to ask which folder to trust.
-      interactive: !headless.print && headless.output === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      interactive: !rpcMode && !headless.print && headless.output === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY),
     });
   }
 
@@ -439,5 +445,11 @@ export async function main(args) {
   // /neuralview just open a browser onto whatever's already running.
   startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
 
+  if (rpcMode) {
+    persistModelOnExit = false;
+    const { startRpc } = await import("./rpc.mjs");
+    await startRpc(ctx, { emit: rpcOut.emit, onExit: () => { stopBackgroundChildren(); shutdown(0); } });
+    return;
+  }
   await startRepl(ctx, { resumeMode });
 }
