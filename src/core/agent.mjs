@@ -25,6 +25,8 @@ import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
 import fs from "node:fs";
+import { runHooks, hasHooks } from "./hooks.mjs";
+import { forgeCompact, planCompaction, mechanicalDigest } from "./compaction.mjs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -582,60 +584,14 @@ export function estimateTokens(messages) {
 }
 
 // Collapse everything between the system prompt and the last `keepTail`
-// messages into one digest message. Mutates `messages` in place. Returns
-// true when something was actually compacted.
+// messages into one mechanical digest (first request + tool trail). Mutates
+// `messages` in place. Returns true when something was actually compacted.
+// Synchronous and model-free: lean mode's rolling compaction and the
+// fallback path of forgeCompact (core/compaction.mjs) both use it.
 export function compactMessages(messages, { keepTail = 8, sessionGoal = null } = {}) {
-  if (!Array.isArray(messages) || messages.length < keepTail + 4) return false;
-  const hasSystem = messages[0]?.role === "system";
-  const first = hasSystem ? 1 : 0;
-
-  let cut = messages.length - keepTail;
-  // The tail must not open with tool results whose assistant tool_calls
-  // message was dropped — the API rejects orphaned tool messages.
-  while (cut < messages.length && messages[cut].role === "tool") cut++;
-  if (cut - first < 3) return false;
-
-  const dropped = messages.slice(first, cut);
-  const firstUser = dropped.find((m) => m.role === "user" && typeof m.content === "string");
-  // Map tool_call_id -> first-line-of-result, so the digest can pair each
-  // tool call with a summary of what it actually returned (not just the
-  // tool name). Lean-mode goal-tracking runs on top of this.
-  const resultById = new Map();
-  for (const m of dropped) {
-    if (m.role === "tool" && m.tool_call_id) {
-      const raw = typeof m.content === "string"
-        ? m.content
-        : Array.isArray(m.content)
-          ? m.content.map((p) => (typeof p === "string" ? p : p?.type === "text" ? p.text : "")).join(" ")
-          : "";
-      const firstLine = raw.split(/\r?\n/)[0] || "";
-      resultById.set(m.tool_call_id, firstLine.slice(0, 80));
-    }
-  }
-  const toolTrail = [];
-  for (const m of dropped) {
-    for (const call of m.tool_calls || []) {
-      const fn = call.function || {};
-      let hint = "";
-      try {
-        const args = JSON.parse(fn.arguments || "{}");
-        hint = args.path || args.pattern || args.command || args.query || (Array.isArray(args.paths) ? args.paths.join(", ") : "");
-      } catch { /* args stay opaque */ }
-      const summary = resultById.get(call.id);
-      toolTrail.push(
-        `${fn.name || "?"}${hint ? ` (${String(hint).slice(0, 80)})` : ""}` +
-        (summary ? ` -> ${summary}` : "")
-      );
-    }
-  }
-  const digest = [
-    "[CONTEXT COMPACTED] Earlier conversation was condensed to fit the model's context window. Continue the task from the recent messages below.",
-    sessionGoal ? `Session goal: ${String(sessionGoal).slice(0, 400)}` : "",
-    firstUser ? `Original request: ${firstUser.content.slice(0, 600)}` : "",
-    toolTrail.length ? `Tools already used (${toolTrail.length}):\n  - ${toolTrail.slice(-40).join("\n  - ")}` : "",
-  ].filter(Boolean).join("\n");
-
-  messages.splice(first, cut - first, { role: "user", content: digest });
+  const plan = planCompaction(messages, keepTail);
+  if (!plan) return false;
+  messages.splice(plan.first, plan.cut - plan.first, { role: "user", content: mechanicalDigest(plan.dropped, { sessionGoal }) });
   return true;
 }
 
@@ -702,18 +658,29 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
 
 // Auto-compact when the live conversation nears the context window. The
 // budget leaves room for the response (maxTokens) plus a safety margin.
-function maybeAutoCompact({ model, messages, session, sessionGoal = null }) {
+// Uses the forge digest (a model-written summary, core/compaction.mjs), which
+// falls back to the mechanical digest by itself when no summarizer is usable.
+async function maybeAutoCompact({ model, settings, messages, session, sessionGoal = null, signal = null }) {
   const window = model.contextWindow;
   if (!window) return false;
   const budget = Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5));
   const used = session.contextTokens || estimateTokens(messages);
   if (used < budget * 0.85) return false;
-  const did = compactMessages(messages, { sessionGoal });
-  if (did) {
-    session.setContextTokens(estimateTokens(messages));
-    warnLine(`context ${used} tokens near the ${window}-token window — auto-compacted older messages`);
+  const r = await forgeCompact(messages, {
+    model, settings, sessionGoal, trigger: "auto", signal, source: session?.file || "session",
+  });
+  for (const err of r.hookErrors || []) warnLine(`hook ${err}`);
+  if (!r.done) {
+    if (r.reason && r.reason !== "too short") warnLine(`auto-compaction skipped: ${r.reason}`);
+    return false;
   }
-  return did;
+  session.setContextTokens(estimateTokens(messages));
+  warnLine(
+    `context ${used} tokens near the ${window}-token window — ` +
+    (r.mode === "forge" ? `summarized ${r.dropped} older message(s) with ${r.summarizer}` : `auto-compacted ${r.dropped} older message(s)`) +
+    (r.error ? ` (summary failed: ${String(r.error).slice(0, 80)}; kept the tool list instead)` : "")
+  );
+  return true;
 }
 
 // Tools the user answered "always allow" for this session (permission "ask").
@@ -845,6 +812,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   const MAX_PARSE_RECOVERIES = 3;
   let parseRecoveries = 0;
   let wrapUpNudged = false;
+  const MAX_STOP_CONTINUATIONS = 3;
+  let stopContinuations = 0;
 
   for (let i = 0; i < maxIterations; i++) {
     // Keep the conversation inside the model's context window. Classic mode
@@ -852,7 +821,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // compaction every 6 completed turns (keep last 4 raw), because the
     // point of lean is to send fewer tokens PER hop — waiting for 85% of
     // context defeats that purpose on long tool-heavy sessions.
-    if (maybeAutoCompact({ model, messages, session, sessionGoal })) compactionsRun++;
+    if (await maybeAutoCompact({ model, settings, messages, session, sessionGoal, signal })) compactionsRun++;
     if (isLean) {
       const turnsSince = countCompletedTurns(messages) - initialAssistantCount;
       if (turnsSince > 0 && turnsSince % 6 === 0) {
@@ -1066,6 +1035,20 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         continue;
       }
       if (truncated) warnLine("response was truncated by the max_tokens limit");
+      // A Stop hook can send the agent back to work ("the tests still fail"),
+      // a few times per turn at most so a hook that always blocks can't loop.
+      if (stopContinuations < MAX_STOP_CONTINUATIONS && hasHooks("Stop") && !signal?.aborted) {
+        const hook = await runHooks("Stop", { lastMessage: String(msg.content || "").slice(0, 4000), continuations: stopContinuations });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.denied) {
+          stopContinuations++;
+          warnLine(`hook ${hook.by} asked the agent to keep going (${stopContinuations}/${MAX_STOP_CONTINUATIONS})`);
+          const content = `[hook ${hook.by}] Not done yet: ${hook.reason}`;
+          messages.push({ role: "user", content });
+          session.append({ type: "user", content });
+          continue;
+        }
+      }
       // Runs on every completed turn, regardless of which memory provider is
       // active (see core/memory-provider.mjs) — atoms are a separate,
       // additive store, so this always keeps the indexer/graph current
@@ -1113,6 +1096,19 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           if (createGate) p.permission = createGate;
         }
       }
+      // PreToolUse hooks see only calls the user's own gates let through, so
+      // a hook can tighten a decision but never loosen one.
+      if (p.permission.allowed && hasHooks("PreToolUse")) {
+        const hook = await runHooks("PreToolUse", { tool: p.name, args: p.args });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.denied) {
+          p.permission = { allowed: false, message: `DENIED by hook "${hook.by}": ${hook.reason}` };
+          warnLine(`${p.name}: blocked by hook ${hook.by}`);
+          continue;
+        }
+        if (hook.args) p.args = hook.args;
+        if (hook.context) p.hookNote = hook.context;
+      }
       if (!p.permission.allowed) warnLine(`${p.name}: ${p.permission.message.split(":")[0].toLowerCase()} by permissions`);
     }
 
@@ -1126,7 +1122,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // resolve() does in the tools themselves.
     const fileLocks = new Map(); // key -> Promise<unknown> tail
     const toolResults = await Promise.all(
-      parsed.map(async ({ call, name, args, permission }) => {
+      parsed.map(async ({ call, name, args, permission, hookNote }) => {
         let result;
         const route = routeForTool(name);
         if (!permission.allowed) {
@@ -1194,10 +1190,26 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // signal worth remembering on its own, no cue phrase or okf_add
         // needed — see memory-provider.mjs's captureToolActivity.
         try { captureToolActivity({ tool: name, args, result }); } catch { /* best-effort */ }
-        return { call, name, args, result };
+        return { call, name, args, result, allowed: permission.allowed, hookNote };
       })
     );
     stopStatus();
+
+    // PostToolUse hooks run in call order once the batch is done, so their
+    // notes line up with the results they annotate.
+    for (const entry of toolResults) {
+      const notes = entry.hookNote ? [entry.hookNote] : [];
+      if (entry.allowed && hasHooks("PostToolUse")) {
+        const text = typeof entry.result === "string" ? entry.result : JSON.stringify(entry.result?.text ?? "");
+        const hook = await runHooks("PostToolUse", {
+          tool: entry.name, args: entry.args, result: text.slice(0, 20000),
+          ok: !(typeof entry.result === "string" && /^(ERROR|DENIED|BLOCKED)/.test(entry.result)),
+        });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.context) notes.push(hook.context);
+      }
+      if (notes.length && typeof entry.result === "string") entry.result += "\n\n" + notes.join("\n");
+    }
 
     // Print results and push tool messages in original call order
     // (API requires matching tool_call_id order).

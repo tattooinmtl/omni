@@ -21,6 +21,11 @@ import { rankChunks } from "../core/bm25.mjs";
 import { loadScannedSkills } from "../core/skill-index.mjs";
 import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
+import { loadInstructions } from "../core/instructions.mjs";
+import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
+import { searchSessions, formatHits } from "../core/session-search.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
+import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -1096,6 +1101,25 @@ export const tools = [
         properties: {
           limit: { type: "integer", description: "Max entries, default 20" },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "session_search",
+      description:
+        "Search past conversations with the user: what they asked and what you answered in earlier sessions. " +
+        "Use it when the user refers to earlier work (\"like last time\", \"the bug we fixed yesterday\", \"what did we decide about X\") " +
+        "or when a decision may already have been made in a previous session. Returns dated snippets with a /resume id per session.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Words to look for, e.g. 'retry policy apiClient'" },
+          scope: { type: "string", enum: ["project", "all"], description: "'project' (default) searches sessions started in this folder; 'all' searches every project." },
+          limit: { type: "integer", description: "Max snippets, default 8" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -2371,6 +2395,20 @@ export const impl = {
     return clip(hits.map(formatMemoryRecord).join("\n"));
   },
 
+  session_search({ query, scope = "project", limit = 8 } = {}) {
+    const n = Math.max(1, Math.min(Number(limit) || 8, 30));
+    const s = scope === "all" ? "all" : "project";
+    const hits = searchSessions(query, { scope: s, limit: n, exclude: _sessionCtx?.session?.file });
+    // Each matching session lights up under the Sessions hub in /neuralview.
+    for (const h of hits) {
+      publishActivity({
+        kind: "live_node", op: "add", nodeId: "session-" + h.session.id, parent: SESSIONS_HUB_ID,
+        label: h.session.title || h.session.id, detail: h.session.file, nodeKind: "session", meta: { file: h.session.file },
+      });
+    }
+    return formatHits(hits, { scope: s });
+  },
+
   memory_list({ limit = 20 } = {}) {
     const provider = activeProviderFromDisk();
     const n = Math.max(1, Math.min(Number(limit) || 20, 100));
@@ -3027,7 +3065,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
       model: resolved,
       settings,
       messages,
-      session: new Session(),
+      session: new Session({ kind: "review" }),
       maxIterations: 12,
       diffPreview: false,
       signal: controller.signal,
@@ -3078,11 +3116,13 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
       const settings = await loadSettings();
       const resolved = resolveModel(settings, model || settings.defaultModel);
       rec.model = resolved.key;
+      // The project's OMNI.md / AGENTS.md rules bind a sub-agent too.
+      const rules = loadInstructions().text;
       const messages = [
-        { role: "system", content: systemPrompt() },
+        { role: "system", content: systemPrompt() + (rules ? "\n\n" + rules : "") },
         { role: "user", content: String(prompt) },
       ];
-      const session = new Session();
+      const session = new Session({ kind: "subagent" });
       // Forward the parent's permission gate to the sub-agent's runTurn.
       // Without this, runTurn defaults permissions=null → checkPermission
       // defaults to "allow" for every tool, and run_shell/start_process skip
@@ -3099,8 +3139,12 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
         permissions,
         confirmTool,
       });
-      rec.status = "done";
       rec.result = lastAssistantText(messages) || "(sub-agent finished with no final text)";
+      if (hasHooks("SubagentStop")) {
+        const hook = await runHooks("SubagentStop", { agentId: id, name: rec.name, model: rec.model, result: rec.result.slice(0, 20000) });
+        if (hook.context) rec.result += "\n\n" + hook.context;
+      }
+      rec.status = "done";
     } catch (e) {
       rec.status = rec.status === "stopping" ? "stopped" : "error";
       rec.error = e?.message || String(e);
@@ -3533,7 +3577,25 @@ async function loadExtensionFile(root, rel) {
     Object.assign(impl, ext.impl);
   }
   extensionToolNames.set(rel, names);
+  registerExtensionHooks(rel, ext);
   return ext.name || rel;
+}
+
+// An extension can also export `hooks: { PreToolUse: fn, PostToolUse: { matcher, run } }`
+// (a list per event works too). They run in-process through the same runner as
+// command hooks — see core/hooks.mjs for what a handler may return.
+function registerExtensionHooks(rel, ext) {
+  const source = `extension:${rel}`;
+  clearHooks(source);
+  if (!ext.hooks || typeof ext.hooks !== "object") return;
+  for (const [event, value] of Object.entries(ext.hooks)) {
+    if (!HOOK_EVENTS.some((e) => e.toLowerCase() === event.toLowerCase())) continue;
+    for (const h of Array.isArray(value) ? value : [value]) {
+      const fn = typeof h === "function" ? h : h?.run;
+      if (typeof fn !== "function") continue;
+      registerHook({ event, fn, matcher: h?.matcher, timeout_ms: h?.timeout_ms, name: `${ext.name || path.basename(rel, ".js")}`, source });
+    }
+  }
 }
 
 // Load extension modules and merge their tools + impls into the registry.

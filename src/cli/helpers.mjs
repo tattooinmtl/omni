@@ -1,7 +1,7 @@
 // Small shared CLI utilities — no state, no side effects beyond printing.
 
 import { infoLine, warnLine } from "../ui.mjs";
-import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH } from "../core/config.mjs";
+import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH, Session } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
 
 // Split a SKILL.md body into heading-anchored chunks so lean mode can BM25-rank
@@ -181,6 +181,26 @@ export function restoreSessionMessages(records, msgs) {
       msgs.push({ role: "user", content: `[resumed] ${invocation}` });
     }
   }
+}
+
+// Replace the live conversation with a saved one. The saved records are also
+// copied into the session that is running now, so resuming this session
+// later brings the whole history back, not just what came after the resume.
+// Returns the number of messages restored.
+export async function resumeSessionInto(ctx, file) {
+  const saved = Session.load(file);
+  if (!saved) throw new Error(`could not read ${file}`);
+  ctx.messages.length = ctx.messages[0]?.role === "system" ? 1 : 0;
+  restoreSessionMessages(saved.records, ctx.messages);
+  await ctx.session.append({ type: "resumed_from", file });
+  for (const rec of saved.records) {
+    if (rec.type === "user" || rec.type === "assistant" || rec.type === "tool" || rec.type === "skill") {
+      const { eventId, schemaVersion, ...rest } = rec;
+      await ctx.session.append(rest);
+    }
+  }
+  ctx.session.setContextTokens?.(0);
+  return ctx.messages.length - (ctx.messages[0]?.role === "system" ? 1 : 0);
 }
 
 // Print setup guidance when the active model's provider has no API key.

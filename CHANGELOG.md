@@ -8,6 +8,53 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.25 — 2026-10-22
+
+- **Shipped:** this PR · — · TattooAI/claw-code-harness-audit-74f6c1 · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- Phase 1 of the harness parity plan (Claude Code, Hermes Agent, Pi).
+- **Project instructions.** Omni now follows `OMNI.md`, or an existing
+  `AGENTS.md` / `CLAUDE.md`, from the repo root down to the cwd, plus
+  `~/.omni/agent/OMNI.md` for personal rules. One file per folder, deeper
+  wins, `@path` lines import other files, 40 KB cap in total. The rules sit in
+  the session-context block so the per-turn persona swap keeps them, and
+  sub-agents get them too. New: `/init` (the agent writes an OMNI.md),
+  `/instructions [reload|add <rule>]`. Each file shows up as a node in
+  `/neuralview`.
+- **Hooks now run.** `hooks/scan-now.json` was declared in `omni.config.json`
+  but nothing executed it. `src/core/hooks.mjs` runs hooks at SessionStart,
+  UserPromptSubmit, PreToolUse, PostToolUse, PreCompact, Stop and
+  SubagentStop, from settings, hook files, a trusted project's
+  `.omni/hooks.json`, and extensions (`hooks` export). Command hooks use the
+  Claude Code contract (JSON on stdin, exit 2 blocks, JSON or text on
+  stdout). A Stop hook can send the agent back to work up to 3 times a turn.
+  PreToolUse runs after the permission gates, so it can only tighten them.
+  New: `/hooks`, `OMNI_NO_HOOKS=1`. Documented in `docs/EXTENDING.md`.
+- **Forge digest compaction.** Auto-compaction and `/compact` used to keep only
+  the first request and a tool list, losing every decision. A model now writes
+  a summary under fixed headings (goal, decisions, files, done, open, errors),
+  optionally on a cheaper model (`settings.compaction.model`). It falls back to
+  the old digest on local models (unless configured), on errors, or on an
+  empty reply. Memory atoms are extracted from the dropped turns first, a
+  PreCompact hook can cancel or add focus, and `/compact` takes a focus text.
+- **Fixed `/resume` and `--resume`.** Both restored the newest log in the
+  folder, which is the session Omni creates at startup (or a sub-agent /
+  self_review log), so they brought back almost nothing. Sessions now record
+  their kind, the running session is excluded, `/resume` opens a picker (or
+  takes a number, an id, or `latest`), replaces the conversation instead of
+  appending to it, and copies it into the running log so a later resume gets
+  the whole history.
+- **Session search.** New `session_search` tool and `/history <words> [--all]`:
+  BM25 over past prompts and answers in this project or all projects, at most
+  two hits per session, with a `/resume` id for each.
+- README header now shows the current version (it still said 3.5.5).
+- Tests: `instructions` (14), `hooks` (16, including PreToolUse deny/rewrite,
+  PostToolUse notes and the Stop loop inside a real `runTurn`), `compaction`
+  (9, including a summary over the wire on the configured cheap model) and
+  `session-picker` (12, including the `--resume` regression). The shared
+  `tests/_mock-provider.mjs` lets fetch's keep-alive sockets close before a
+  suite exits, because Node 24 on Windows aborts otherwise
+  (`UV_HANDLE_CLOSING`).
+
 ## 3.5.23 — 2026-10-20
 
 - **Shipped:** [#36](https://github.com/tattooinmtl/omni/pull/36) · `65f4115` · TattooAI/reflection-provider · session `mvs_7f08f91d50584929a32315c1e41e4870`

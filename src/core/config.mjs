@@ -1065,12 +1065,63 @@ export function providerKeyFromEnv(providerName) {
   return undefined;
 }
 
-function cwdSlug() {
+function cwdSlug(cwd = process.cwd()) {
   return (
     "--" +
-    process.cwd().replace(/[:\\/]+/g, "-").replace(/^-+|-+$/g, "") +
+    cwd.replace(/[:\\/]+/g, "-").replace(/^-+|-+$/g, "") +
     "--"
   );
+}
+
+// Folder holding the session logs for `cwd`.
+export function projectSessionsDir(cwd = process.cwd()) {
+  return path.join(SESSIONS_DIR, cwdSlug(cwd));
+}
+
+export function readSessionRecords(file) {
+  try {
+    return fs.readFileSync(file, "utf8").split(/\r?\n/)
+      .map((l) => { if (!l.trim()) return null; try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// What you typed, as opposed to the notes Omni adds to the conversation on
+// your behalf (/btw steering, goal continuations, hook nudges, resume lines).
+function isTypedPrompt(content) {
+  return typeof content === "string" && content.trim() && !/^(\(btw|\[)/.test(content.trim());
+}
+
+// One line of facts about a session log, for /resume and session search.
+// kind comes from session_start; logs from before it was recorded count as
+// "main" when they hold a prompt you typed.
+export function describeSession(file, records = readSessionRecords(file)) {
+  const start = records.find((r) => r.type === "session_start") || {};
+  let prompts = 0;
+  let title = "";
+  for (const r of records) {
+    if (r.type === "user" && isTypedPrompt(r.content)) {
+      prompts++;
+      if (!title) title = r.content;
+    } else if (r.type === "skill" && r.skill) {
+      prompts++;
+      if (!title) title = `/${r.skill}${r.arg ? " " + r.arg : ""}`;
+    }
+  }
+  let mtime = null;
+  try { mtime = fs.statSync(file).mtime.toISOString(); } catch { /* gone */ }
+  return {
+    id: path.basename(file, ".jsonl"),
+    file,
+    cwd: start.cwd || null,
+    started: start.time || null,
+    updated: mtime || start.time || null,
+    kind: start.kind || (prompts ? "main" : "subagent"),
+    prompts,
+    title: title.split(/\r?\n/)[0].trim().slice(0, 90),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,15 +1182,19 @@ export function stableEventId() {
 }
 
 export class Session {
-  constructor() {
+  // kind: "main" for the conversation you type into, "subagent" / "review"
+  // for the logs spawn_agent and self_review write next to it. /resume and
+  // session_search only offer the main ones.
+  constructor({ kind = "main" } = {}) {
     ensureHome();
     const dir = path.join(SESSIONS_DIR, cwdSlug());
     fs.mkdirSync(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     this.file = path.join(dir, `${ts}.jsonl`);
+    this.kind = kind;
     this._cost = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this._contextTokens = 0; // tokens in the CURRENT conversation (last request)
-    this.append({ type: "session_start", cwd: process.cwd(), time: new Date().toISOString() });
+    this.append({ type: "session_start", cwd: process.cwd(), time: new Date().toISOString(), kind });
     // Live-layer session + project nodes for /neuralview — one per launch
     // and one per cwd, so the graph gains a visible root the moment omni
     // starts and every tool call / file touch this turn produces later can
@@ -1221,18 +1276,34 @@ export class Session {
   }
 
   // Find the most recent session file for the current cwd
-  static async findLast() {
-    const dir = path.join(SESSIONS_DIR, cwdSlug());
-    if (!fs.existsSync(dir)) return null;
-    const files = fs.readdirSync(dir).filter(f => f.endsWith(".jsonl")).sort();
-    if (files.length === 0) return null;
-    const lastFile = path.join(dir, files[files.length - 1]);
-    try {
-      const lines = await fs.promises.readFile(lastFile, "utf8");
-      const records = lines.trim().split("\n").map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-      return { file: lastFile, records };
-    } catch {
-      return null;
+  // Sessions for `cwd` you can go back to, newest first: conversations you
+  // typed into, never sub-agent or self_review logs, never `exclude` (the
+  // session running now, which is the newest file the moment Omni starts).
+  static list({ cwd = process.cwd(), exclude = null, limit = 60 } = {}) {
+    const dir = projectSessionsDir(cwd);
+    let files = [];
+    try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().reverse(); } catch { return []; }
+    const skip = exclude ? path.resolve(exclude).toLowerCase() : null;
+    const out = [];
+    for (const f of files) {
+      const file = path.join(dir, f);
+      if (skip && path.resolve(file).toLowerCase() === skip) continue;
+      const info = describeSession(file);
+      if (info.kind !== "main" || !info.prompts) continue;
+      out.push(info);
+      if (out.length >= limit) break;
     }
+    return out;
+  }
+
+  static load(file) {
+    const records = readSessionRecords(file);
+    return records.length ? { file, records } : null;
+  }
+
+  // The most recent session for the current cwd that you can resume.
+  static async findLast({ exclude = null } = {}) {
+    const [latest] = Session.list({ exclude, limit: 1 });
+    return latest ? Session.load(latest.file) : null;
   }
 }

@@ -15,7 +15,7 @@ import {
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
-import { compactMessages, estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
+import { estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
 import {
   resolveProviderName, providers as memoryProviders, currentAtoms,
   extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
@@ -46,6 +46,12 @@ import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
+import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
+import { listHooks } from "../core/hooks.mjs";
+import { forgeCompact } from "../core/compaction.mjs";
+import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
+import { runArrowPicker } from "./models.mjs";
+import { resumeSessionInto } from "./helpers.mjs";
 
 function pkgVersion() {
   try {
@@ -148,34 +154,76 @@ export const COMMANDS = [
     },
   },
   {
-    name: "compact", aliases: [], usage: "/compact [now]", category: "Session",
-    summary: "compact the conversation to save context (now = aggressive)",
-    handler: (ctx, arg) => {
-      const force = arg.trim().toLowerCase() === "now";
+    name: "compact", aliases: [], usage: "/compact [now] [what to keep in detail]", category: "Session",
+    summary: "summarize older messages to save context (now = keep only the last 2)",
+    handler: async (ctx, arg) => {
+      let rest = arg.trim();
+      const force = /^now\b/i.test(rest);
+      if (force) rest = rest.slice(3).trim();
       const before = ctx.messages.length;
       // Pull L1 atoms out of the messages about to be dropped, before
       // they're gone for good — see NewPlanConversion.md Phase 3. Runs
       // regardless of the active memory provider (atoms are additive); this
       // is a safety-net pass, the main one runs every turn (see agent.mjs).
       try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
-      const did = compactMessages(ctx.messages, { keepTail: force ? 2 : 8 });
-      if (!did) {
-        infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
+      const r = await forgeCompact(ctx.messages, {
+        model: ctx.model, settings: ctx.settings, keepTail: force ? 2 : 8, focus: rest, trigger: "manual",
+        source: ctx.session?.file || "session",
+      });
+      for (const err of r.hookErrors || []) warnLine(`hook ${err}`);
+      if (!r.done) {
+        if (r.reason === "too short") infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
+        else warnLine(`not compacted: ${r.reason}`);
         return;
       }
       ctx.session.setContextTokens(estimateTokens(ctx.messages));
-      infoLine(`compacted conversation: ${before} → ${ctx.messages.length} message(s)`);
+      if (r.error) warnLine(`summary failed (${String(r.error).slice(0, 100)}), kept the tool list instead`);
+      infoLine(
+        `compacted conversation: ${before} → ${ctx.messages.length} message(s)` +
+        (r.mode === "forge" ? `, summarized by ${r.summarizer}` : " (tool list only; set compaction.model in settings for a written summary on local models)")
+      );
     },
   },
   {
-    name: "resume", aliases: [], usage: "/resume", category: "Session",
-    summary: "restore the last session for this directory",
-    handler: async (ctx) => {
-      const lastSession = await Session.findLast();
-      if (!lastSession) { warnLine("no previous session found"); return; }
-      infoLine("resuming from " + lastSession.file);
-      restoreSessionMessages(lastSession.records, ctx.messages);
-      infoLine("restored " + ctx.messages.length + " messages");
+    name: "resume", aliases: [], usage: "/resume [latest|<number>|<session id>]", category: "Session",
+    summary: "pick an earlier conversation in this folder and continue it",
+    handler: async (ctx, arg) => {
+      const sessions = Session.list({ exclude: ctx.session?.file });
+      if (!sessions.length) { warnLine("no earlier conversation in this folder to resume"); return; }
+      const want = arg.trim();
+      let pick = null;
+      if (want === "latest") pick = sessions[0];
+      else if (/^\d+$/.test(want)) pick = sessions[Number(want) - 1] || null;
+      else if (want) pick = sessions.find((s) => s.id === want) || null;
+      else if (ctx.canRaw) {
+        const file = await runArrowPicker(
+          sessions.map((s) => ({ id: s.file, label: `${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"}`, dim: `${s.prompts} prompt(s)` })),
+          { ctx, title: "Resume a conversation", hint: "↑/↓ to choose, Enter to resume, Esc to cancel" },
+        );
+        if (!file) { infoLine("resume cancelled"); return; }
+        pick = sessions.find((s) => s.file === file);
+      } else {
+        infoLine("earlier conversations in this folder, newest first:");
+        sessions.slice(0, 15).forEach((s, i) => console.log(`  ${String(i + 1).padStart(2)}. ${formatWhen(s.started || s.updated)}  ${s.title || "(untitled)"} ${c.dim(`· ${s.prompts} prompt(s) · ${s.id}`)}`));
+        infoLine("/resume <number> continues one");
+        return;
+      }
+      if (!pick) { warnLine(`no session "${want}" here — /resume lists them`); return; }
+      const n = await resumeSessionInto(ctx, pick.file);
+      infoLine(`resumed "${pick.title || pick.id}" from ${formatWhen(pick.started || pick.updated)}: ${n} message(s)`);
+    },
+  },
+  {
+    name: "history", aliases: [], usage: "/history <words> [--all]", category: "Session",
+    summary: "search what was said in earlier conversations (this folder, or --all)",
+    handler: (ctx, arg) => {
+      let query = arg.trim();
+      const all = /(^|\s)--all(\s|$)/.test(query);
+      query = query.replace(/(^|\s)--all(\s|$)/, " ").trim();
+      if (!query) { warnLine("usage: /history <words> [--all] — /resume lists recent conversations"); return; }
+      const scope = all ? "all" : "project";
+      const hits = searchSessions(query, { scope, exclude: ctx.session?.file, limit: 10 });
+      console.log(formatHits(hits, { scope }));
     },
   },
   {
@@ -368,6 +416,58 @@ export const COMMANDS = [
       ctx.diffPreview = !ctx.diffPreview;
       infoLine("diff preview: " + (ctx.diffPreview ? "on" : "off"));
     },
+  },
+  {
+    name: "instructions", aliases: ["omnimd"], usage: "/instructions [reload|add <rule>]", category: "Agent",
+    summary: "show the OMNI.md / AGENTS.md files Omni follows here, reload them, or add a rule",
+    handler: (ctx, arg) => {
+      const [sub, ...rest] = arg.trim().split(/\s+/);
+      const action = (sub || "").toLowerCase();
+      if (action === "add") {
+        let file;
+        try { file = addInstruction(rest.join(" ")); } catch (e) { errorLine(e.message); return; }
+        infoLine(`added to ${file}`);
+      }
+      if (action === "add" || action === "reload") {
+        const loaded = loadInstructions();
+        syncInstructions(ctx.messages, loaded.text);
+        ctx.instructionFiles = loaded.files;
+      } else if (action) {
+        warnLine("usage: /instructions [reload|add <rule>]");
+        return;
+      }
+      const files = ctx.instructionFiles || [];
+      if (!files.length) {
+        infoLine("no instruction files here. /init writes an OMNI.md for this project, or /instructions add <rule> starts one.");
+        return;
+      }
+      infoLine(`following ${files.length} instruction file(s), outermost first:`);
+      for (const f of files) {
+        console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "hooks", aliases: [], usage: "/hooks", category: "Agent",
+    summary: "list the lifecycle hooks that run in this session",
+    handler: () => {
+      const hooks = listHooks();
+      if (process.env.OMNI_NO_HOOKS) warnLine("OMNI_NO_HOOKS is set: none of these will run");
+      if (!hooks.length) {
+        infoLine("no hooks loaded. Add them under \"hooks\" in agent/settings.json, or in .omni/hooks.json in a trusted project (see docs/EXTENDING.md).");
+        return;
+      }
+      infoLine(`${hooks.length} hook(s):`);
+      for (const h of hooks) {
+        const what = h.kind === "extension" ? "(extension code)" : h.command;
+        console.log(`  ${c.bold(h.event.padEnd(16))} ${h.matcher ? c.cyan(`[${h.matcher}] `) : ""}${what}${h.background ? c.dim(" · background") : ""} ${c.dim(`· ${h.source}`)}`);
+      }
+    },
+  },
+  {
+    name: "init", aliases: [], usage: "/init", category: "Agent",
+    summary: "have the agent study this project and write its OMNI.md",
+    handler: () => ({ startTurn: true, prompt: initPrompt() }),
   },
   {
     name: "memory", aliases: ["mem"], usage: "/memory [search <q>|forget <id>|provider [name]|extract|atoms|explain <id>|deprecate <id>]", category: "Agent",

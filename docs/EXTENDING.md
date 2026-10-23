@@ -154,6 +154,71 @@ Add a standard MCP server definition either to `omni.config.json`:
 standard; it wins on name collisions). The agent reaches every server through
 the single lazy `mcp` proxy tool, so added servers cost almost no context.
 
+## Hooks
+
+A hook runs your code at a fixed point in the agent loop
+(`src/core/hooks.mjs`). Where hooks come from:
+
+- `agent/settings.json` → `"hooks": [ {…}, … ]`
+- hook files under `hooks/` named in `omni.config.json` → `"hooks": ["scan-now.json"]`
+  (a file holds one hook object or an array)
+- `.omni/hooks.json` in a project, loaded only when the folder is trusted
+  (`/workspace trust`), since it runs commands from the repo
+- an extension's `hooks` export (below)
+
+A hook object:
+
+```json
+{ "event": "PreToolUse", "matcher": "run_shell|run_test", "command": "node check.mjs",
+  "timeout_ms": 30000, "background": false, "name": "shell-guard" }
+```
+
+`trigger` works as a synonym for `event`. `matcher` is a regex matched
+against the whole tool name (PreToolUse and PostToolUse only). `background`
+runs the command detached and ignores its answer.
+
+| Event | Payload (besides `event`, `cwd`) | What the hook can do |
+|---|---|---|
+| `SessionStart` | `sessionFile`, `model` | add context to the system prompt |
+| `UserPromptSubmit` | `prompt` | block the prompt, or add context to it |
+| `PreToolUse` | `tool`, `args` | block the call, or replace `args` |
+| `PostToolUse` | `tool`, `args`, `result` (first 20 KB), `ok` | add a note to the result |
+| `PreCompact` | `trigger` (`auto`/`manual`), `focus`, `messageCount`, `dropping` | cancel, or add focus for the summary |
+| `Stop` | `lastMessage`, `continuations` | send the agent back to work with a reason (max 3 per turn) |
+| `SubagentStop` | `agentId`, `name`, `model`, `result` | add a note to the sub-agent's result |
+
+A command hook gets that payload as JSON on stdin, plus `OMNI_HOOK_EVENT` and
+`OMNI_PROJECT_DIR` in its environment. It answers with its exit code and
+stdout, the same way Claude Code hooks do, so scripts written for those work:
+
+- exit 0 and no output: carry on
+- exit 0 and plain text: the text is added as context
+- exit 0 and JSON: `{ "decision": "deny" | "block" | "allow", "reason": "…",
+  "args": {…}, "additionalContext": "…" }` (`updatedInput` is read as `args`)
+- exit 2: deny or block, with stderr as the reason
+- any other exit, or a timeout: reported as a warning, and the agent carries on
+
+Hooks for one event run in order. A deny stops the chain, and a rewrite of
+`args` is passed to the next hook. PreToolUse hooks only see calls that your
+permission settings already allowed, so a hook can tighten a decision but
+never loosen one. `OMNI_NO_HOOKS=1` turns every hook off; `/hooks` lists
+what's loaded.
+
+From an extension, export handlers. They get the payload and return the same
+JSON shape, or a string (context), or nothing:
+
+```js
+export default {
+  name: "guard",
+  tools: [], impl: {},
+  hooks: {
+    PreToolUse: { matcher: "write_file", run: ({ args }) =>
+      args.path.endsWith(".lock") ? { decision: "deny", reason: "lockfiles are generated" } : undefined },
+    Stop: () => undefined,
+  },
+};
+```
+
 ## Themes (color palette)
 
 A theme is a JSON file in `themes/` describing the terminal UI palette:

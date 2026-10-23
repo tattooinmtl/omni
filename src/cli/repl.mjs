@@ -28,10 +28,11 @@ import { classifyIntent, killSidecar } from "../integrations/router.mjs";
 import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
 import { stopNeuralView } from "../local/neuralview-server.mjs";
-import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
+import { applySkill, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
+import { submitPromptHooks } from "../core/hooks.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
 import { createFooter, stripAnsi } from "./footer.mjs";
@@ -150,13 +151,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   detectContextWindow(ctx).catch(() => {});
 
   // --resume: rebuild the conversation from the last session before prompting.
+  // The session just created for this launch is the newest log in the folder,
+  // so it is excluded; otherwise --resume would restore itself (nothing).
   if (resumeMode) {
-    const lastSession = await Session.findLast();
-    if (!lastSession) {
+    const [latest] = Session.list({ exclude: ctx.session.file, limit: 1 });
+    if (!latest) {
       warnLine("--resume: no previous session found for this directory");
     } else {
-      restoreSessionMessages(lastSession.records, ctx.messages);
-      infoLine(`resumed ${ctx.messages.length} message(s) from ${lastSession.file}`);
+      const n = await resumeSessionInto(ctx, latest.file);
+      infoLine(`resumed "${latest.title || latest.id}": ${n} message(s) from ${latest.file}`);
       console.log("");
     }
   }
@@ -664,9 +667,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       return showPrompt();
     }
 
-    // Plain input → the agent.
-    ctx.messages.push({ role: "user", content: fullLine });
-    await ctx.session.append({ type: "user", content: fullLine });
+    // Plain input → the agent, after any UserPromptSubmit hooks have had a say.
+    const hooked = await submitPromptHooks(fullLine);
+    for (const err of hooked.errors) warnLine(`hook ${err}`);
+    if (hooked.denied) {
+      warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
+      return showPrompt();
+    }
+    ctx.messages.push({ role: "user", content: hooked.content });
+    await ctx.session.append({ type: "user", content: hooked.content });
     if (ctx.routerCfg.enabled && ctx.routeMode === "auto" && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: fullLine, settings: ctx.settings });
       setPersonaIndicator(ctx.activePersona);

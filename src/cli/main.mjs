@@ -29,6 +29,10 @@ import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
 import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
+import { loadInstructions } from "../core/instructions.mjs";
+import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
+import { isFolderTrusted } from "../core/workspace.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
 
 // Every child process the CLI may have started. Safe to call more than once
 // and safe when nothing was ever started — each teardown is a no-op then.
@@ -79,6 +83,12 @@ export async function main(args) {
   const project = loadProjectConfig();
   applySkillIndexSetting(project, settings);
   const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
+  // After extensions, which may register in-process hooks of their own.
+  const hookLoad = loadHooks({
+    installRoot: INSTALL_ROOT, files: project.hooks, settingsHooks: settings.hooks,
+    projectTrusted: isFolderTrusted(process.cwd()),
+  });
+  for (const err of hookLoad.errors) warnLine(`hooks: ${err}`);
   const skills = loadSkills(project);
   // Skills from the external index (omni.config.json `skillIndex`) are
   // typeable too — /gauntlet-loop, /superpowers. They stay out of `skills`
@@ -201,7 +211,20 @@ export async function main(args) {
   applyMachineEnv(machine.settings);
 
   const session = new Session();
-  const preamble = [machine.summary, memoryPreamble()].filter(Boolean).join("\n\n");
+  // OMNI.md / AGENTS.md / CLAUDE.md from ~/.omni/agent and the repo root down
+  // to the cwd. Each file also becomes a node under this project in /neuralview.
+  const instructions = loadInstructions();
+  for (const f of instructions.files) {
+    publishActivity({
+      kind: "live_node", op: "add", nodeId: "instr-" + f.path.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(-60),
+      parent: session._liveProjectId, label: f.label, detail: `Instructions (${f.scope}) — ${f.path}`,
+      nodeKind: "file", meta: { path: f.path },
+    });
+  }
+  const startHook = await runHooks("SessionStart", { sessionFile: session.file, model: model.key });
+  for (const err of startHook.errors) warnLine(`hook ${err}`);
+  const hookContext = startHook.context ? `# Session start notes (from hooks)\n${startHook.context}` : "";
+  const preamble = [machine.summary, instructions.text, hookContext, memoryPreamble()].filter(Boolean).join("\n\n");
   const messages = [{ role: "system", content: buildSystemPrompt(project, skills, preamble) }];
 
   // Persist the current model as "last good" on every clean exit (Ctrl+C,
@@ -250,6 +273,7 @@ export async function main(args) {
     // mode live without restarting. Every code path that gates on lean
     // behaviour reads ctx.contextMode — never settings.contextMode direct.
     contextMode: readContextMode(settings),
+    instructionFiles: instructions.files,
   };
   setSessionCtx(ctx);
   registerGoalTool(ctx);
@@ -278,8 +302,16 @@ export async function main(args) {
       infoLine(skillLoadedLine(skill));
       await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session, { contextMode: ctx.contextMode });
     } else {
-      messages.push({ role: "user", content: promptArg });
-      await session.append({ type: "user", content: promptArg });
+      const hooked = await submitPromptHooks(promptArg);
+      for (const err of hooked.errors) warnLine(`hook ${err}`);
+      if (hooked.denied) {
+        errorLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
+        stopBackgroundChildren();
+        await shutdown(1);
+        return;
+      }
+      messages.push({ role: "user", content: hooked.content });
+      await session.append({ type: "user", content: hooked.content });
     }
     if (routerCfg.enabled && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: promptArg, settings });

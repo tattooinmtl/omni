@@ -102,7 +102,7 @@
     },
     "hooks": {
       "type": "array",
-      "description": "Hook definition files under hooks/ (e.g. scan-now.json). Run by the host harness on their trigger (e.g. SessionStart); Omni itself only lists them here.",
+      "description": "Hook definition files under hooks/ (e.g. scan-now.json). Omni runs each one on its event: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PreCompact, Stop or SubagentStop. See src/core/hooks.mjs for the file format and how a hook allows, blocks or adds context. /hooks lists what is loaded.",
       "items": { "type": "string" }
     }
   }
