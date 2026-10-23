@@ -167,6 +167,64 @@ await ok("a prompt template works headless too", async () => {
   assert.equal(JSON.parse(r.stdout).result, "got: Explain a.txt in one line.");
 });
 
+// ── review fixes ──────────────────────────────────────────────────────────
+
+const { runTurn } = await import(u("src/core/agent.mjs"));
+const { resolveModel } = await import(u("src/core/config.mjs"));
+const { streamSessionEvents, logFailure } = await import(u("src/cli/headless.mjs"));
+const { MockSession } = await import(u("tests/_mock-provider.mjs"));
+
+await ok("--max-turns wins over a routed persona's own iteration budget", async () => {
+  const model = resolveModel(baseSettings, "mock/main");
+  const persona = { id: "coding", maxIterations: 50, systemPrompt: () => "PERSONA" };
+  mock.clear();
+  for (let i = 0; i < 4; i++) mock.push({ tool: "read_file", args: { path: "a.txt" } });
+  const before = mock.requests.length;
+  const outcome = await runTurn({ model, settings: baseSettings, messages: [{ role: "system", content: "S" }, { role: "user", content: "go" }], session: new MockSession(), persona, maxIterations: 30, turnLimit: 2, diffPreview: false });
+  assert.equal(outcome.stop, "max_turns");
+  assert.equal(mock.requests.length - before, 2, "exactly --max-turns model calls");
+  // And a persona with a smaller budget can't cut a larger --max-turns short.
+  mock.clear();
+  mock.push({ tool: "read_file", args: { path: "a.txt" } }, { tool: "read_file", args: { path: "a.txt" } }, "finished on turn 3");
+  const done = await runTurn({ model, settings: baseSettings, messages: [{ role: "system", content: "S" }, { role: "user", content: "go" }], session: new MockSession(), persona: { ...persona, maxIterations: 1 }, turnLimit: 3, diffPreview: false });
+  assert.equal(done.stop, "done");
+});
+
+await ok("/omnibots in json mode still ends with a result object", async () => {
+  const r = await omni(["-p", "/omnibots", "status", "--output", "json"]);
+  const lines = r.stdout.trim().split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, r.stdout);
+  const res = JSON.parse(lines[0]);
+  assert.equal(res.type, "result");
+  assert.equal(res.stop, "done");
+  assert.equal(r.code, 0);
+});
+
+await ok("stream events are emitted only after their log write lands", async () => {
+  const emitted = [];
+  const order = [];
+  // The first write is slow, the second fast: events still come out in order.
+  const session = {
+    append: async (rec) => {
+      if (rec.content === "slow") await new Promise((r) => setTimeout(r, 40));
+      order.push("write:" + rec.content);
+      return rec.content !== "lost";
+    },
+  };
+  streamSessionEvents(session, (ev) => { order.push("emit:" + ev.content); emitted.push(ev); });
+  session.append({ type: "user", content: "slow" }); // not awaited, like runTurn
+  session.append({ type: "user", content: "fast" });
+  await session.append({ type: "user", content: "lost" });
+  await session.drainStream();
+  assert.deepEqual(order, ["write:slow", "emit:slow", "write:fast", "emit:fast", "write:lost"], "in order, write before emit, nothing for a failed write");
+  assert.equal(emitted.length, 2);
+});
+
+await ok("a run whose log lost records is reported as an error", () => {
+  assert.equal(logFailure({ appendFailures: 0 }), null);
+  assert.match(logFailure({ appendFailures: 2 }), /2 records lost/);
+});
+
 await mock.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -83,6 +83,18 @@ export function splitArgs(text) {
   return out;
 }
 
+// The first `bytes` bytes of a file, decoded as UTF-8.
+function readHead(file, bytes) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(bytes);
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // @path → the file's contents, when it is a real file inside the workspace.
 // Anything else (an email address, a decorator, a missing file) is left as is.
 function includeFiles(text, cwd) {
@@ -93,9 +105,11 @@ function includeFiles(text, cwd) {
     let stat;
     try { stat = inside && fs.statSync(full); } catch { stat = null; }
     if (!stat || !stat.isFile()) return whole;
+    // Read at most the limit, so a template pointing at a huge file (a log,
+    // a dataset) can't pull all of it into memory first.
     let content;
-    try { content = fs.readFileSync(full, "utf8"); } catch { return whole; }
-    if (content.length > MAX_INCLUDE) content = content.slice(0, MAX_INCLUDE) + `\n…[truncated at ${MAX_INCLUDE} bytes]`;
+    try { content = readHead(full, MAX_INCLUDE + 1); } catch { return whole; }
+    if (Buffer.byteLength(content) > MAX_INCLUDE) content = content.slice(0, MAX_INCLUDE) + `\n…[truncated at ${MAX_INCLUDE} bytes]`;
     const fence = content.includes("```") ? "~~~" : "```";
     return `${lead}${rel.replace(/\\/g, "/")}\n\n${fence}\n${content.replace(/\s+$/, "")}\n${fence}\n`;
   });

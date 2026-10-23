@@ -76,14 +76,33 @@ export function eventForRecord(r) {
   return null;
 }
 
-// Emit an event for every record the session writes from now on.
+// Emit an event for every record the session writes from now on, once the
+// write has landed: the stream never reports something the saved session
+// (and so a later --resume) doesn't have. A failed write is counted on the
+// session (appendFailures) and fails the run in main.mjs.
+// Writes go through one queue: runTurn doesn't await every append, and
+// concurrent appends can land out of order, which would scramble the stream.
+// session.drainStream() resolves once everything queued is written and sent.
 export function streamSessionEvents(session, emit) {
   const append = session.append.bind(session);
-  session.append = async (record) => {
-    const ev = eventForRecord(record);
-    if (ev) emit(ev);
-    return append(record);
+  let queue = Promise.resolve();
+  session.append = (record) => {
+    const done = queue.then(async () => {
+      const written = await append(record);
+      const ev = eventForRecord(record);
+      if (ev && written !== false) emit(ev);
+      return written;
+    });
+    queue = done.catch(() => {});
+    return done;
   };
+  session.drainStream = () => queue;
+}
+
+// Why a run that otherwise finished must still count as failed, or null.
+export function logFailure(session) {
+  const n = session?.appendFailures || 0;
+  return n ? `the session log could not be written (${n} record${n === 1 ? "" : "s"} lost), so this run can't be resumed as it happened` : null;
 }
 
 function lastAssistantText(messages) {

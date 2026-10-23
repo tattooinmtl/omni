@@ -764,9 +764,11 @@ export function steeringMessage(note) {
   return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null }) {
   // beforeMutation: called once, right before the first call this turn that
   // changes something runs. The REPL takes its /rewind checkpoint there.
+  // turnLimit: a hard cap (headless --max-turns) that wins over the routed
+  // persona's own iteration budget, which otherwise replaces maxIterations.
   let mutationSeen = false;
   // Lean-mode bookkeeping — the goal is the first non-synthesized user turn
   // this session, and the tool trail feeds state.json + the compaction
@@ -800,6 +802,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       };
     }
   }
+  if (turnLimit) maxIterations = turnLimit;
   // Local models get strict index-first OKF navigation rules; frontier
   // providers are left alone. Re-synced every turn so /model switches apply.
   syncOkfNavGuidance(messages, model, tools);

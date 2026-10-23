@@ -61,6 +61,17 @@ await ok("@file pulls in a workspace file's contents", () => {
   assert.match(out, /Focus: src\/app\.js careful/);
 });
 
+await ok("a huge @file is cut at 50 KB (only the head is read)", () => {
+  const big = path.join(work, "big.log");
+  const fd = fs.openSync(big, "w");
+  const line = "x".repeat(1023) + "\n";
+  for (let i = 0; i < 8 * 1024; i++) fs.writeSync(fd, line); // 8 MB
+  fs.closeSync(fd);
+  const out = expandTemplate({ body: "see @big.log" }, "");
+  assert.ok(out.length < 52 * 1024, `expanded to ${out.length} chars`);
+  assert.match(out, /truncated at 51200 bytes/);
+});
+
 await ok("@ that isn't a workspace file is left alone", () => {
   const t = { body: "mail me@example.com, use @Component, read @../outside.txt and @missing.md" };
   fs.writeFileSync(path.join(path.dirname(work), "outside.txt"), "SECRET");

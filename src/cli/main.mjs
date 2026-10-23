@@ -32,7 +32,7 @@ import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.m
 import { loadInstructions } from "../core/instructions.mjs";
 import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
 import { setPermissionMode, getPermissionMode } from "../core/permission-mode.mjs";
-import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, EXIT } from "./headless.mjs";
+import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, logFailure, EXIT } from "./headless.mjs";
 import { loadTemplates, expandTemplate } from "../core/templates.mjs";
 import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
@@ -318,6 +318,11 @@ export async function main(args) {
     const startedAt = Date.now();
     // Every exit goes through here, so a JSON run always ends with a result.
     const finish = async (stop, error = null) => {
+      // Every event goes out before the result does.
+      await session.drainStream?.();
+      // A run whose log lost records didn't finish cleanly, whatever the model did.
+      const lost = logFailure(session);
+      if (lost && stop === "done") { stop = "error"; error = lost; }
       if (error && !jsonOut) errorLine(error);
       if (jsonOut) jsonOut.emit(buildResult({ stop, error, messages, session, model: ctx.model, mode: getPermissionMode(), startedAt }));
       stopBackgroundChildren();
@@ -334,9 +339,7 @@ export async function main(args) {
     const shotHead = shotParts[0] || "";
     if (shotHead.startsWith("/") && findCommand(shotHead.slice(1))?.name === "omnibots") {
       await dispatchCommand(ctx, shotHead.slice(1), shotParts.slice(1).join(" "), shotParts);
-      stopBackgroundChildren();
-      await shutdown(0);
-      return;
+      return finish("done");
     }
     if (reportMissingKey(ctx.model)) return finish("error", `no API key for provider "${ctx.model.providerName}"`);
     reportInsecureEndpoint(ctx.model);
@@ -366,7 +369,9 @@ export async function main(args) {
       settings,
       messages,
       session,
-      maxIterations: headless.maxTurns || turnMaxIterations(ctx.model, ctx.settings),
+      maxIterations: turnMaxIterations(ctx.model, ctx.settings),
+      // Wins over a routed persona's own budget (runTurn would replace maxIterations).
+      turnLimit: headless.maxTurns,
       persona: ctx.activePersona,
       signal: ctx.currentAbort.signal,
       permissions: settings.permissions,
