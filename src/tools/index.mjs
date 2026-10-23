@@ -24,6 +24,7 @@ import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
 import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
 import { searchSessions, formatHits } from "../core/session-search.mjs";
+import { getPermissionMode, setPermissionMode, modeBeforePlan, modeLabel, planSteps } from "../core/permission-mode.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
 
@@ -1063,6 +1064,23 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "exit_plan_mode",
+      description:
+        "In plan mode, present your plan to the user for approval. Call it once you have investigated enough to know exactly what to do. " +
+        "The user approves it (you then implement it, and its steps are added to project_todo), or tells you what to change (you stay in plan mode and revise). " +
+        "Outside plan mode it does nothing.",
+      parameters: {
+        type: "object",
+        properties: {
+          plan: { type: "string", description: "The plan in Markdown: a numbered list of concrete steps, the files each step touches, and how you will verify the result." },
+        },
+        required: ["plan"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "memory_save",
       description:
         "Save a durable fact to persistent memory (survives across sessions and projects). Use for user preferences, project goals, decisions, and lessons learned — not for things already in the code or this conversation.",
@@ -1111,7 +1129,7 @@ export const tools = [
       description:
         "Search past conversations with the user: what they asked and what you answered in earlier sessions. " +
         "Use it when the user refers to earlier work (\"like last time\", \"the bug we fixed yesterday\", \"what did we decide about X\") " +
-        "or when a decision may already have been made in a previous session. Returns dated snippets with a /resume id per session.",
+        "or when a decision may already have been made in a previous session. Returns dated snippets with the session code to /resume each one.",
       parameters: {
         type: "object",
         properties: {
@@ -2372,6 +2390,33 @@ export const impl = {
       return String(await _sessionCtx.askUser({ question: String(question), options: Array.isArray(options) ? options.map(String) : [] }));
     }
     return "No interactive user available. Proceed with the most reasonable assumption, state it explicitly, and continue.";
+  },
+
+  async exit_plan_mode({ plan } = {}) {
+    if (!plan || !String(plan).trim()) throw new Error("plan is required: the steps you intend to take");
+    if (getPermissionMode() !== "plan") return "Not in plan mode, so there is nothing to approve. Carry on with the work.";
+    if (!_sessionCtx || typeof _sessionCtx.askUser !== "function") {
+      return "No one is here to approve the plan (this session is not interactive). Stay in plan mode: give the plan as your final answer and stop.";
+    }
+    const options = ["Yes, implement it", "Yes, and accept file edits without asking", "No, keep planning"];
+    const answer = String(await _sessionCtx.askUser({ question: `Plan for your approval:\n\n${String(plan).trim()}\n\nApprove this plan?`, options })).trim();
+    if (answer === options[2] || /^(n|no)$/i.test(answer) || !answer) {
+      return "The user did not approve the plan. Stay in plan mode: ask what they want changed, or revise the plan and call exit_plan_mode again.";
+    }
+    if (answer !== options[0] && answer !== options[1] && !/^(y|yes)$/i.test(answer)) {
+      return `The user did not approve the plan yet and replied: "${answer}". Stay in plan mode, revise the plan with that in mind, and call exit_plan_mode again.`;
+    }
+    const next = answer === options[1] ? "accept-edits" : modeBeforePlan();
+    setPermissionMode(next);
+    // Omni touch: the approved plan becomes the project's todo list, which
+    // goal mode and the REPORT step already work through.
+    const steps = planSteps(plan);
+    for (const title of steps) {
+      try { projectTodo({ action: "add", title }); } catch { /* a todo store problem must not undo the approval */ }
+    }
+    return `The user approved the plan. Mode is now ${modeLabel(next)}.` +
+      (steps.length ? ` Its ${steps.length} step(s) were added to project_todo; mark each one in_progress and done as you go.` : "") +
+      " Implement it now, start to finish.";
   },
   // Routed through the active memory provider (settings.memory.provider —
   // "legacy-jsonl" by default, or "layered-okf"). See core/memory-provider.mjs.
