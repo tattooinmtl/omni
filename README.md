@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.27
+# OMNI-AGENT 3.5.28
 
 Omni-present harness for agents
 
@@ -22,6 +22,14 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+**3.5.28**
+- **Named sub-agents:** `explorer`, `reviewer` and `tester` ship with Omni;
+  add your own in `.omni/agents/`. Each has a role, a tool list, read-only or
+  not, and its own model. `/agents` lists them.
+- **Sub-agents on their own git branch:** a worktree agent works in a separate
+  checkout. `merge_agent` has the critic review its diff and merges only a
+  clean one.
 
 **3.5.27**
 - **Headless mode:** `omni -p "…" --output json` (or `stream-json`) prints
@@ -275,7 +283,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Category | Commands |
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
@@ -414,6 +422,58 @@ what you type is added at the end. A project template beats a personal one,
 built-in commands beat templates, and templates beat skills of the same name.
 `/templates` lists them; they show up in the `/` menu too.
 
+### Sub-agents
+
+The agent can hand a self-contained task to a sub-agent that runs in
+parallel (`spawn_agent`), on another provider if you like, so the two don't
+share a rate limit.
+
+**Named agents** give a sub-agent a role and limits. Omni ships three:
+
+| Agent | Does | Limits |
+|---|---|---|
+| `explorer` | finds where something lives and how it works | read-only |
+| `reviewer` | reviews a change, ends with a VERDICT line | read-only |
+| `tester` | writes and runs tests, never changes the code under test | its own git branch |
+
+Add your own as `.omni/agents/<name>.md` (this project) or
+`~/.omni/agent/agents/<name>.md` (every project). A project agent with a
+shipped name replaces it.
+
+```markdown
+---
+description: Updates the docs to match a code change
+tools: read_file, search, edit_file, write_file
+model: agnes/agnes-2.5-flash
+isolation: worktree
+---
+You keep README.md and docs/ in step with the code. …
+```
+
+`tools` limits what it may use (only those are offered to the model),
+`readonly: true` gives it read tools only, `model` runs it on its own
+provider, and the body is its role. A sub-agent is never allowed more than
+you are: your `deny` settings still apply, and anything you'd be asked about
+still asks. `/agents` lists them and the sub-agents running now.
+
+**Own git branch.** With `isolation: worktree` (or `spawn_agent` with
+`isolation:"worktree"`), the sub-agent works in a separate checkout of your
+repo on a new branch, under `~/.omni/agent/worktrees/`. It can't collide with
+you or another agent, and nothing reaches your files until `merge_agent`:
+
+1. an independent critic reviews the branch's diff against the task the
+   agent was given;
+2. on `VERDICT: CLEAN` or `MINOR` the branch is merged into what you have
+   checked out; on `MAJOR`, `BLOCKERS` or no verdict it isn't, and you get
+   the findings (`force:true` merges anyway);
+3. the worktree and branch are removed. `action:"discard"` drops them
+   without merging.
+
+The branch starts from your last commit, so uncommitted changes are not in
+it. It needs a git repo with at least one commit. Under the hood the agent is
+a headless `omni -p --agent <name>` running in that checkout, so you can run
+one yourself the same way.
+
 ### Sessions: resume, search, fork, export
 
 Every conversation has a code such as `omni-session-mvkely37-ftzhe6i`.
@@ -540,7 +600,9 @@ uses the next free port, and `/neuralview` tells you which Omi holds 5678.
   `git_checkout`, `git_log`, `git_merge`, `git_rebase`, `git_stash`,
   `git_tag`, …)
 - **Sub-agents:** `spawn_agent` runs a task in parallel, optionally on a
-  different provider or model. `agent_status` and `stop_agent` manage it.
+  different provider or model, as a named agent, or on its own git branch.
+  `agent_status` and `stop_agent` manage it; `merge_agent` reviews and merges
+  a branch agent's work.
 - **Self-review:** `self_review` sends the task and the diff to an independent,
   read-only critic that can't be talked round by the author's reasoning.
 - **Memory:** `memory_save`, `memory_search`, `memory_list`, `memory_forget`,
