@@ -35,6 +35,7 @@ import { setPermissionMode, getPermissionMode } from "../core/permission-mode.mj
 import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, logFailure, EXIT } from "./headless.mjs";
 import { loadTemplates, expandTemplate } from "../core/templates.mjs";
 import { loadAgents, agentSystemPrompt, agentPermissions, agentAllowedTools } from "../core/agents.mjs";
+import { loadLearnedSkills } from "../core/skill-learn.mjs";
 import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
@@ -61,6 +62,26 @@ export async function main(args) {
     process.exit((await runtimeCommand(null, args.slice(1).join(" "))) ? 0 : 1);
   }
 
+  // `omni schedule run <id>` is what Task Scheduler starts; `list` and
+  // `run-due` are for you or another runner. No REPL, no model of its own:
+  // a run is a headless child Omni (core/scheduler.mjs).
+  if (args[0] === "schedule") {
+    const sched = await import("../core/scheduler.mjs");
+    const [, sub, id] = args;
+    if (sub === "run" && id) {
+      const entry = await sched.runJob(id);
+      console.log(`${id}: ${entry.ok ? "done" : entry.stop}${entry.error ? ` — ${entry.error}` : ""}`);
+      process.exit(entry.ok ? 0 : 1);
+    }
+    if (sub === "run-due") {
+      const ran = await sched.runDue();
+      console.log(ran.length ? ran.map((e) => `${e.job}: ${e.ok ? "done" : e.stop}`).join("\n") : "nothing due");
+      process.exit(ran.every((e) => e.ok) ? 0 : 1);
+    }
+    for (const j of sched.loadJobs()) console.log(`${j.id}  ${sched.describeWhen(j.when)}  ${j.cwd}  ${j.prompt.slice(0, 60)}`);
+    process.exit(0);
+  }
+
   // --version / -V before anything else: no settings load, no workspace
   // prompt, no network. "What version am I on?" has to be answerable even
   // when the install is half-broken — that's usually when you're asking.
@@ -80,7 +101,13 @@ export async function main(args) {
     errorLine(e.message);
     process.exit(1);
   }
-  const jsonOut = headless.output === "text" ? null : captureStdout();
+  // --rpc: JSON lines over stdio (rpc.mjs). Like json output, it needs stdout
+  // to itself, so the terminal UI goes to stderr.
+  const rpcIdx = args.indexOf("--rpc");
+  const rpcMode = rpcIdx !== -1;
+  if (rpcMode) args.splice(rpcIdx, 1);
+  const rpcOut = rpcMode ? captureStdout() : null;
+  const jsonOut = rpcMode || headless.output === "text" ? null : captureStdout();
 
   const settings = await loadSettings();
 
@@ -93,7 +120,7 @@ export async function main(args) {
     await initWorkspace({
       settings,
       // A headless run must never stop to ask which folder to trust.
-      interactive: !headless.print && headless.output === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      interactive: !rpcMode && !headless.print && headless.output === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY),
     });
   }
 
@@ -109,12 +136,18 @@ export async function main(args) {
   });
   for (const err of hookLoad.errors) warnLine(`hooks: ${err}`);
   const skills = loadSkills(project);
+  // Skills Omni learned in earlier sessions (core/skill-learn.mjs). A bundled
+  // skill wins a name clash. Faded ones stay typeable but aren't offered.
+  const bundledCommands = new Set(skills.map((s) => s.command));
+  const learned = loadLearnedSkills().filter((s) => !bundledCommands.has(s.command));
+  skills.push(...learned.filter((s) => !s.faded));
   // Skills from the external index (omni.config.json `skillIndex`) are
   // typeable too — /gauntlet-loop, /superpowers. They stay out of `skills`
   // (and so out of the system prompt); loadScannedSkills already drops any
   // whose command a bundled skill owns, so bundled still wins a clash.
   const slashSkills = [...skills, ...loadScannedSkills(project, skills)];
   const skillByCommand = new Map(slashSkills.map((s) => [s.command, s]));
+  for (const s of learned) if (s.faded) skillByCommand.set(s.command, s);
 
   // MCP: register the single `mcp` proxy tool. Connections are lazy.
   const mcpInfo = registerMcpProxy(loadMcpConfig(project));
@@ -412,5 +445,11 @@ export async function main(args) {
   // /neuralview just open a browser onto whatever's already running.
   startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
 
+  if (rpcMode) {
+    persistModelOnExit = false;
+    const { startRpc } = await import("./rpc.mjs");
+    await startRpc(ctx, { emit: rpcOut.emit, onExit: () => { stopBackgroundChildren(); shutdown(0); } });
+    return;
+  }
   await startRepl(ctx, { resumeMode });
 }

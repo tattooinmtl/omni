@@ -22,6 +22,8 @@ from pathlib import Path
 
 SIDECAR_DIR = Path(__file__).parent
 SEED_PATH   = SIDECAR_DIR / "data" / "seed.jsonl"
+# Your own labelled prompts, from /route learn (gitignored).
+SESSIONS_PATH = SIDECAR_DIR / "data" / "sessions.jsonl"
 MODEL_PATH  = SIDECAR_DIR / "model.pkl"
 
 
@@ -62,6 +64,11 @@ def build_pipeline():
 def train(eval_mode: bool = False) -> None:
     texts, labels = load_data(SEED_PATH)
     print(f"Loaded {len(texts)} examples from {SEED_PATH}")
+    if SESSIONS_PATH.exists():
+        more_texts, more_labels = load_data(SESSIONS_PATH)
+        texts += more_texts
+        labels += more_labels
+        print(f"Added {len(more_texts)} examples from your sessions ({SESSIONS_PATH})")
 
     if eval_mode:
         from sklearn.model_selection import cross_val_score

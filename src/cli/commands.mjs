@@ -51,6 +51,13 @@ import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "
 import { listHooks } from "../core/hooks.mjs";
 import { loadTemplates } from "../core/templates.mjs";
 import { loadAgents } from "../core/agents.mjs";
+import { loadLearnedSkills, forgetLearnedSkill } from "../core/skill-learn.mjs";
+import * as sched from "../core/scheduler.mjs";
+import { buildSessionTree, flattenTree } from "../core/session-tree.mjs";
+import { extensionCommand, extensionCommands } from "../core/ext-registry.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
+import { stripAnsi } from "./footer.mjs";
+import { exportRouterData } from "../core/router-data.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -266,6 +273,37 @@ export const COMMANDS = [
       ctx.session = fork;
       infoLine(`forked: you are now in ${fork.code}`);
       infoLine(`the original is unchanged: /resume ${from.code} goes back to it`);
+    },
+  },
+  {
+    name: "tree", aliases: [], usage: "/tree", category: "Session",
+    summary: "how this folder's conversations forked and resumed; pick one to continue",
+    handler: async (ctx) => {
+      const rows = flattenTree(buildSessionTree({ include: ctx.session?.file }));
+      if (!rows.length) { infoLine("no conversations in this folder yet"); return; }
+      const here = ctx.session?.file ? path.resolve(ctx.session.file).toLowerCase() : "";
+      const label = ({ node, prefix }) => {
+        const i = node.info;
+        const how = node.how ? c.dim(node.how === "fork" ? "forked · " : "resumed · ") : "";
+        const you = path.resolve(i.file).toLowerCase() === here ? c.cyan(" ← you are here") : "";
+        return `${prefix}${how}${i.title || "(new conversation)"} ${c.dim(`· ${formatWhen(i.started || i.updated)} · ${i.code}`)}${you}`;
+      };
+      // The neural view gets the same branches as edges between session nodes.
+      for (const { node } of rows) {
+        for (const child of node.children) publishActivity({ kind: "live_edge", source: "session-" + node.info.id, target: "session-" + child.info.id, edgeKind: child.how || "fork" });
+      }
+      if (!ctx.canRaw) {
+        for (const r of rows) console.log("  " + label(r));
+        infoLine("/resume <code> continues any of them");
+        return;
+      }
+      const file = await runArrowPicker(
+        rows.map((r) => ({ id: r.node.info.file, label: stripAnsi(label(r)) })),
+        { ctx, title: "Conversations in this folder", hint: "↑/↓ to choose, Enter to continue it, Esc to close" },
+      );
+      if (!file || path.resolve(file).toLowerCase() === here) return;
+      const n = await resumeSessionInto(ctx, file);
+      infoLine(`switched to "${describeSession(file).title}": ${n} message(s)`);
     },
   },
   {
@@ -532,10 +570,16 @@ export const COMMANDS = [
     },
   },
   {
-    name: "route", aliases: [], usage: "/route [coding|assistant|auto]", category: "Agent",
-    summary: "show or pin the active persona",
+    name: "route", aliases: [], usage: "/route [coding|assistant|auto|learn [--all]]", category: "Agent",
+    summary: "show or pin the active persona; learn = train data from your sessions",
     handler: (ctx, arg) => {
       const target = arg.trim().toLowerCase();
+      if (target === "learn" || target === "learn --all") {
+        const r = exportRouterData({ all: target.endsWith("--all") });
+        infoLine(`wrote ${r.count} labelled prompt(s) from your sessions (${r.coding} coding, ${r.assistant} assistant) to ${r.file}`);
+        infoLine("retrain the router with: python router/train.py (it reads these on top of the seed), then restart Omni");
+        return;
+      }
       if (!target) {
         if (!ctx.routerCfg.enabled) {
           infoLine("router is disabled (set router.enabled=true in settings or omni.config.json)");
@@ -604,6 +648,92 @@ export const COMMANDS = [
       infoLine(`following ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "schedule", aliases: [], usage: "/schedule [add <when> <prompt> | remove <id> | run <id>]", category: "Agent",
+    summary: "run a prompt on a timetable, unattended (results go to /inbox)",
+    handler: (ctx, arg) => {
+      const t = arg.trim();
+      const [sub, ...rest] = t.split(/\s+/);
+      if (sub === "add") {
+        let out;
+        try { out = sched.addJob(rest.join(" ")); } catch (e) { warnLine(e.message); return; }
+        const { job, registration } = out;
+        infoLine(`scheduled ${job.id}: ${sched.describeWhen(job.when)}, in ${job.cwd} (${job.mode} mode${job.agent ? `, as ${job.agent}` : ""})`);
+        infoLine(`next run: ${formatWhen(sched.nextRun(job.when).toISOString())}`);
+        (registration.ok ? infoLine : warnLine)(registration.detail);
+        infoLine("tools set to \"ask\" are refused in unattended runs; results land in /inbox");
+        return;
+      }
+      if (sub === "remove") {
+        if (!rest[0]) { warnLine("usage: /schedule remove <id>"); return; }
+        infoLine(sched.removeJob(rest[0]) ? `removed ${rest[0]}` : `no job ${rest[0]}`);
+        return;
+      }
+      if (sub === "run") {
+        if (!rest[0]) { warnLine("usage: /schedule run <id>"); return; }
+        if (!sched.loadJobs().some((j) => j.id === rest[0])) { warnLine(`no job ${rest[0]}`); return; }
+        infoLine(`running ${rest[0]} in the background; the result goes to /inbox`);
+        sched.runJob(rest[0]).catch((e) => warnLine(`${rest[0]}: ${e.message}`));
+        return;
+      }
+      if (t) { warnLine("usage: /schedule [add <when> <prompt> | remove <id> | run <id>]"); return; }
+      const jobs = sched.loadJobs();
+      if (!jobs.length) {
+        infoLine("nothing scheduled. Example: /schedule add weekdays 09:00 run the tests and tell me what fails");
+        return;
+      }
+      for (const j of jobs) {
+        const last = j.lastRun ? `last ${formatWhen(j.lastRun)} ${j.lastStatus}` : "not run yet";
+        console.log(`  ${c.bold(j.id)}  ${sched.describeWhen(j.when)} ${c.dim(`· ${last} · ${j.cwd}`)}\n      ${j.prompt}`);
+      }
+    },
+  },
+  {
+    name: "inbox", aliases: [], usage: "/inbox [clear]", category: "Agent",
+    summary: "results of scheduled runs",
+    handler: (ctx, arg) => {
+      if (arg.trim() === "clear") { infoLine(`cleared ${sched.clearInbox()} result(s)`); return; }
+      const entries = sched.readInbox({ limit: 10 });
+      if (!entries.length) { infoLine("the inbox is empty"); return; }
+      for (const e of entries) {
+        const mark = e.read ? " " : c.cyan("●");
+        console.log(`${mark} ${c.bold(e.job)} ${formatWhen(e.finishedAt)} ${e.ok ? c.green("done") : c.red(e.stop)} ${c.dim(`· ${e.prompt.slice(0, 60)}`)}`);
+        console.log(`    ${(e.ok ? e.result : e.error || e.result || "").replace(/\s+/g, " ").slice(0, 300)}`);
+        if (e.session) console.log(c.dim(`    full run: omni --resume ${e.session}`));
+      }
+      sched.markRead(entries);
+    },
+  },
+  {
+    name: "learned", aliases: [], usage: "/learned [forget <name>]", category: "Agent",
+    summary: "skills Omni learned from your work, with how much each is used",
+    handler: (ctx, arg) => {
+      const [sub, name] = arg.trim().split(/\s+/);
+      if (sub === "forget") {
+        if (!name) { warnLine("usage: /learned forget <name>"); return; }
+        const slug = name.replace(/^\//, "");
+        if (!forgetLearnedSkill(slug)) { warnLine(`no learned skill named ${slug}`); return; }
+        for (const list of [ctx.skills, ctx.slashSkills]) {
+          if (!Array.isArray(list)) continue;
+          const i = list.findIndex((s) => s.learned && s.name === slug);
+          if (i >= 0) list.splice(i, 1);
+        }
+        ctx.skillByCommand?.delete("/" + slug);
+        infoLine(`forgot /${slug}`);
+        return;
+      }
+      const learned = loadLearnedSkills();
+      if (!learned.length) {
+        infoLine("no learned skills yet. After a long task that passes self_review, Omni offers to save how it was done.");
+        return;
+      }
+      infoLine(`${learned.length} learned skill(s), heaviest first (weight halves every 30 days without use):`);
+      for (const s of learned.sort((a, b) => b.weight - a.weight)) {
+        const last = s.usage?.lastUsed ? `last used ${formatWhen(s.usage.lastUsed)}` : "never used";
+        console.log(`  ${c.bold(s.command)} ${c.dim(`· weight ${s.weight.toFixed(2)} · used ${s.usage?.uses || 0}× · ${last}${s.faded ? " · faded (not offered; still works by name)" : ""}`)}  ${s.description}`);
       }
     },
   },
@@ -1341,11 +1471,12 @@ for (const cmd of COMMANDS) {
 }
 
 export function findCommand(name) {
-  return byName.get(String(name || "").toLowerCase()) || null;
+  // Built-ins first; an extension command can never shadow one.
+  return byName.get(String(name || "").toLowerCase()) || extensionCommand(name) || null;
 }
 
 export function commandNames() {
-  return COMMANDS.flatMap((cmd) => [cmd.name, ...cmd.aliases.filter(Boolean)]).map((n) => "/" + n);
+  return [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))].flatMap((cmd) => [cmd.name, ...cmd.aliases.filter(Boolean)]).map((n) => "/" + n);
 }
 
 // Rows for the live "/" suggestion menu in the REPL: every command whose name
@@ -1354,7 +1485,7 @@ export function commandNames() {
 export function commandMenu(prefix = "") {
   const p = String(prefix || "").toLowerCase();
   const rows = [];
-  for (const cmd of COMMANDS) {
+  for (const cmd of [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))]) {
     if (!cmd.name) continue;
     const names = [cmd.name, ...cmd.aliases.filter(Boolean)];
     if (!names.some((n) => n.startsWith(p))) continue;
@@ -1391,11 +1522,12 @@ export function printHelp(ctx) {
   // Known categories first, in this order, then any other category a command
   // declares — so a new category (like "Tools" for /browser) can't be hidden.
   const categories = ["Session", "Agent", "Models & Providers", "Packages & Integrations"];
-  for (const cmd of COMMANDS) if (!categories.includes(cmd.category)) categories.push(cmd.category);
+  const all = [...COMMANDS, ...extensionCommands().filter((x) => !byName.has(x.name))];
+  for (const cmd of all) if (!categories.includes(cmd.category)) categories.push(cmd.category);
   console.log("");
   for (const cat of categories) {
     console.log(c.bold(`  ${cat}`));
-    for (const cmd of COMMANDS.filter((x) => x.category === cat)) {
+    for (const cmd of all.filter((x) => x.category === cat)) {
       console.log(`    ${cmd.usage.padEnd(46)} ${c.dim(cmd.summary)}`);
     }
     console.log("");

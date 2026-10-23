@@ -29,6 +29,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 ROUTER_DIR = Path(__file__).parent.resolve()
 SEED_PATH  = ROUTER_DIR / "data" / "seed.jsonl"
+# Your own labelled prompts, from /route learn (gitignored).
+SESSIONS_PATH = ROUTER_DIR / "data" / "sessions.jsonl"
 MODEL_PATH = ROUTER_DIR / "model.pkl"
 
 
@@ -90,6 +92,11 @@ def main() -> None:
     print(f"Loading seed data from {SEED_PATH} ...")
     texts, labels = load_seed(SEED_PATH)
     print(f"  Loaded {len(texts)} samples")
+    if SESSIONS_PATH.exists():
+        more_texts, more_labels = load_seed(SESSIONS_PATH)
+        texts += more_texts
+        labels += more_labels
+        print(f"  Added {len(more_texts)} samples from your sessions")
 
     label_counts: dict[str, int] = {}
     for lbl in labels:
