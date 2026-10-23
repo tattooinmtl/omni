@@ -52,6 +52,7 @@ import { listHooks } from "../core/hooks.mjs";
 import { loadTemplates } from "../core/templates.mjs";
 import { loadAgents } from "../core/agents.mjs";
 import { loadLearnedSkills, forgetLearnedSkill } from "../core/skill-learn.mjs";
+import * as sched from "../core/scheduler.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -606,6 +607,62 @@ export const COMMANDS = [
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
       }
+    },
+  },
+  {
+    name: "schedule", aliases: [], usage: "/schedule [add <when> <prompt> | remove <id> | run <id>]", category: "Agent",
+    summary: "run a prompt on a timetable, unattended (results go to /inbox)",
+    handler: (ctx, arg) => {
+      const t = arg.trim();
+      const [sub, ...rest] = t.split(/\s+/);
+      if (sub === "add") {
+        let out;
+        try { out = sched.addJob(rest.join(" ")); } catch (e) { warnLine(e.message); return; }
+        const { job, registration } = out;
+        infoLine(`scheduled ${job.id}: ${sched.describeWhen(job.when)}, in ${job.cwd} (${job.mode} mode${job.agent ? `, as ${job.agent}` : ""})`);
+        infoLine(`next run: ${formatWhen(sched.nextRun(job.when).toISOString())}`);
+        (registration.ok ? infoLine : warnLine)(registration.detail);
+        infoLine("tools set to \"ask\" are refused in unattended runs; results land in /inbox");
+        return;
+      }
+      if (sub === "remove") {
+        if (!rest[0]) { warnLine("usage: /schedule remove <id>"); return; }
+        infoLine(sched.removeJob(rest[0]) ? `removed ${rest[0]}` : `no job ${rest[0]}`);
+        return;
+      }
+      if (sub === "run") {
+        if (!rest[0]) { warnLine("usage: /schedule run <id>"); return; }
+        if (!sched.loadJobs().some((j) => j.id === rest[0])) { warnLine(`no job ${rest[0]}`); return; }
+        infoLine(`running ${rest[0]} in the background; the result goes to /inbox`);
+        sched.runJob(rest[0]).catch((e) => warnLine(`${rest[0]}: ${e.message}`));
+        return;
+      }
+      if (t) { warnLine("usage: /schedule [add <when> <prompt> | remove <id> | run <id>]"); return; }
+      const jobs = sched.loadJobs();
+      if (!jobs.length) {
+        infoLine("nothing scheduled. Example: /schedule add weekdays 09:00 run the tests and tell me what fails");
+        return;
+      }
+      for (const j of jobs) {
+        const last = j.lastRun ? `last ${formatWhen(j.lastRun)} ${j.lastStatus}` : "not run yet";
+        console.log(`  ${c.bold(j.id)}  ${sched.describeWhen(j.when)} ${c.dim(`· ${last} · ${j.cwd}`)}\n      ${j.prompt}`);
+      }
+    },
+  },
+  {
+    name: "inbox", aliases: [], usage: "/inbox [clear]", category: "Agent",
+    summary: "results of scheduled runs",
+    handler: (ctx, arg) => {
+      if (arg.trim() === "clear") { infoLine(`cleared ${sched.clearInbox()} result(s)`); return; }
+      const entries = sched.readInbox({ limit: 10 });
+      if (!entries.length) { infoLine("the inbox is empty"); return; }
+      for (const e of entries) {
+        const mark = e.read ? " " : c.cyan("●");
+        console.log(`${mark} ${c.bold(e.job)} ${formatWhen(e.finishedAt)} ${e.ok ? c.green("done") : c.red(e.stop)} ${c.dim(`· ${e.prompt.slice(0, 60)}`)}`);
+        console.log(`    ${(e.ok ? e.result : e.error || e.result || "").replace(/\s+/g, " ").slice(0, 300)}`);
+        if (e.session) console.log(c.dim(`    full run: omni --resume ${e.session}`));
+      }
+      sched.markRead(entries);
     },
   },
   {

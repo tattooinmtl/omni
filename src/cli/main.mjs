@@ -62,6 +62,26 @@ export async function main(args) {
     process.exit((await runtimeCommand(null, args.slice(1).join(" "))) ? 0 : 1);
   }
 
+  // `omni schedule run <id>` is what Task Scheduler starts; `list` and
+  // `run-due` are for you or another runner. No REPL, no model of its own:
+  // a run is a headless child Omni (core/scheduler.mjs).
+  if (args[0] === "schedule") {
+    const sched = await import("../core/scheduler.mjs");
+    const [, sub, id] = args;
+    if (sub === "run" && id) {
+      const entry = await sched.runJob(id);
+      console.log(`${id}: ${entry.ok ? "done" : entry.stop}${entry.error ? ` — ${entry.error}` : ""}`);
+      process.exit(entry.ok ? 0 : 1);
+    }
+    if (sub === "run-due") {
+      const ran = await sched.runDue();
+      console.log(ran.length ? ran.map((e) => `${e.job}: ${e.ok ? "done" : e.stop}`).join("\n") : "nothing due");
+      process.exit(ran.every((e) => e.ok) ? 0 : 1);
+    }
+    for (const j of sched.loadJobs()) console.log(`${j.id}  ${sched.describeWhen(j.when)}  ${j.cwd}  ${j.prompt.slice(0, 60)}`);
+    process.exit(0);
+  }
+
   // --version / -V before anything else: no settings load, no workspace
   // prompt, no network. "What version am I on?" has to be answerable even
   // when the install is half-broken — that's usually when you're asking.

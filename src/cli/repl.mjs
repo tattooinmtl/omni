@@ -36,6 +36,7 @@ import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
 import { expandTemplate } from "../core/templates.mjs";
 import { shouldOfferLearning, learnPrompt } from "../core/skill-learn.mjs";
+import { unreadCount } from "../core/scheduler.mjs";
 import { getPermissionMode, cyclePermissionMode, modeLabel } from "../core/permission-mode.mjs";
 import { Checkpointer } from "../core/checkpoints.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
@@ -134,6 +135,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   const notice = updateNotice();
   if (notice) warnLine(notice);
   refreshUpdateCacheInBackground();
+  // Scheduled runs that finished while you were away.
+  try {
+    const unread = unreadCount();
+    if (unread) infoLine(`${unread} scheduled run(s) finished since you last looked: /inbox`);
+  } catch { /* the inbox is advisory */ }
   if (ctx.loadedExtensions.length || ctx.skills.length || ctx.mcpInfo.servers) {
     const mcpNames = ctx.mcpInfo.names || [];
     const untrustedSet = new Set(ctx.mcpInfo.untrusted || []);
