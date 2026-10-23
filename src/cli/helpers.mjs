@@ -4,6 +4,7 @@ import { infoLine, warnLine } from "../ui.mjs";
 import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH, Session } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
 import { effectiveRecords } from "../core/session-export.mjs";
+import { recordSkillUse } from "../core/skill-learn.mjs";
 
 // Split a SKILL.md body into heading-anchored chunks so lean mode can BM25-rank
 // them against the user's current request. A chunk starts at every top-level
@@ -114,6 +115,7 @@ export function skillInvocationPrompt(skill, arg) {
 
 export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   rememberSkillBody(skill);
+  if (skill.learned) { try { recordSkillUse(skill.name); } catch { /* usage is advisory */ } }
   const contextMode = opts.contextMode || "classic";
   let systemContent;
   if (contextMode === "lean" && skill.body && skill.body.length > 800) {

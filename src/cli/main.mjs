@@ -35,6 +35,7 @@ import { setPermissionMode, getPermissionMode } from "../core/permission-mode.mj
 import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, logFailure, EXIT } from "./headless.mjs";
 import { loadTemplates, expandTemplate } from "../core/templates.mjs";
 import { loadAgents, agentSystemPrompt, agentPermissions, agentAllowedTools } from "../core/agents.mjs";
+import { loadLearnedSkills } from "../core/skill-learn.mjs";
 import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
@@ -109,12 +110,18 @@ export async function main(args) {
   });
   for (const err of hookLoad.errors) warnLine(`hooks: ${err}`);
   const skills = loadSkills(project);
+  // Skills Omni learned in earlier sessions (core/skill-learn.mjs). A bundled
+  // skill wins a name clash. Faded ones stay typeable but aren't offered.
+  const bundledCommands = new Set(skills.map((s) => s.command));
+  const learned = loadLearnedSkills().filter((s) => !bundledCommands.has(s.command));
+  skills.push(...learned.filter((s) => !s.faded));
   // Skills from the external index (omni.config.json `skillIndex`) are
   // typeable too — /gauntlet-loop, /superpowers. They stay out of `skills`
   // (and so out of the system prompt); loadScannedSkills already drops any
   // whose command a bundled skill owns, so bundled still wins a clash.
   const slashSkills = [...skills, ...loadScannedSkills(project, skills)];
   const skillByCommand = new Map(slashSkills.map((s) => [s.command, s]));
+  for (const s of learned) if (s.faded) skillByCommand.set(s.command, s);
 
   // MCP: register the single `mcp` proxy tool. Connections are lazy.
   const mcpInfo = registerMcpProxy(loadMcpConfig(project));

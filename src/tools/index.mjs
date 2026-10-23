@@ -26,6 +26,7 @@ import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../co
 import { searchSessions, formatHits } from "../core/session-search.mjs";
 import { getPermissionMode, setPermissionMode, modeBeforePlan, modeLabel, planSteps } from "../core/permission-mode.mjs";
 import { loadAgents, agentAllowedTools, agentPermissions, agentSystemPrompt, agentCatalog } from "../core/agents.mjs";
+import { saveLearnedSkill, recordSkillUse } from "../core/skill-learn.mjs";
 import { createAgentWorktree, runHeadlessAgent, commitAgentWork, branchDiff, mergeAgentBranch, removeAgentWorktree } from "../core/worktree-agent.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
@@ -1101,6 +1102,26 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "skill_create",
+      description:
+        "Save a procedure that worked as a reusable skill (a /slash-command you and the user can run next time). " +
+        "Use it when the user agreed to save one, typically after a long task that passed self_review. Write it for next time: " +
+        "general steps, the commands that worked, how to verify, and traps to avoid, not this task's one-off details. " +
+        "The user sees the draft and approves it before it is saved.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short dash-separated name, e.g. 'release-checklist'. It becomes /release-checklist." },
+          description: { type: "string", description: "One sentence: when to use this skill." },
+          body: { type: "string", description: "The procedure in Markdown, under 60 lines." },
+        },
+        required: ["name", "description", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "exit_plan_mode",
       description:
         "In plan mode, present your plan to the user for approval. Call it once you have investigated enough to know exactly what to do. " +
@@ -1604,7 +1625,7 @@ export const impl = {
     return top
       .map((r) => {
         const s = skills[r.index];
-        const tag = s.external ? " [external]" : "";
+        const tag = s.external ? " [external]" : s.learned ? ` [learned, used ${s.usage?.uses || 0}×]` : "";
         return `${s.command}${tag} — ${(s.description || "").slice(0, 200)}`;
       })
       .join("\n");
@@ -1630,8 +1651,11 @@ export const impl = {
     const byName = (s) => "/" + s.name === norm;
     const skill =
       ctx.skills.find(byCommand) || external.find(byCommand) ||
-      ctx.skills.find(byName) || external.find(byName);
+      ctx.skills.find(byName) || external.find(byName) ||
+      // A faded learned skill isn't offered any more, but still works by name.
+      ctx.skillByCommand?.get(norm);
     if (!skill) return `unknown skill: ${norm}. Call find_skill(query) to list matching commands.`;
+    if (skill.learned) { try { recordSkillUse(skill.name); } catch { /* usage is advisory */ } }
     // Push the skill body straight into the live conversation. The REPL's
     // post-turn eviction (evictEphemeralSkillMessages) will drop it once
     // this turn's loop returns to plain-text.
@@ -2431,6 +2455,36 @@ export const impl = {
       return String(await _sessionCtx.askUser({ question: String(question), options: Array.isArray(options) ? options.map(String) : [] }));
     }
     return "No interactive user available. Proceed with the most reasonable assumption, state it explicitly, and continue.";
+  },
+
+  async skill_create({ name, description, body } = {}) {
+    if (!name || !String(name).trim()) throw new Error("name is required: a short dash-separated name for the skill");
+    if (!_sessionCtx || typeof _sessionCtx.askUser !== "function") {
+      return "Not saved: a learned skill needs the user's approval and this session is not interactive.";
+    }
+    const { commandNames } = await import("../cli/commands.mjs");
+    const ctx = _sessionCtx;
+    const taken = new Set([
+      ...commandNames(),
+      ...(ctx.slashSkills || ctx.skills || []).filter((s) => !s.learned).map((s) => s.command),
+      ...(ctx.templates ? [...ctx.templates.keys()] : []),
+    ].map((c) => String(c).toLowerCase()));
+    const preview = `Save this as a skill?\n\n/${String(name).trim()} — ${String(description || "").trim()}\n\n${String(body || "").trim()}`;
+    const answer = String(await ctx.askUser({ question: preview, options: ["Save it", "Don't save"] })).trim();
+    if (answer !== "Save it" && !/^(y|yes)$/i.test(answer)) {
+      return answer && answer !== "Don't save" && !/^(n|no)$/i.test(answer)
+        ? `Not saved yet. The user replied: "${answer}". Revise the skill with that in mind and call skill_create again.`
+        : "Not saved: the user declined.";
+    }
+    const skill = saveLearnedSkill({ name, description, body, taken });
+    // Usable right away: a /command, in find_skill and the / menu.
+    for (const list of [ctx.skills, ctx.slashSkills]) {
+      if (!Array.isArray(list)) continue;
+      const i = list.findIndex((s) => s.command === skill.command);
+      if (i >= 0) list.splice(i, 1, skill); else list.push(skill);
+    }
+    ctx.skillByCommand?.set(skill.command, skill);
+    return `Saved the skill ${skill.command} (${skill.dir}). It is available now as a slash command and through find_skill.`;
   },
 
   async exit_plan_mode({ plan } = {}) {

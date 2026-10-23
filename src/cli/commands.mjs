@@ -51,6 +51,7 @@ import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "
 import { listHooks } from "../core/hooks.mjs";
 import { loadTemplates } from "../core/templates.mjs";
 import { loadAgents } from "../core/agents.mjs";
+import { loadLearnedSkills, forgetLearnedSkill } from "../core/skill-learn.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -604,6 +605,36 @@ export const COMMANDS = [
       infoLine(`following ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "learned", aliases: [], usage: "/learned [forget <name>]", category: "Agent",
+    summary: "skills Omni learned from your work, with how much each is used",
+    handler: (ctx, arg) => {
+      const [sub, name] = arg.trim().split(/\s+/);
+      if (sub === "forget") {
+        if (!name) { warnLine("usage: /learned forget <name>"); return; }
+        const slug = name.replace(/^\//, "");
+        if (!forgetLearnedSkill(slug)) { warnLine(`no learned skill named ${slug}`); return; }
+        for (const list of [ctx.skills, ctx.slashSkills]) {
+          if (!Array.isArray(list)) continue;
+          const i = list.findIndex((s) => s.learned && s.name === slug);
+          if (i >= 0) list.splice(i, 1);
+        }
+        ctx.skillByCommand?.delete("/" + slug);
+        infoLine(`forgot /${slug}`);
+        return;
+      }
+      const learned = loadLearnedSkills();
+      if (!learned.length) {
+        infoLine("no learned skills yet. After a long task that passes self_review, Omni offers to save how it was done.");
+        return;
+      }
+      infoLine(`${learned.length} learned skill(s), heaviest first (weight halves every 30 days without use):`);
+      for (const s of learned.sort((a, b) => b.weight - a.weight)) {
+        const last = s.usage?.lastUsed ? `last used ${formatWhen(s.usage.lastUsed)}` : "never used";
+        console.log(`  ${c.bold(s.command)} ${c.dim(`· weight ${s.weight.toFixed(2)} · used ${s.usage?.uses || 0}× · ${last}${s.faded ? " · faded (not offered; still works by name)" : ""}`)}  ${s.description}`);
       }
     },
   },

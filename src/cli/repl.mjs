@@ -35,6 +35,7 @@ import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashL
 import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
 import { expandTemplate } from "../core/templates.mjs";
+import { shouldOfferLearning, learnPrompt } from "../core/skill-learn.mjs";
 import { getPermissionMode, cyclePermissionMode, modeLabel } from "../core/permission-mode.mjs";
 import { Checkpointer } from "../core/checkpoints.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
@@ -619,6 +620,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     // Plain mode: readline would echo keystrokes into the streaming output, so
     // it sits the turn out. Box mode keeps it live — typing goes to the box.
     if (!footer && !replClosed) rl.pause();
+    const runStart = ctx.messages.length;
+    let goalJustCompleted = false;
+    let endedAborted = false;
     let keepGoing = true;
     while (keepGoing) {
       ctx.currentAbort = new AbortController();
@@ -649,6 +653,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         beforeMutation: () => takeCheckpoint(turnStart),
       });
       const aborted = ctx.currentAbort.signal.aborted;
+      endedAborted = aborted;
       ctx.currentAbort = null;
 
       keepGoing = false;
@@ -672,6 +677,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
           keepGoing = true;
         } else if (ctx.goal?.status === "complete" && !ctx.goal.announced) {
           ctx.goal.announced = true;
+          goalJustCompleted = true;
           infoLine(`🏁 goal complete after ${ctx.goal.iterations} iteration(s)`);
         }
       }
@@ -688,6 +694,22 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     // resuming a closed readline throws ERR_USE_AFTER_CLOSE.
     if (!replClosed) rl.resume();
     renderFooter();
+
+    // A long run that passed self_review (or finished a goal) is worth
+    // remembering: offer to save how it was done as a learned skill.
+    if (!endedAborted && !replClosed && !ctx.learningSkill && ctx.askLine) {
+      const { offer, calls } = shouldOfferLearning(ctx.messages.slice(runStart), { goalCompleted: goalJustCompleted });
+      if (offer) {
+        const yes = /^y(es)?$/i.test(String(await ctx.askLine(c.cyan(`  that took ${calls} steps and passed review. Save how it was done as a reusable skill? [y/N] `)) || "").trim());
+        if (yes) {
+          const content = learnPrompt();
+          ctx.messages.push({ role: "user", content });
+          await ctx.session.append({ type: "user", content });
+          ctx.learningSkill = true;
+          try { await runAgentTurns(); } finally { ctx.learningSkill = false; }
+        }
+      }
+    }
   }
 
   let submitChain = Promise.resolve();
