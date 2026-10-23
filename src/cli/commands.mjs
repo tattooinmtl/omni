@@ -49,6 +49,7 @@ import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
 import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
 import { listHooks } from "../core/hooks.mjs";
+import { loadTemplates } from "../core/templates.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -602,6 +603,23 @@ export const COMMANDS = [
       infoLine(`following ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "templates", aliases: [], usage: "/templates [reload]", category: "Agent",
+    summary: "list your prompt templates (.omni/commands/*.md and ~/.omni/agent/commands/*.md)",
+    handler: (ctx, arg) => {
+      if (arg.trim().toLowerCase() === "reload" || !ctx.templates) ctx.templates = loadTemplates();
+      const list = [...ctx.templates.values()].sort((a, b) => a.command.localeCompare(b.command));
+      if (!list.length) {
+        infoLine("no prompt templates yet. Put a Markdown file in .omni/commands/ (this project) or ~/.omni/agent/commands/ (every project): review.md becomes /review, and $ARGUMENTS in it is replaced by what you type after the command.");
+        return;
+      }
+      infoLine(`${list.length} prompt template(s):`);
+      for (const t of list) {
+        const shadow = findCommand(t.command.slice(1)) ? c.yellow(" (hidden by the built-in command of the same name)") : "";
+        console.log(`  ${c.bold(t.command)}${t.argumentHint ? " " + c.dim(t.argumentHint) : ""} ${c.dim(`· ${t.scope}`)}  ${t.description}${shadow}`);
       }
     },
   },
@@ -1374,6 +1392,8 @@ export function slashKind(ctx, commandLine) {
   const head = String(commandLine || "").trim().split(/\s+/)[0] || "";
   if (!head.startsWith("/")) return "unknown";
   if (findCommand(head.slice(1))) return "command";
+  // Your own templates win over bundled skills of the same name.
+  if (ctx?.templates?.has(head.toLowerCase())) return "template";
   if (ctx?.skillByCommand?.has(head)) return "skill";
   return "unknown";
 }

@@ -27,11 +27,13 @@ import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs"
 import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.mjs";
 import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
-import { dispatchCommand, findCommand, skillLoadedLine } from "./commands.mjs";
+import { dispatchCommand, findCommand, skillLoadedLine, slashKind } from "./commands.mjs";
 import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
 import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
-import { setPermissionMode } from "../core/permission-mode.mjs";
+import { setPermissionMode, getPermissionMode } from "../core/permission-mode.mjs";
+import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, logFailure, EXIT } from "./headless.mjs";
+import { loadTemplates, expandTemplate } from "../core/templates.mjs";
 import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
@@ -67,6 +69,18 @@ export async function main(args) {
     process.exit(0);
   }
 
+  // Headless flags (-p, --output, --max-turns; see headless.mjs). Parsed
+  // before anything prints: with json output every later line of UI text has
+  // to go to stderr, or it would corrupt the JSON on stdout.
+  let headless;
+  try {
+    headless = parseHeadlessFlags(args);
+  } catch (e) {
+    errorLine(e.message);
+    process.exit(1);
+  }
+  const jsonOut = headless.output === "text" ? null : captureStdout();
+
   const settings = await loadSettings();
 
   // Workspace selection (core/workspace.mjs) must precede anything that reads
@@ -77,7 +91,8 @@ export async function main(args) {
   if (!PKG_CMDS.has(args[0]) && !args.includes("--set-key")) {
     await initWorkspace({
       settings,
-      interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      // A headless run must never stop to ask which folder to trust.
+      interactive: !headless.print && headless.output === "text" && Boolean(process.stdin.isTTY && process.stdout.isTTY),
     });
   }
 
@@ -243,7 +258,10 @@ export async function main(args) {
   // We do NOT save on every turn (noisy, races with /model), only on exit;
   // the in-session /model command already saves the new choice.
   const { setLastProvider: saveLastProvider } = await import("../core/last-provider.mjs");
-  const saveOnExit = () => { try { saveLastProvider(model.key, "exit"); } catch {} };
+  // Not from a one-shot or headless run: a script's `--model x` (which may
+  // not even have a key) must not become the next interactive session's model.
+  let persistModelOnExit = true;
+  const saveOnExit = () => { if (!persistModelOnExit) return; try { saveLastProvider(model.key, "exit"); } catch {} };
   process.on("beforeExit", saveOnExit);
   // These fire when stdin isn't a TTY (piped input, one-shot runs). In the
   // interactive REPL readline keeps stdin in raw mode, so Ctrl-C arrives as a
@@ -284,59 +302,76 @@ export async function main(args) {
     // behaviour reads ctx.contextMode — never settings.contextMode direct.
     contextMode: readContextMode(settings),
     instructionFiles: instructions.files,
+    // Prompt templates (.omni/commands/*.md), reloaded by /templates reload.
+    templates: loadTemplates(),
   };
   setSessionCtx(ctx);
   registerGoalTool(ctx);
 
-  // One-shot mode: `omni "do this"` or `omni /skill args` runs once and exits.
-  const promptArg = args.filter((a) => !a.startsWith("--")).join(" ").trim();
-  if (promptArg) {
+  // One-shot / headless: `omni "do this"`, `omni -p "do this" --output json`,
+  // `omni /skill args`, `omni /template args`, or the prompt piped on stdin
+  // with -p. Runs once and exits with a code scripts can act on (EXIT).
+  let promptArg = args.filter((a) => !a.startsWith("--")).join(" ").trim();
+  if (!promptArg && (headless.print || jsonOut)) promptArg = await readStdin();
+  if (promptArg || headless.print || jsonOut) {
+    persistModelOnExit = false;
+    const startedAt = Date.now();
+    // Every exit goes through here, so a JSON run always ends with a result.
+    const finish = async (stop, error = null) => {
+      // Every event goes out before the result does.
+      await session.drainStream?.();
+      // A run whose log lost records didn't finish cleanly, whatever the model did.
+      const lost = logFailure(session);
+      if (lost && stop === "done") { stop = "error"; error = lost; }
+      if (error && !jsonOut) errorLine(error);
+      if (jsonOut) jsonOut.emit(buildResult({ stop, error, messages, session, model: ctx.model, mode: getPermissionMode(), startedAt }));
+      stopBackgroundChildren();
+      await shutdown(EXIT[stop] ?? 1);
+    };
+    if (!promptArg) return finish("error", "no prompt: pass one after -p, or pipe it on stdin");
+    if (jsonOut && headless.output === "stream-json") {
+      jsonOut.emit({ type: "init", session: session.code, model: ctx.model.key, mode: getPermissionMode(), cwd: process.cwd() });
+      streamSessionEvents(session, jsonOut.emit);
+    }
     // /omnibots is a launcher, not a prompt. Run it before the model-key
     // check so `omni /omnibots status` works with no provider configured.
     const shotParts = promptArg.trim().split(/\s+/);
     const shotHead = shotParts[0] || "";
     if (shotHead.startsWith("/") && findCommand(shotHead.slice(1))?.name === "omnibots") {
       await dispatchCommand(ctx, shotHead.slice(1), shotParts.slice(1).join(" "), shotParts);
-      stopBackgroundChildren();
-      await shutdown(0);
-      return;
+      return finish("done");
     }
-    if (reportMissingKey(ctx.model)) {
-      await shutdown(1);
-      return;
-    }
+    if (reportMissingKey(ctx.model)) return finish("error", `no API key for provider "${ctx.model.providerName}"`);
     reportInsecureEndpoint(ctx.model);
     const firstWord = promptArg.split(/\s+/)[0];
-    const skill = skillByCommand.get(firstWord);
+    const kind = slashKind(ctx, firstWord);
+    const skill = kind === "skill" ? skillByCommand.get(firstWord) : null;
     if (skill) {
       infoLine(skillLoadedLine(skill));
       await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session, { contextMode: ctx.contextMode });
     } else {
-      const hooked = await submitPromptHooks(promptArg);
+      const text = kind === "template"
+        ? expandTemplate(ctx.templates.get(firstWord.toLowerCase()), promptArg.slice(firstWord.length))
+        : promptArg;
+      const hooked = await submitPromptHooks(text);
       for (const err of hooked.errors) warnLine(`hook ${err}`);
-      if (hooked.denied) {
-        errorLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
-        stopBackgroundChildren();
-        await shutdown(1);
-        return;
-      }
+      if (hooked.denied) return finish("error", `prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
       messages.push({ role: "user", content: hooked.content });
       await session.append({ type: "user", content: hooked.content });
     }
     if (routerCfg.enabled && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: promptArg, settings });
     }
-    if (activeModelBlockedByHealth(ctx)) {
-      await shutdown(1);
-      return;
-    }
+    if (activeModelBlockedByHealth(ctx)) return finish("error", `model ${ctx.model.key} is marked unhealthy (/doctor)`);
     ctx.currentAbort = new AbortController();
-    await runTurn({
+    const outcome = await runTurn({
       model: ctx.model,
       settings,
       messages,
       session,
       maxIterations: turnMaxIterations(ctx.model, ctx.settings),
+      // Wins over a routed persona's own budget (runTurn would replace maxIterations).
+      turnLimit: headless.maxTurns,
       persona: ctx.activePersona,
       signal: ctx.currentAbort.signal,
       permissions: settings.permissions,
@@ -348,14 +383,13 @@ export async function main(args) {
     // (process exits) but keeps the semantics identical across entry points
     // so behavior differences never sneak in via an unrun helper.
     evictEphemeralSkillMessages(messages);
-    costLine(session);
+    if (!jsonOut) costLine(session);
     // The REPL tears these down in its rl 'close' handler; one-shot mode had
     // no equivalent, so `omni "…"` that touched an MCP server, the Python
     // router sidecar or an LSP left those child processes running after the
     // CLI exited (shutdown() force-exits after 250ms, orphaning them).
-    stopBackgroundChildren();
-    await shutdown(0);
-    return;
+    // finish() does that, and errors were already printed by runTurn.
+    return finish(outcome?.stop || "done", jsonOut ? outcome?.error || null : null);
   }
 
   // The neural-view server is background infrastructure for the memory

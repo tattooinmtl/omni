@@ -8,9 +8,59 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.27 — 2026-10-23
+
+- **Shipped:** this PR · — · TattooAI/headless-templates · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Headless mode.** `omni -p "…"` (or `--print`) with `--output text|json|stream-json`
+  (`--output-format` works too) and `--max-turns N`.
+  - With `json` or `stream-json`, stdout holds only JSON: every line the
+    terminal UI prints is sent to stderr instead.
+  - `json` prints one result object: `ok`, `stop`, `result`, `error`, `session`
+    code, `model`, `mode`, `turns`, `toolCalls`, `usage`, `durationMs`.
+  - `stream-json` prints an `init` event, then `user`, `assistant` (with parsed
+    `toolCalls`), `tool_result` and `error` events as the session log is
+    written, then the same result.
+  - With `-p` and no prompt, the prompt is read from stdin.
+  - Exit codes: 0 done, 1 error (no API key, provider failure, a hook blocked
+    the prompt, unhealthy model, no prompt), 3 hit `--max-turns`. One-shot runs
+    used to exit 0 on every failure.
+  - Headless runs never stop for the folder-trust prompt. Skills and prompt
+    templates work as the prompt.
+  - `runTurn` now returns `{ stop: "done" | "error" | "aborted" | "max_turns" }`,
+    and takes a `turnLimit` that wins over a routed persona's own iteration
+    budget, so `--max-turns` is exact even when the router picks a persona.
+  - stream-json events go out in order and only once their record is in the
+    session log, so the stream never reports anything `--resume` won't have.
+    If the log can't be written, the run ends as an error (exit 1) saying
+    how many records were lost.
+  - `/omnibots` in json mode ends with a result object like any other run.
+- **Prompt templates.** Markdown files in `.omni/commands/` (project) and
+  `<HOME>/commands/` (personal) become slash commands; a subfolder gives a
+  `folder:name` prefix.
+  - The body is the prompt, with `$ARGUMENTS`, `$1`…`$9` (quotes keep words
+    together) and `@path` (the file's contents, only inside the workspace, up
+    to 50 KB, and only that much is read from disk). Without a placeholder,
+    arguments are appended.
+  - Frontmatter `description` and `argument-hint` show in the `/` menu.
+  - Precedence: project over personal; built-in commands over templates over
+    skills. A template goes through hooks, plan mode and the router like typed
+    text.
+  - `/templates [reload]` lists them and flags one hidden by a built-in.
+- **Fixed:** a one-shot run saved its model as the "last good" model on exit,
+  so `omni --model x "…"` (even with a provider that has no key) changed
+  which model the next interactive session started on.
+- Tests: `headless` (14, spawning the real CLI against a mock provider: json,
+  stream-json event order, stdin prompt, `--max-turns` exit 3, missing key exit
+  1 and the last-model regression, no prompt, bad flag, a template run,
+  `--max-turns` over a persona budget, `/omnibots` result, stream ordering and
+  failed writes) and
+  `templates` (8: loading and precedence, placeholders, an 8 MB `@file` cut
+  at 50 KB, `@file` limited to the
+  workspace, routing, `/templates`).
+
 ## 3.5.26 — 2026-10-22
 
-- **Shipped:** this PR · — · TattooAI/safety-controls · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Shipped:** [#39](https://github.com/tattooinmtl/omni/pull/39) · `7d825a2` · TattooAI/safety-controls · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
 - Phase 2 of the harness parity plan: safety and controls, plus sessions.
 - **Permission modes.** `default`, `accept-edits`, `plan` and `auto`, cycled
   with Shift+Tab (caught before readline, so it doesn't also tab-complete) or

@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.26
+# OMNI-AGENT 3.5.27
 
 Omni-present harness for agents
 
@@ -22,6 +22,15 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+**3.5.27**
+- **Headless mode:** `omni -p "…" --output json` (or `stream-json`) prints
+  only JSON on stdout, reads the prompt from stdin, stops at `--max-turns`,
+  and exits 0, 1 or 3 so scripts and CI can tell what happened.
+- **Prompt templates:** Markdown files in `.omni/commands/` become slash
+  commands, with `$ARGUMENTS`, `$1`…`$9` and `@file`. `/templates` lists them.
+- **Fixed:** a one-shot run's `--model` was saved as your next session's
+  model, even when it had no API key.
 
 **3.5.26**
 - **Plan mode and permission modes:** Shift+Tab cycles default, accept
@@ -234,6 +243,30 @@ node bin\omni.mjs install <pkg>        # package manager (install|uninstall|list
 Omni checks for a newer version in the background (cached, never on the hot
 path) and tells you when one exists.
 
+### Headless (scripts and CI)
+
+```powershell
+omni -p "fix the failing test" --output json          # one JSON object on stdout
+omni -p "review src/" --output stream-json            # one JSON event per line, live
+"summarize the repo" | omni -p --output json          # the prompt from stdin
+omni -p "plan the migration" --mode plan --max-turns 10
+omni -p "/review src/app.js" --output json            # templates and skills work too
+```
+
+With `json` or `stream-json`, stdout holds only JSON; everything Omni would
+print in the terminal goes to stderr, so `| ConvertFrom-Json` or `| jq` just
+work. The result object has `ok`, `stop` (`done`, `error`, `max_turns`),
+`result` (the final answer), `error`, `session` (the code to `--resume` it),
+`model`, `mode`, `turns`, `toolCalls`, `usage` and `durationMs`. The stream
+starts with an `init` event and then emits `user`, `assistant` (with its
+`toolCalls`), `tool_result` and `error` events as they happen, ending with the
+same `result`.
+
+Exit codes: `0` the agent finished, `1` an error (no API key, provider failure,
+a hook blocked the prompt), `3` it reached `--max-turns` first. Headless runs
+never stop to ask: tools set to `ask` are refused, and a `--model` given to a
+script doesn't become your next session's model.
+
 ## Commands
 
 Tab completes `/commands`, typing `/` opens a live menu, and `/help` lists
@@ -242,7 +275,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Category | Commands |
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
@@ -358,6 +391,28 @@ to work, up to 3 times a turn). Exit 0 with text adds that text as context.
 A project can ship `.omni/hooks.json`, which only loads once you trust the
 folder. `/hooks` lists what's loaded; `OMNI_NO_HOOKS=1` turns them off. The
 full contract is in [docs/EXTENDING.md](docs/EXTENDING.md#hooks).
+
+### Prompt templates
+
+A Markdown file in `.omni/commands/` (this project) or
+`~/.omni/agent/commands/` (every project) becomes a slash command:
+`review.md` is `/review`, and `.omni/commands/git/pr.md` is `/git:pr`. Its
+text is what gets sent, as if you had typed it.
+
+```markdown
+---
+description: Review a file for bugs
+argument-hint: <file>
+---
+Review @$1 for bugs and missing tests. Pay extra attention to: $ARGUMENTS
+```
+
+`$ARGUMENTS` is everything typed after the command, `$1`…`$9` one argument
+each (`"quoted words"` count as one), and `@path` is replaced by that file's
+contents (inside the workspace, up to 50 KB). With no placeholder in the text,
+what you type is added at the end. A project template beats a personal one,
+built-in commands beat templates, and templates beat skills of the same name.
+`/templates` lists them; they show up in the `/` menu too.
 
 ### Sessions: resume, search, fork, export
 

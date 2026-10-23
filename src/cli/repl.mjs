@@ -34,6 +34,7 @@ import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
+import { expandTemplate } from "../core/templates.mjs";
 import { getPermissionMode, cyclePermissionMode, modeLabel } from "../core/permission-mode.mjs";
 import { Checkpointer } from "../core/checkpoints.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
@@ -200,7 +201,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   const completions = () => {
     const names = commandNames();
     const taken = new Set(names.map((n) => n.toLowerCase()));
-    return [...names, ...(ctx.slashSkills || ctx.skills).map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
+    return [...names, ...[...(ctx.templates?.keys() || [])], ...(ctx.slashSkills || ctx.skills).map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
   };
   const rl = readline.createInterface({
     input: rlInput,
@@ -455,11 +456,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     const prefix = body.toLowerCase();
     const cmds = commandMenu(prefix).map((r) => ({ usage: r.usage, summary: r.summary }));
     const taken = new Set(commandNames().map((n) => n.toLowerCase()));
+    const templates = [...(ctx.templates?.values() || [])]
+      .filter((t) => t.command.slice(1).startsWith(prefix) && !taken.has(t.command))
+      .map((t) => ({ usage: t.command + (t.argumentHint ? " " + t.argumentHint : ""), summary: `${t.description || "template"} (${t.scope} template)` }));
+    for (const t of templates) taken.add(t.usage.split(" ")[0]);
     const skills = (ctx.slashSkills || ctx.skills)
       .filter((s) => s.command.slice(1).toLowerCase().startsWith(prefix))
       .filter((s) => !taken.has(s.command.toLowerCase()))
       .map((s) => ({ usage: s.command, summary: s.description || "skill" }));
-    return [...cmds, ...skills];
+    return [...cmds, ...templates, ...skills];
   }
 
   // Plain mode: draw the menu under the input line.
@@ -717,7 +722,16 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     echoSubmitted(fullDisplay);
 
     const commandLine = fullLine.trim();
-    if (commandLine.startsWith("/")) {
+    // A prompt template expands into the text it stands for and then goes to
+    // the agent exactly like something you typed (hooks, plan mode, router).
+    let agentText = fullLine;
+    const kind = commandLine.startsWith("/") ? slashKind(ctx, commandLine) : "text";
+    if (kind === "template") {
+      const head = commandLine.split(/\s+/)[0];
+      const template = ctx.templates.get(head.toLowerCase());
+      agentText = expandTemplate(template, commandLine.slice(head.length));
+      infoLine(`▸ template ${template.command} (${template.scope})`);
+    } else if (commandLine.startsWith("/")) {
       const parts = commandLine.split(/\s+/);
       const cmdName = parts[0].slice(1);
       const arg = parts.slice(1).join(" ");
@@ -745,7 +759,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
 
     // Plain input → the agent, after any UserPromptSubmit hooks have had a say.
-    const hooked = await submitPromptHooks(fullLine);
+    const hooked = await submitPromptHooks(agentText);
     for (const err of hooked.errors) warnLine(`hook ${err}`);
     if (hooked.denied) {
       warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
@@ -769,7 +783,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     ctx.messages.push({ role: "user", content: hooked.content });
     await ctx.session.append({ type: "user", content: hooked.content });
     if (ctx.routerCfg.enabled && ctx.routeMode === "auto" && !ctx.routePinned) {
-      ctx.activePersona = await classifyIntent({ message: fullLine, settings: ctx.settings });
+      ctx.activePersona = await classifyIntent({ message: agentText, settings: ctx.settings });
       setPersonaIndicator(ctx.activePersona);
     }
     // A keyless provider can only answer with a 401 — say so up front instead

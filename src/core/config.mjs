@@ -1310,6 +1310,7 @@ export class Session {
       // "session events -> L0 immutable conversation log" (NewPlanConversion.md)
       // — every captured record pulses the L0 node in the /neuralview map.
       publishActivity({ kind: "l0_event", eventType: record.type || "event" });
+      return true;
     } catch (e) {
       // Was a silent no-op before (TODO #20). Atom extraction relies on this
       // log; a dropped record means later extraction silently misses context.
@@ -1318,6 +1319,9 @@ export class Session {
       // non-fatal contract (every tool result is wrapped in a try/catch
       // already; throwing here would just swap one failure mode for another).
       console.error(`[session.append] dropped ${record?.type || "event"}: ${e?.message || e}`);
+      // Counted so a headless run can report that its log is incomplete.
+      this.appendFailures = (this.appendFailures || 0) + 1;
+      return false;
     }
   }
 

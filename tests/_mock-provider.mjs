@@ -40,6 +40,7 @@ export async function startMockProvider(script = []) {
     baseUrl,
     requests,
     push: (...r) => queue.push(...r),
+    clear: () => { queue.length = 0; },
     // Drop fetch's idle keep-alive sockets, then give them a moment to finish
     // closing: process.exit() while one is mid-close aborts Node 24 on Windows
     // ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)").
