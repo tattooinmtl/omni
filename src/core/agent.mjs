@@ -26,6 +26,7 @@ import {
 } from "./context-mode.mjs";
 import fs from "node:fs";
 import { runHooks, hasHooks } from "./hooks.mjs";
+import { forgeCompact, planCompaction, mechanicalDigest } from "./compaction.mjs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -583,60 +584,14 @@ export function estimateTokens(messages) {
 }
 
 // Collapse everything between the system prompt and the last `keepTail`
-// messages into one digest message. Mutates `messages` in place. Returns
-// true when something was actually compacted.
+// messages into one mechanical digest (first request + tool trail). Mutates
+// `messages` in place. Returns true when something was actually compacted.
+// Synchronous and model-free: lean mode's rolling compaction and the
+// fallback path of forgeCompact (core/compaction.mjs) both use it.
 export function compactMessages(messages, { keepTail = 8, sessionGoal = null } = {}) {
-  if (!Array.isArray(messages) || messages.length < keepTail + 4) return false;
-  const hasSystem = messages[0]?.role === "system";
-  const first = hasSystem ? 1 : 0;
-
-  let cut = messages.length - keepTail;
-  // The tail must not open with tool results whose assistant tool_calls
-  // message was dropped — the API rejects orphaned tool messages.
-  while (cut < messages.length && messages[cut].role === "tool") cut++;
-  if (cut - first < 3) return false;
-
-  const dropped = messages.slice(first, cut);
-  const firstUser = dropped.find((m) => m.role === "user" && typeof m.content === "string");
-  // Map tool_call_id -> first-line-of-result, so the digest can pair each
-  // tool call with a summary of what it actually returned (not just the
-  // tool name). Lean-mode goal-tracking runs on top of this.
-  const resultById = new Map();
-  for (const m of dropped) {
-    if (m.role === "tool" && m.tool_call_id) {
-      const raw = typeof m.content === "string"
-        ? m.content
-        : Array.isArray(m.content)
-          ? m.content.map((p) => (typeof p === "string" ? p : p?.type === "text" ? p.text : "")).join(" ")
-          : "";
-      const firstLine = raw.split(/\r?\n/)[0] || "";
-      resultById.set(m.tool_call_id, firstLine.slice(0, 80));
-    }
-  }
-  const toolTrail = [];
-  for (const m of dropped) {
-    for (const call of m.tool_calls || []) {
-      const fn = call.function || {};
-      let hint = "";
-      try {
-        const args = JSON.parse(fn.arguments || "{}");
-        hint = args.path || args.pattern || args.command || args.query || (Array.isArray(args.paths) ? args.paths.join(", ") : "");
-      } catch { /* args stay opaque */ }
-      const summary = resultById.get(call.id);
-      toolTrail.push(
-        `${fn.name || "?"}${hint ? ` (${String(hint).slice(0, 80)})` : ""}` +
-        (summary ? ` -> ${summary}` : "")
-      );
-    }
-  }
-  const digest = [
-    "[CONTEXT COMPACTED] Earlier conversation was condensed to fit the model's context window. Continue the task from the recent messages below.",
-    sessionGoal ? `Session goal: ${String(sessionGoal).slice(0, 400)}` : "",
-    firstUser ? `Original request: ${firstUser.content.slice(0, 600)}` : "",
-    toolTrail.length ? `Tools already used (${toolTrail.length}):\n  - ${toolTrail.slice(-40).join("\n  - ")}` : "",
-  ].filter(Boolean).join("\n");
-
-  messages.splice(first, cut - first, { role: "user", content: digest });
+  const plan = planCompaction(messages, keepTail);
+  if (!plan) return false;
+  messages.splice(plan.first, plan.cut - plan.first, { role: "user", content: mechanicalDigest(plan.dropped, { sessionGoal }) });
   return true;
 }
 
@@ -703,18 +658,29 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
 
 // Auto-compact when the live conversation nears the context window. The
 // budget leaves room for the response (maxTokens) plus a safety margin.
-function maybeAutoCompact({ model, messages, session, sessionGoal = null }) {
+// Uses the forge digest (a model-written summary, core/compaction.mjs), which
+// falls back to the mechanical digest by itself when no summarizer is usable.
+async function maybeAutoCompact({ model, settings, messages, session, sessionGoal = null, signal = null }) {
   const window = model.contextWindow;
   if (!window) return false;
   const budget = Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5));
   const used = session.contextTokens || estimateTokens(messages);
   if (used < budget * 0.85) return false;
-  const did = compactMessages(messages, { sessionGoal });
-  if (did) {
-    session.setContextTokens(estimateTokens(messages));
-    warnLine(`context ${used} tokens near the ${window}-token window — auto-compacted older messages`);
+  const r = await forgeCompact(messages, {
+    model, settings, sessionGoal, trigger: "auto", signal, source: session?.file || "session",
+  });
+  for (const err of r.hookErrors || []) warnLine(`hook ${err}`);
+  if (!r.done) {
+    if (r.reason && r.reason !== "too short") warnLine(`auto-compaction skipped: ${r.reason}`);
+    return false;
   }
-  return did;
+  session.setContextTokens(estimateTokens(messages));
+  warnLine(
+    `context ${used} tokens near the ${window}-token window — ` +
+    (r.mode === "forge" ? `summarized ${r.dropped} older message(s) with ${r.summarizer}` : `auto-compacted ${r.dropped} older message(s)`) +
+    (r.error ? ` (summary failed: ${String(r.error).slice(0, 80)}; kept the tool list instead)` : "")
+  );
+  return true;
 }
 
 // Tools the user answered "always allow" for this session (permission "ask").
@@ -855,7 +821,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // compaction every 6 completed turns (keep last 4 raw), because the
     // point of lean is to send fewer tokens PER hop — waiting for 85% of
     // context defeats that purpose on long tool-heavy sessions.
-    if (maybeAutoCompact({ model, messages, session, sessionGoal })) compactionsRun++;
+    if (await maybeAutoCompact({ model, settings, messages, session, sessionGoal, signal })) compactionsRun++;
     if (isLean) {
       const turnsSince = countCompletedTurns(messages) - initialAssistantCount;
       if (turnsSince > 0 && turnsSince % 6 === 0) {

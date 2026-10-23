@@ -15,7 +15,7 @@ import {
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools } from "../tools/index.mjs";
-import { compactMessages, estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
+import { estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
 import {
   resolveProviderName, providers as memoryProviders, currentAtoms,
   extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
@@ -48,6 +48,7 @@ import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
 import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
 import { listHooks } from "../core/hooks.mjs";
+import { forgeCompact } from "../core/compaction.mjs";
 
 function pkgVersion() {
   try {
@@ -150,23 +151,34 @@ export const COMMANDS = [
     },
   },
   {
-    name: "compact", aliases: [], usage: "/compact [now]", category: "Session",
-    summary: "compact the conversation to save context (now = aggressive)",
-    handler: (ctx, arg) => {
-      const force = arg.trim().toLowerCase() === "now";
+    name: "compact", aliases: [], usage: "/compact [now] [what to keep in detail]", category: "Session",
+    summary: "summarize older messages to save context (now = keep only the last 2)",
+    handler: async (ctx, arg) => {
+      let rest = arg.trim();
+      const force = /^now\b/i.test(rest);
+      if (force) rest = rest.slice(3).trim();
       const before = ctx.messages.length;
       // Pull L1 atoms out of the messages about to be dropped, before
       // they're gone for good — see NewPlanConversion.md Phase 3. Runs
       // regardless of the active memory provider (atoms are additive); this
       // is a safety-net pass, the main one runs every turn (see agent.mjs).
       try { extractAtomsFromMessages(ctx.messages, { source: ctx.session?.file || "session" }); } catch { /* best-effort */ }
-      const did = compactMessages(ctx.messages, { keepTail: force ? 2 : 8 });
-      if (!did) {
-        infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
+      const r = await forgeCompact(ctx.messages, {
+        model: ctx.model, settings: ctx.settings, keepTail: force ? 2 : 8, focus: rest, trigger: "manual",
+        source: ctx.session?.file || "session",
+      });
+      for (const err of r.hookErrors || []) warnLine(`hook ${err}`);
+      if (!r.done) {
+        if (r.reason === "too short") infoLine("conversation too short to compact" + (force ? "" : " — use /compact now for an aggressive pass"));
+        else warnLine(`not compacted: ${r.reason}`);
         return;
       }
       ctx.session.setContextTokens(estimateTokens(ctx.messages));
-      infoLine(`compacted conversation: ${before} → ${ctx.messages.length} message(s)`);
+      if (r.error) warnLine(`summary failed (${String(r.error).slice(0, 100)}), kept the tool list instead`);
+      infoLine(
+        `compacted conversation: ${before} → ${ctx.messages.length} message(s)` +
+        (r.mode === "forge" ? `, summarized by ${r.summarizer}` : " (tool list only; set compaction.model in settings for a written summary on local models)")
+      );
     },
   },
   {
