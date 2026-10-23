@@ -57,6 +57,7 @@ import { buildSessionTree, flattenTree } from "../core/session-tree.mjs";
 import { extensionCommand, extensionCommands } from "../core/ext-registry.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { stripAnsi } from "./footer.mjs";
+import { exportRouterData } from "../core/router-data.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -569,10 +570,16 @@ export const COMMANDS = [
     },
   },
   {
-    name: "route", aliases: [], usage: "/route [coding|assistant|auto]", category: "Agent",
-    summary: "show or pin the active persona",
+    name: "route", aliases: [], usage: "/route [coding|assistant|auto|learn [--all]]", category: "Agent",
+    summary: "show or pin the active persona; learn = train data from your sessions",
     handler: (ctx, arg) => {
       const target = arg.trim().toLowerCase();
+      if (target === "learn" || target === "learn --all") {
+        const r = exportRouterData({ all: target.endsWith("--all") });
+        infoLine(`wrote ${r.count} labelled prompt(s) from your sessions (${r.coding} coding, ${r.assistant} assistant) to ${r.file}`);
+        infoLine("retrain the router with: python router/train.py (it reads these on top of the seed), then restart Omni");
+        return;
+      }
       if (!target) {
         if (!ctx.routerCfg.enabled) {
           infoLine("router is disabled (set router.enabled=true in settings or omni.config.json)");
