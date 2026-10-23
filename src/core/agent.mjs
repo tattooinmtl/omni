@@ -899,7 +899,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         } catch (e) {
           stopStatus();
           errorLine(`Template render failed: ${e.message}`);
-          return;
+          return { stop: "error", error: `Template render failed: ${e.message}` };
         }
         resp = await chatStreamWithRetry({
           model,
@@ -954,11 +954,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       publishActivity({ kind: "thinking", phase: "stop" });
       if (e.name === "AbortError" || signal?.aborted) {
         warnLine("interrupted");
-        return;
+        return { stop: "aborted" };
       }
       errorLine(e.message || String(e));
       session.append({ type: "error", message: e.message || String(e) });
-      return;
+      return { stop: "error", error: e.message || String(e) };
     }
 
     const msg = resp.message;
@@ -1071,7 +1071,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       // additive store, so this always keeps the indexer/graph current
       // instead of only firing on an explicit /compact or /exit.
       try { extractAtomsFromMessages(messages, { source: session?.file || "session" }); } catch { /* best-effort */ }
-      return; // model is done
+      return { stop: "done" };
     }
 
     // Print each tool call (and any edit diff) up front, then animate a single
@@ -1308,6 +1308,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     mascotLine(toolCategory, !anyFailed);
   }
   errorLine(`Stopped after ${maxIterations} tool iterations.`);
+  return { stop: "max_turns" };
 }
 
 function argSummary(name, args) {
