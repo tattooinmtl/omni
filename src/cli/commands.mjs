@@ -53,6 +53,9 @@ import { loadTemplates } from "../core/templates.mjs";
 import { loadAgents } from "../core/agents.mjs";
 import { loadLearnedSkills, forgetLearnedSkill } from "../core/skill-learn.mjs";
 import * as sched from "../core/scheduler.mjs";
+import { buildSessionTree, flattenTree } from "../core/session-tree.mjs";
+import { publishActivity } from "../local/activity-bus.mjs";
+import { stripAnsi } from "./footer.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -268,6 +271,37 @@ export const COMMANDS = [
       ctx.session = fork;
       infoLine(`forked: you are now in ${fork.code}`);
       infoLine(`the original is unchanged: /resume ${from.code} goes back to it`);
+    },
+  },
+  {
+    name: "tree", aliases: [], usage: "/tree", category: "Session",
+    summary: "how this folder's conversations forked and resumed; pick one to continue",
+    handler: async (ctx) => {
+      const rows = flattenTree(buildSessionTree({ include: ctx.session?.file }));
+      if (!rows.length) { infoLine("no conversations in this folder yet"); return; }
+      const here = ctx.session?.file ? path.resolve(ctx.session.file).toLowerCase() : "";
+      const label = ({ node, prefix }) => {
+        const i = node.info;
+        const how = node.how ? c.dim(node.how === "fork" ? "forked · " : "resumed · ") : "";
+        const you = path.resolve(i.file).toLowerCase() === here ? c.cyan(" ← you are here") : "";
+        return `${prefix}${how}${i.title || "(new conversation)"} ${c.dim(`· ${formatWhen(i.started || i.updated)} · ${i.code}`)}${you}`;
+      };
+      // The neural view gets the same branches as edges between session nodes.
+      for (const { node } of rows) {
+        for (const child of node.children) publishActivity({ kind: "live_edge", source: "session-" + node.info.id, target: "session-" + child.info.id, edgeKind: child.how || "fork" });
+      }
+      if (!ctx.canRaw) {
+        for (const r of rows) console.log("  " + label(r));
+        infoLine("/resume <code> continues any of them");
+        return;
+      }
+      const file = await runArrowPicker(
+        rows.map((r) => ({ id: r.node.info.file, label: stripAnsi(label(r)) })),
+        { ctx, title: "Conversations in this folder", hint: "↑/↓ to choose, Enter to continue it, Esc to close" },
+      );
+      if (!file || path.resolve(file).toLowerCase() === here) return;
+      const n = await resumeSessionInto(ctx, file);
+      infoLine(`switched to "${describeSession(file).title}": ${n} message(s)`);
     },
   },
   {
