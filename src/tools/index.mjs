@@ -25,6 +25,8 @@ import { loadInstructions } from "../core/instructions.mjs";
 import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
 import { searchSessions, formatHits } from "../core/session-search.mjs";
 import { getPermissionMode, setPermissionMode, modeBeforePlan, modeLabel, planSteps } from "../core/permission-mode.mjs";
+import { loadAgents, agentAllowedTools, agentPermissions, agentSystemPrompt, agentCatalog } from "../core/agents.mjs";
+import { createAgentWorktree, runHeadlessAgent, commitAgentWork, branchDiff, mergeAgentBranch, removeAgentWorktree } from "../core/worktree-agent.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
 
@@ -40,6 +42,15 @@ let nextAgentId = 1;
 // so Omni can add models/providers without requiring a restart.
 let _sessionCtx = null;
 export function setSessionCtx(ctx) { _sessionCtx = ctx; }
+
+// Name the agents spawn_agent can run, in its own description, so the model
+// picks one by what it is for. Called at startup and by /agents reload.
+export function refreshAgentCatalog(agents = loadAgents()) {
+  const spec = tools.find((t) => t.function?.name === "spawn_agent");
+  if (!spec) return;
+  const base = spec.function.description.replace(/\s*Named agents you can pass as `agent`:[\s\S]*$/, "");
+  spec.function.description = agents.size ? `${base} Named agents you can pass as \`agent\`: ${agentCatalog(agents)}.` : base;
+}
 
 function clip(s) {
   s = String(s);
@@ -967,8 +978,34 @@ export const tools = [
           prompt: { type: "string", description: "Full, self-contained task description for the sub-agent — it has no memory of this conversation." },
           model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.5-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the default model if omitted." },
           name: { type: "string", description: "Optional short label shown in agent_status." },
+          agent: { type: "string", description: "Run it as a named agent (its role, tool limits and model come from the definition). Available agents are listed in this tool's description." },
+          isolation: {
+            type: "string",
+            enum: ["shared", "worktree"],
+            description: "'shared' (default unless the agent says otherwise): works in your files, at the same time as you. 'worktree': works on its own git branch in a separate checkout, so it can't collide with you or other agents; review and merge its work with merge_agent. Needs a git repository with at least one commit.",
+          },
         },
         required: ["prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "merge_agent",
+      description:
+        "Bring a finished worktree sub-agent's work into your checkout. First an independent critic reviews the branch's diff against the task the agent was given; " +
+        "it merges only on VERDICT: CLEAN or MINOR, otherwise it returns the findings and leaves the branch alone (force:true merges anyway). " +
+        "action:'discard' throws the branch away instead. Either way the agent's worktree is removed.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The sub-agent id from spawn_agent, e.g. 'A001'." },
+          action: { type: "string", enum: ["merge", "discard"], description: "Default merge." },
+          force: { type: "boolean", description: "Merge even if the review found BLOCKERS or MAJOR issues. Only when the user agreed." },
+          model: { type: "string", description: "Model for the review; defaults to the default model." },
+        },
+        required: ["id"],
       },
     },
   },
@@ -2365,8 +2402,12 @@ export const impl = {
     return clip(fresh || `(input sent to ${id}; no new output yet)`);
   },
 
-  spawn_agent({ prompt, model, name }, context) {
-    return spawnSubAgent({ prompt, model, name, permissions: context?.permissions, confirmTool: context?.confirmTool });
+  spawn_agent({ prompt, model, name, agent, isolation }, context) {
+    return spawnSubAgent({ prompt, model, name, agent, isolation, permissions: context?.permissions, confirmTool: context?.confirmTool });
+  },
+
+  merge_agent(args) {
+    return mergeAgent(args || {});
   },
 
   self_review(args) {
@@ -3028,7 +3069,9 @@ const CRITIC_PROMPT = [
   "Do not invent problems to look thorough — a fabricated finding wastes more time than it saves. Report what you can point at in the code.",
 ].join("\n");
 
-async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, focus, timeout_ms = 240000 }) {
+// diffText: review this diff instead of taking one from git (merge_agent
+// passes a sub-agent branch's diff).
+async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, focus, timeout_ms = 240000, diffText = null }) {
   if (!task || !String(task).trim()) {
     throw new Error("task is required — state what the change was supposed to accomplish, in the user's terms, so the critic can judge whether it does");
   }
@@ -3037,7 +3080,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
   let diff = "";
   let artifactLabel = "Diff produced";
   let artifactFence = "diff";
-  const scope = Array.isArray(paths) && paths.length ? paths : [null];
+  const scope = diffText != null ? [] : Array.isArray(paths) && paths.length ? paths : [null];
   try {
     for (const p of scope) {
       const args = ["diff"];
@@ -3073,6 +3116,7 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
       diff += (diff ? "\n\n" : "") + `--- ${p} ---\n${body}`;
     }
   }
+  if (diffText != null) diff = String(diffText);
   if (!diff.trim()) {
     return "(nothing to review — no diff found. If the work is uncommitted new files, `git add -N <path>` first so they appear in the diff; if it was already committed, pass diff_from:\"head\".)";
   }
@@ -3139,32 +3183,83 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
   ].join("\n");
 }
 
-function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = null }) {
+// The parent's permission mode, for a worktree agent's own process. Plan mode
+// stays plan; otherwise edits run without asking, since nothing it does
+// reaches your checkout until merge_agent.
+function childMode() {
+  const m = getPermissionMode();
+  return m === "plan" ? "plan" : m === "auto" ? "auto" : "accept-edits";
+}
+
+function spawnSubAgent({ prompt, model, name, agent: agentName, isolation, permissions = null, confirmTool = null }) {
   if (!prompt || !String(prompt).trim()) throw new Error("prompt is required");
+  let agent = null;
+  if (agentName) {
+    const agents = loadAgents();
+    agent = agents.get(String(agentName).trim().toLowerCase()) || null;
+    if (!agent) throw new Error(`no agent named "${agentName}"${agents.size ? ` (known: ${[...agents.keys()].join(", ")})` : ""}`);
+  }
+  const mode = isolation ? String(isolation).toLowerCase() : agent?.isolation || "shared";
+  if (mode !== "shared" && mode !== "worktree") throw new Error('isolation must be "shared" or "worktree"');
   const id = `A${String(nextAgentId++).padStart(3, "0")}`;
   const rec = {
     id,
-    name: name || String(prompt).slice(0, 60),
+    name: name || (agent ? `${agent.name}: ` : "") + String(prompt).slice(0, 60),
+    agent: agent?.name || null,
     prompt,
-    model: model || "(default)",
+    model: model || agent?.model || "(default)",
+    isolation: mode,
     startedAt: new Date().toISOString(),
     status: "running",
     result: null,
     error: null,
+    worktree: null,
+    changes: [],
+    merged: false,
     controller: new AbortController(),
   };
+  let worktree = null;
+  if (mode === "worktree") {
+    // Made here, not in the background, so a folder that isn't a repo fails
+    // the call itself instead of a later status check.
+    worktree = createAgentWorktree({ id });
+    rec.worktree = worktree;
+  }
   managedAgents.set(id, rec);
+
+  const finishRun = async () => {
+    if (hasHooks("SubagentStop")) {
+      const hook = await runHooks("SubagentStop", { agentId: id, name: rec.name, agent: rec.agent, model: rec.model, result: String(rec.result || "").slice(0, 20000) });
+      if (hook.context) rec.result += "\n\n" + hook.context;
+    }
+    rec.status = "done";
+  };
 
   (async () => {
     try {
+      if (worktree) {
+        const out = await runHeadlessAgent({
+          cwd: worktree.cwd, prompt, model: model || agent?.model || null, agent: agent?.name || null,
+          mode: childMode(), signal: rec.controller.signal,
+        });
+        if (rec.controller.signal.aborted) throw new Error("stopped");
+        if (out.result?.model) rec.model = out.result.model;
+        const committed = commitAgentWork({ path: worktree.path, message: `omni sub-agent ${id}${rec.agent ? ` (${rec.agent})` : ""}: ${String(prompt).split(/\r?\n/)[0].slice(0, 60)}` });
+        rec.changes = committed.changes;
+        if (!out.result) throw new Error(`the sub-agent process exited (code ${out.code}) without a result: ${String(out.stderr || "").trim().split(/\r?\n/).slice(-3).join(" ")}`);
+        if (!out.result.ok && out.result.error) rec.error = out.result.error;
+        rec.result = out.result.result || "(sub-agent finished with no final text)";
+        await finishRun();
+        return;
+      }
       const { runTurn, systemPrompt } = await import("../core/agent.mjs");
       const settings = await loadSettings();
-      const resolved = resolveModel(settings, model || settings.defaultModel);
+      const resolved = resolveModel(settings, model || agent?.model || settings.defaultModel);
       rec.model = resolved.key;
       // The project's OMNI.md / AGENTS.md rules bind a sub-agent too.
       const rules = loadInstructions().text;
       const messages = [
-        { role: "system", content: systemPrompt() + (rules ? "\n\n" + rules : "") },
+        { role: "system", content: agentSystemPrompt(systemPrompt() + (rules ? "\n\n" + rules : ""), agent) },
         { role: "user", content: String(prompt) },
       ];
       const session = new Session({ kind: "subagent" });
@@ -3173,6 +3268,7 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
       // defaults to "allow" for every tool, and run_shell/start_process skip
       // every "ask" check. confirmTool falls back to null too, so a non-
       // interactive parent correctly produces a non-interactive sub-agent.
+      // A named agent narrows both the tools it is offered and the gate.
       await runTurn({
         model: resolved,
         settings,
@@ -3181,29 +3277,43 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
         maxIterations: 20,
         diffPreview: false,
         signal: rec.controller.signal,
-        permissions,
+        permissions: agent ? agentPermissions(agent, permissions) : permissions,
         confirmTool,
+        allowedTools: agentAllowedTools(agent),
       });
       rec.result = lastAssistantText(messages) || "(sub-agent finished with no final text)";
-      if (hasHooks("SubagentStop")) {
-        const hook = await runHooks("SubagentStop", { agentId: id, name: rec.name, model: rec.model, result: rec.result.slice(0, 20000) });
-        if (hook.context) rec.result += "\n\n" + hook.context;
-      }
-      rec.status = "done";
+      await finishRun();
     } catch (e) {
       rec.status = rec.status === "stopping" ? "stopped" : "error";
       rec.error = e?.message || String(e);
     }
   })();
 
-  return `spawned ${id}${name ? ` (${name})` : ""} on model ${model || "(default)"} — running in parallel, check with agent_status({id:"${id}"})`;
+  return `spawned ${id}${rec.agent ? ` as ${rec.agent}` : ""}${name ? ` (${name})` : ""} on model ${rec.model}` +
+    (worktree
+      ? ` in its own worktree on branch ${worktree.branch}${worktree.dirty ? " (it starts from your last commit, so your uncommitted changes are not in it)" : ""}. When it is done, merge_agent({id:"${id}"}) reviews its diff and merges it`
+      : "") +
+    ` — running in parallel, check with agent_status({id:"${id}"})`;
 }
 
 function summarizeAgent(rec) {
-  const base = [`${rec.id} [${rec.status}] ${rec.name}`, `model: ${rec.model}`, `started: ${rec.startedAt}`].join("\n");
-  if (rec.status === "done") return `${base}\nresult:\n${rec.result}`;
-  if (rec.status === "error" || rec.status === "stopped") return `${base}\nerror: ${rec.error || "(cancelled)"}`;
-  return base;
+  const base = [
+    `${rec.id} [${rec.status}] ${rec.name}`,
+    `model: ${rec.model}${rec.agent ? ` · agent: ${rec.agent}` : ""}`,
+    `started: ${rec.startedAt}`,
+  ];
+  if (rec.worktree) {
+    base.push(`branch: ${rec.worktree.branch}${rec.merged ? ` (${rec.merged})` : ""}`);
+    if (rec.status === "done" && !rec.merged) {
+      base.push(rec.changes.length
+        ? `changed ${rec.changes.length} file(s): ${rec.changes.slice(0, 15).map((c) => `${c.status} ${c.path}`).join(", ")}${rec.changes.length > 15 ? ", …" : ""}\nnext: merge_agent({id:"${rec.id}"}) to review and merge, or action:"discard" to drop it`
+        : `changed no files (merge_agent with action:"discard" cleans up the worktree)`);
+    }
+  }
+  const head = base.join("\n");
+  if (rec.status === "done") return `${head}\nresult:\n${rec.result}${rec.error ? `\n(note: ${rec.error})` : ""}`;
+  if (rec.status === "error" || rec.status === "stopped") return `${head}\nerror: ${rec.error || "(cancelled)"}`;
+  return head;
 }
 
 function subAgentStatus({ id } = {}) {
@@ -3225,6 +3335,58 @@ function stopSubAgent(id) {
     return `stopping ${id}`;
   }
   return `${id} is already ${rec.status}`;
+}
+
+// The verdict line a critic ends with, or null when there isn't one (the
+// review timed out or came back empty).
+function reviewVerdict(text) {
+  const m = /VERDICT:\s*(BLOCKERS|MAJOR|MINOR|CLEAN)/i.exec(String(text || ""));
+  return m ? m[1].toUpperCase() : null;
+}
+
+// merge_agent: bring a worktree agent's branch into your checkout after the
+// critic has reviewed its diff, or throw it away. A BLOCKERS or MAJOR verdict
+// (or no verdict at all) stops the merge unless force is set.
+async function mergeAgent({ id, action = "merge", force = false, model } = {}) {
+  if (!id) throw new Error("id is required: the sub-agent id from spawn_agent, e.g. A001");
+  const rec = managedAgents.get(id);
+  if (!rec) throw new Error(`sub-agent not found: ${id}`);
+  if (!rec.worktree) throw new Error(`${id} worked in your checkout (isolation "shared"), so there is no branch to merge`);
+  if (rec.status === "running" || rec.status === "stopping") throw new Error(`${id} is still running; wait for agent_status to say done`);
+  if (rec.merged) return `${id} was already ${rec.merged}`;
+  const wt = rec.worktree;
+  if (action === "discard") {
+    removeAgentWorktree(wt);
+    rec.merged = "discarded";
+    return `discarded ${id}: removed its worktree and branch ${wt.branch}`;
+  }
+  if (action !== "merge") throw new Error('action must be "merge" or "discard"');
+  const diff = branchDiff({ root: wt.root, branch: wt.branch });
+  if (!diff.trim()) {
+    removeAgentWorktree(wt);
+    rec.merged = "discarded";
+    return `${id} changed nothing, so there was nothing to merge; removed its worktree`;
+  }
+  const review = await runSelfReview({ task: rec.prompt, diffText: diff, model });
+  const verdict = reviewVerdict(review);
+  const passes = verdict === "CLEAN" || verdict === "MINOR";
+  if (!force && !passes) {
+    return [
+      `NOT merged: the review of ${id}'s branch ${wt.branch} came back ${verdict ? `VERDICT: ${verdict}` : "without a verdict"}.`,
+      "",
+      review,
+      "",
+      `Fix it (for example spawn another agent with the findings), merge anyway with merge_agent({id:"${id}", force:true}), or drop it with action:"discard".`,
+    ].join("\n");
+  }
+  const commit = mergeAgentBranch({ root: wt.root, branch: wt.branch, message: `Merge omni sub-agent ${id}${rec.agent ? ` (${rec.agent})` : ""}: ${String(rec.prompt).split(/\r?\n/)[0].slice(0, 60)}` });
+  removeAgentWorktree(wt);
+  rec.merged = `merged as ${commit.slice(0, 7)}`;
+  return [
+    `Merged ${id}'s branch into your checkout as ${commit.slice(0, 7)} (${rec.changes.length} file(s)) after review${verdict ? ` (VERDICT: ${verdict})` : ""}${force && !passes ? ", forced past the verdict" : ""}. Its worktree and branch are removed.`,
+    "",
+    review,
+  ].join("\n");
 }
 
 function todoPath() {

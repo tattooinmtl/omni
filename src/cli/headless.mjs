@@ -18,7 +18,7 @@ export const EXIT = { done: 0, error: 1, aborted: 1, max_turns: 3 };
 // Pull the headless flags out of `args` (mutating it, like the other flags in
 // main.mjs). Returns { print, output, maxTurns } or throws on a bad value.
 export function parseHeadlessFlags(args) {
-  const out = { print: false, output: "text", maxTurns: null };
+  const out = { print: false, output: "text", maxTurns: null, agent: null };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "-p" || a === "--print") {
@@ -33,6 +33,11 @@ export function parseHeadlessFlags(args) {
       const n = Number(args[i + 1]);
       if (!Number.isInteger(n) || n < 1 || n > 1000) throw new Error("--max-turns takes a whole number from 1 to 1000");
       out.maxTurns = n;
+      args.splice(i--, 2);
+    } else if (a === "--agent") {
+      const v = String(args[i + 1] || "").trim();
+      if (!v || v.startsWith("-")) throw new Error("--agent takes the name of an agent (see /agents)");
+      out.agent = v.toLowerCase();
       args.splice(i--, 2);
     }
   }
