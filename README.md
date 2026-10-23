@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.25
+# OMNI-AGENT 3.5.26
 
 Omni-present harness for agents
 
@@ -22,6 +22,18 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+**3.5.26**
+- **Plan mode and permission modes:** Shift+Tab cycles default, accept
+  edits and plan. In plan mode the agent only reads, then shows you a plan to
+  approve, and your first prompt offers the brainstorming skill.
+- **Rewind:** Omni checkpoints the workspace before each turn changes
+  anything. `/rewind` puts files and/or the conversation back.
+- **Sessions:** every conversation has a code (`omni --resume <code>` from
+  any folder). `/fork` branches it and `/export` saves it as Markdown, HTML
+  or JSON.
+- **Fixed:** the agent's `ask_user` questions never reached you; it was
+  always told no one was there.
 
 **3.5.25**
 - **Project instructions:** Omni follows `OMNI.md` (or an existing
@@ -229,8 +241,8 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 
 | Category | Commands |
 |---|---|
-| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/instructions` `/init` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
@@ -347,12 +359,66 @@ A project can ship `.omni/hooks.json`, which only loads once you trust the
 folder. `/hooks` lists what's loaded; `OMNI_NO_HOOKS=1` turns them off. The
 full contract is in [docs/EXTENDING.md](docs/EXTENDING.md#hooks).
 
-### Resuming and searching conversations
+### Sessions: resume, search, fork, export
 
-`/resume` opens a picker of this folder's earlier conversations. `/resume 2`,
-`/resume latest` or `/resume <id>` skip the picker. `/history <words>`
-searches what was said in them (`--all` searches every project), and the
-agent has the same search as its `session_search` tool.
+Every conversation has a code such as `omni-session-mvkely37-ftzhe6i`.
+`/status` shows it, and Omni prints it when you exit.
+
+```
+omni --resume <code>          come back to that conversation, from any folder
+omni --resume                 the latest one in this folder
+/resume                       pick from this folder's earlier conversations
+/resume 2 | latest | <code>   skip the picker
+/history <words> [--all]      search what was said (the agent has session_search)
+/fork                         carry on in a copy; the original stays as it was
+/export [md|html|json] [file] save it (html is one standalone page)
+/clear                        start fresh; the old conversation stays resumable
+```
+
+### Rewind
+
+Before a turn first changes anything (an edit, a write, a shell command that
+isn't read-only), Omni snapshots the workspace into a private checkpoint
+store under `~/.omni/agent/checkpoints/`. Your project's own `.git` is never
+touched, folders that aren't repos work too, and `.gitignore` plus
+`node_modules/`, `dist/`, `build/` and similar are skipped.
+
+```
+/rewind                       pick a checkpoint, then: files and conversation,
+                              files only, or conversation only
+/rewind 12 code               files only, back to checkpoint #12
+```
+
+Rewinding the conversation also puts that prompt back in the box so you can
+edit and resend it. A rewind first snapshots the current state, so you can
+rewind the rewind. Turn checkpoints off with `"checkpoints": false` in
+`agent/settings.json`. Folders inside the workspace that are their own git
+repos are recorded as a link only, so rewind does not restore their files.
+
+### Permission modes and plan mode
+
+Shift+Tab cycles the mode; the prompt box shows which one is on.
+
+| Mode | What happens |
+|---|---|
+| `default` | your `/perm` settings, exactly as they are |
+| `accept-edits` | file edits run without asking; shell commands still follow your settings |
+| `plan` | read-only: the agent investigates, then shows you a plan to approve |
+| `auto` | nothing asks, except high-risk shell commands (`/mode auto` confirms first) |
+
+No mode overrides a `deny`. In plan mode, reads, searches and read-only shell
+commands (`git status`, `ls`, `rg`, …) run; anything else is refused. When the
+agent knows what to do it calls `exit_plan_mode`, and you answer with
+1 (implement it), 2 (implement it and accept edits), 3 (keep planning), or by
+typing what to change. An approved plan's steps go into `project_todo`. The
+first prompt you send in plan mode offers to load the brainstorming skill
+first.
+
+```
+/plan [prompt]                switch to plan mode (and send a prompt)
+/mode [name]                  show or set the mode
+omni --mode plan "…"          start in a mode; or "permissionMode" in settings
+```
 
 ### Tool permissions
 
