@@ -8,9 +8,50 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.28 — 2026-10-23
+
+- **Shipped:** this PR · — · TattooAI/agents-worktrees · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Named sub-agents.** Markdown definitions in `agents/` (shipped),
+  `<HOME>/agents/` (personal) and `.omni/agents/` (project; replaces a shipped
+  one of the same name) with frontmatter `description`, `tools`, `readonly`,
+  `model` and `isolation`; the body is the agent's role.
+  - Ships `explorer` (read-only, maps code), `reviewer` (read-only, ends with a
+    VERDICT line) and `tester` (writes and runs tests, on its own branch).
+  - `spawn_agent` takes `agent:"<name>"`. The agent is offered only its tools
+    (`runTurn` gained `allowedTools`), and its permissions are the parent's
+    narrowed: a parent `deny` stays a deny and an `ask` stays an ask.
+    Read-only agents get the plan-mode read set minus `spawn_agent`.
+  - `spawn_agent`'s description lists the available agents. `/agents
+    [reload]` shows them and the sub-agents running now.
+  - `omni -p --agent <name>` runs one headless (an agent run is never routed
+    to a persona, which would replace its role).
+- **Worktree isolation.** `spawn_agent` with `isolation:"worktree"` (or an
+  agent defined that way) creates a git worktree on a new `omni/agent-…`
+  branch under `<HOME>/worktrees/<project>/` and runs the agent there as a
+  headless Omni (`--mode accept-edits`, or plan if you are in plan mode). Its
+  log is marked as a sub-agent's. When it finishes, its changes are committed
+  on the branch and `agent_status` lists the files.
+  - Omni's file tools resolve paths against the one process's working folder,
+    which is why a worktree agent runs as its own process.
+  - New `merge_agent({id})`: `self_review` checks the branch diff against the
+    task the agent was given. The branch merges (`--no-ff`) only on
+    `VERDICT: CLEAN` or `MINOR`; otherwise the findings come back and nothing
+    changes (`force:true` merges anyway). A merge conflict is aborted cleanly.
+    `action:"discard"` drops the branch. Either way the worktree and branch are
+    removed.
+  - It needs a git repo with a commit, and starts from your last commit
+    (`spawn_agent` says so when you have uncommitted changes).
+  - `self_review` can now review a given diff instead of taking one from git.
+- Tests: `agents` (12: loading and precedence, read-only and narrowed
+  permissions, role prompt, catalog, a read-only agent offered only read tools
+  against a mock provider, unknown agent, the worktree requires a repo, a real
+  worktree run through a child Omni with the branch checked, merge on CLEAN
+  with worktree and branch removed, refusal on BLOCKERS then discard, no merge
+  for shared agents). `headless` covers `--agent` parsing.
+
 ## 3.5.27 — 2026-10-23
 
-- **Shipped:** this PR · — · TattooAI/headless-templates · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
+- **Shipped:** [#40](https://github.com/tattooinmtl/omni/pull/40) · `1a88abe` · TattooAI/headless-templates · session `e67d2934-ff4d-4b06-a966-28bfb85e2987`
 - **Headless mode.** `omni -p "…"` (or `--print`) with `--output text|json|stream-json`
   (`--output-format` works too) and `--max-turns N`.
   - With `json` or `stream-json`, stdout holds only JSON: every line the

@@ -6,7 +6,7 @@ import {
   loadSettings, saveSettings, resolveModel, setProviderKey, Session, turnMaxIterations,
 } from "../core/config.mjs";
 import { runTurn } from "../core/agent.mjs";
-import { registerExtensions, memoryPreamble, setSessionCtx } from "../tools/index.mjs";
+import { registerExtensions, memoryPreamble, setSessionCtx, refreshAgentCatalog } from "../tools/index.mjs";
 import {
   loadProjectConfig, loadSkills, buildSystemPrompt, INSTALL_ROOT, loadMcpConfig,
 } from "../integrations/extras.mjs";
@@ -34,6 +34,7 @@ import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
 import { setPermissionMode, getPermissionMode } from "../core/permission-mode.mjs";
 import { parseHeadlessFlags, captureStdout, streamSessionEvents, buildResult, readStdin, logFailure, EXIT } from "./headless.mjs";
 import { loadTemplates, expandTemplate } from "../core/templates.mjs";
+import { loadAgents, agentSystemPrompt, agentPermissions, agentAllowedTools } from "../core/agents.mjs";
 import { isSessionCode } from "../core/config.mjs";
 import { isFolderTrusted } from "../core/workspace.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
@@ -100,6 +101,7 @@ export async function main(args) {
   const project = loadProjectConfig();
   applySkillIndexSetting(project, settings);
   const loadedExtensions = await registerExtensions(INSTALL_ROOT, project.extensions || []);
+  refreshAgentCatalog();
   // After extensions, which may register in-process hooks of their own.
   const hookLoad = loadHooks({
     installRoot: INSTALL_ROOT, files: project.hooks, settingsHooks: settings.hooks,
@@ -235,7 +237,8 @@ export async function main(args) {
   });
   applyMachineEnv(machine.settings);
 
-  const session = new Session();
+  // A worktree sub-agent runs as its own headless Omni; its log is a sub-agent's.
+  const session = new Session({ kind: process.env.OMNI_SESSION_KIND === "subagent" ? "subagent" : "main" });
   // OMNI.md / AGENTS.md / CLAUDE.md from ~/.omni/agent and the repo root down
   // to the cwd. Each file also becomes a node under this project in /neuralview.
   const instructions = loadInstructions();
@@ -359,7 +362,18 @@ export async function main(args) {
       messages.push({ role: "user", content: hooked.content });
       await session.append({ type: "user", content: hooked.content });
     }
-    if (routerCfg.enabled && !ctx.routePinned) {
+    // --agent <name>: run as a named agent (its role, tools and model). The
+    // router's persona would replace the system prompt and drop the role, so
+    // an agent run is never routed.
+    let agent = null;
+    if (headless.agent) {
+      agent = loadAgents().get(headless.agent) || null;
+      if (!agent) return finish("error", `no agent named "${headless.agent}" (/agents lists them)`);
+      messages[0] = { ...messages[0], content: agentSystemPrompt(messages[0].content, agent) };
+      if (agent.model && mi === -1) {
+        try { ctx.model = resolveModel(settings, agent.model); } catch (e) { return finish("error", `agent ${agent.name}: ${e.message}`); }
+      }
+    } else if (routerCfg.enabled && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: promptArg, settings });
     }
     if (activeModelBlockedByHealth(ctx)) return finish("error", `model ${ctx.model.key} is marked unhealthy (/doctor)`);
@@ -374,7 +388,8 @@ export async function main(args) {
       turnLimit: headless.maxTurns,
       persona: ctx.activePersona,
       signal: ctx.currentAbort.signal,
-      permissions: settings.permissions,
+      permissions: agent ? agentPermissions(agent, settings.permissions) : settings.permissions,
+      allowedTools: agentAllowedTools(agent),
       showThinking: settings.showThinking,
       contextMode: ctx.contextMode,
     });

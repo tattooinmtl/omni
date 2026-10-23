@@ -205,7 +205,7 @@ function serializeToolCall(call) {
   return `<tool_call>\n<function=${fn.name || ""}>\n${params}\n</function>\n</tool_call>`;
 }
 
-function messagesWithTextTools(messages) {
+function messagesWithTextTools(messages, toolList = tools) {
   const normalized = messages.map((m) => {
     if (m.role === "tool") {
       const name = m.name ? ` (${m.name})` : "";
@@ -218,7 +218,7 @@ function messagesWithTextTools(messages) {
     return m;
   });
 
-  const instructions = textToolInstructions(tools);
+  const instructions = textToolInstructions(toolList);
   if (!normalized.length || normalized[0].role !== "system") {
     return [{ role: "system", content: instructions }, ...normalized];
   }
@@ -764,7 +764,10 @@ export function steeringMessage(note) {
   return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null, allowedTools = null }) {
+  // allowedTools: a Set of tool names a named sub-agent may use. Only those
+  // are offered to the model; the permission gate refuses the rest anyway.
+  const turnTools = allowedTools ? tools.filter((t) => allowedTools.has(t.function?.name)) : tools;
   // beforeMutation: called once, right before the first call this turn that
   // changes something runs. The REPL takes its /rewind checkpoint there.
   // turnLimit: a hard cap (headless --max-turns) that wins over the routed
@@ -805,7 +808,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   if (turnLimit) maxIterations = turnLimit;
   // Local models get strict index-first OKF navigation rules; frontier
   // providers are left alone. Re-synced every turn so /model switches apply.
-  syncOkfNavGuidance(messages, model, tools);
+  syncOkfNavGuidance(messages, model, turnTools);
   // Same pattern for the small-model coding rails: appended for local
   // GGUFs / Ollama / loopback, stripped for cloud providers. Reads
   // skills/agent-orchestration/local-llama-instructions.md.
@@ -824,7 +827,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
 
   // Schema registry for the tolerant text-tool parser, and a budget of
   // corrective retries when the model emits a malformed/truncated tool call.
-  const paramRegistry = buildParamRegistry(tools);
+  const paramRegistry = buildParamRegistry(turnTools);
   const MAX_PARSE_RECOVERIES = 3;
   let parseRecoveries = 0;
   let wrapUpNudged = false;
@@ -898,7 +901,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // placeholders with no pixel data, so the model would hallucinate.
         let prompt;
         try {
-          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages, model.key), tools);
+          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages, model.key), turnTools);
         } catch (e) {
           stopStatus();
           errorLine(`Template render failed: ${e.message}`);
@@ -924,14 +927,14 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
         const visible = canSeeImages ? shaped : stripImageParts(shaped, model.key);
         const providerMessages = useTextTools
-          ? messagesWithTextTools(stripImageParts(visible, model.key))
+          ? messagesWithTextTools(stripImageParts(visible, model.key), turnTools)
           : visible;
         resp = await chatStreamWithRetry({
           model,
           settings,
           session,
           messages: providerMessages,
-          tools: useNativeTools ? tools : null,
+          tools: useNativeTools ? turnTools : null,
           signal,
           // Always count real deltas so the generation panel's token/TPS
           // readout is accurate. In text-tools mode we still skip routing

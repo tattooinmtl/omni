@@ -62,7 +62,9 @@ function omni(args, { stdin = null } = {}) {
 
 await ok("flags are pulled out of argv, the prompt words are left", () => {
   const args = ["-p", "fix", "it", "--output", "json", "--max-turns", "5"];
-  assert.deepEqual(parseHeadlessFlags(args), { print: true, output: "json", maxTurns: 5 });
+  assert.deepEqual(parseHeadlessFlags(args), { print: true, output: "json", maxTurns: 5, agent: null });
+  assert.equal(parseHeadlessFlags(["--agent", "Reviewer"]).agent, "reviewer");
+  assert.throws(() => parseHeadlessFlags(["--agent", "--output"]), /name of an agent/);
   assert.deepEqual(args, ["fix", "it"]);
   assert.equal(parseHeadlessFlags(["--output-format", "stream-json"]).output, "stream-json");
   assert.throws(() => parseHeadlessFlags(["--output", "xml"]), /text, json, stream-json/);

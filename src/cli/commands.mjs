@@ -15,7 +15,7 @@ import {
   isSessionCode, resolveSessionCode, describeSession, readSessionRecords,
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
-import { runTool, tools } from "../tools/index.mjs";
+import { runTool, tools, refreshAgentCatalog } from "../tools/index.mjs";
 import { estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
 import {
   resolveProviderName, providers as memoryProviders, currentAtoms,
@@ -50,6 +50,7 @@ import { providerKeyEnvVar } from "../core/config.mjs";
 import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
 import { listHooks } from "../core/hooks.mjs";
 import { loadTemplates } from "../core/templates.mjs";
+import { loadAgents } from "../core/agents.mjs";
 import { forgeCompact } from "../core/compaction.mjs";
 import { searchSessions, formatHits, formatWhen } from "../core/session-search.mjs";
 import { runArrowPicker } from "./models.mjs";
@@ -603,6 +604,33 @@ export const COMMANDS = [
       infoLine(`following ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "agents", aliases: [], usage: "/agents [reload]", category: "Agent",
+    summary: "named sub-agents the agent can spawn, and the ones running now",
+    handler: async (ctx, arg) => {
+      const agents = loadAgents();
+      if (arg.trim().toLowerCase() === "reload") { refreshAgentCatalog(agents); infoLine("agent definitions reloaded"); }
+      if (!agents.size) infoLine("no agent definitions. Add one as .omni/agents/<name>.md (see the README).");
+      else {
+        infoLine(`${agents.size} named agent(s) — the agent can spawn them with spawn_agent({agent: "<name>", …}):`);
+        for (const a of [...agents.values()].sort((x, y) => x.name.localeCompare(y.name))) {
+          const traits = [
+            a.readonly ? "read-only" : a.tools ? `${a.tools.length} tools` : "all tools",
+            a.isolation === "worktree" ? "own git branch" : "",
+            a.model ? `model ${a.model}` : "",
+            a.scope,
+          ].filter(Boolean).join(" · ");
+          console.log(`  ${c.bold(a.name.padEnd(12))} ${a.description} ${c.dim(`(${traits})`)}`);
+        }
+      }
+      const running = await runTool("agent_status", {});
+      if (!running.startsWith("(no sub-agents")) {
+        console.log("");
+        infoLine("sub-agents this session:");
+        console.log(running.split("\n").map((l) => "  " + l).join("\n"));
       }
     },
   },
