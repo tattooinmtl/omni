@@ -25,6 +25,7 @@ import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
 import fs from "node:fs";
+import { runHooks, hasHooks } from "./hooks.mjs";
 
 // Which /neuralview architecture node a tool call represents, per
 // NewPlanConversion.md's "retrieval request -> Memory coordinator -> {Chat
@@ -845,6 +846,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   const MAX_PARSE_RECOVERIES = 3;
   let parseRecoveries = 0;
   let wrapUpNudged = false;
+  const MAX_STOP_CONTINUATIONS = 3;
+  let stopContinuations = 0;
 
   for (let i = 0; i < maxIterations; i++) {
     // Keep the conversation inside the model's context window. Classic mode
@@ -1066,6 +1069,20 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         continue;
       }
       if (truncated) warnLine("response was truncated by the max_tokens limit");
+      // A Stop hook can send the agent back to work ("the tests still fail"),
+      // a few times per turn at most so a hook that always blocks can't loop.
+      if (stopContinuations < MAX_STOP_CONTINUATIONS && hasHooks("Stop") && !signal?.aborted) {
+        const hook = await runHooks("Stop", { lastMessage: String(msg.content || "").slice(0, 4000), continuations: stopContinuations });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.denied) {
+          stopContinuations++;
+          warnLine(`hook ${hook.by} asked the agent to keep going (${stopContinuations}/${MAX_STOP_CONTINUATIONS})`);
+          const content = `[hook ${hook.by}] Not done yet: ${hook.reason}`;
+          messages.push({ role: "user", content });
+          session.append({ type: "user", content });
+          continue;
+        }
+      }
       // Runs on every completed turn, regardless of which memory provider is
       // active (see core/memory-provider.mjs) — atoms are a separate,
       // additive store, so this always keeps the indexer/graph current
@@ -1113,6 +1130,19 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           if (createGate) p.permission = createGate;
         }
       }
+      // PreToolUse hooks see only calls the user's own gates let through, so
+      // a hook can tighten a decision but never loosen one.
+      if (p.permission.allowed && hasHooks("PreToolUse")) {
+        const hook = await runHooks("PreToolUse", { tool: p.name, args: p.args });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.denied) {
+          p.permission = { allowed: false, message: `DENIED by hook "${hook.by}": ${hook.reason}` };
+          warnLine(`${p.name}: blocked by hook ${hook.by}`);
+          continue;
+        }
+        if (hook.args) p.args = hook.args;
+        if (hook.context) p.hookNote = hook.context;
+      }
       if (!p.permission.allowed) warnLine(`${p.name}: ${p.permission.message.split(":")[0].toLowerCase()} by permissions`);
     }
 
@@ -1126,7 +1156,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // resolve() does in the tools themselves.
     const fileLocks = new Map(); // key -> Promise<unknown> tail
     const toolResults = await Promise.all(
-      parsed.map(async ({ call, name, args, permission }) => {
+      parsed.map(async ({ call, name, args, permission, hookNote }) => {
         let result;
         const route = routeForTool(name);
         if (!permission.allowed) {
@@ -1194,10 +1224,26 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // signal worth remembering on its own, no cue phrase or okf_add
         // needed — see memory-provider.mjs's captureToolActivity.
         try { captureToolActivity({ tool: name, args, result }); } catch { /* best-effort */ }
-        return { call, name, args, result };
+        return { call, name, args, result, allowed: permission.allowed, hookNote };
       })
     );
     stopStatus();
+
+    // PostToolUse hooks run in call order once the batch is done, so their
+    // notes line up with the results they annotate.
+    for (const entry of toolResults) {
+      const notes = entry.hookNote ? [entry.hookNote] : [];
+      if (entry.allowed && hasHooks("PostToolUse")) {
+        const text = typeof entry.result === "string" ? entry.result : JSON.stringify(entry.result?.text ?? "");
+        const hook = await runHooks("PostToolUse", {
+          tool: entry.name, args: entry.args, result: text.slice(0, 20000),
+          ok: !(typeof entry.result === "string" && /^(ERROR|DENIED|BLOCKED)/.test(entry.result)),
+        });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.context) notes.push(hook.context);
+      }
+      if (notes.length && typeof entry.result === "string") entry.result += "\n\n" + notes.join("\n");
+    }
 
     // Print results and push tool messages in original call order
     // (API requires matching tool_call_id order).

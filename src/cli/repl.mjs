@@ -32,6 +32,7 @@ import { applySkill, restoreSessionMessages, reportMissingKey, reportInsecureEnd
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
+import { submitPromptHooks } from "../core/hooks.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
 import { createFooter, stripAnsi } from "./footer.mjs";
@@ -664,9 +665,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       return showPrompt();
     }
 
-    // Plain input → the agent.
-    ctx.messages.push({ role: "user", content: fullLine });
-    await ctx.session.append({ type: "user", content: fullLine });
+    // Plain input → the agent, after any UserPromptSubmit hooks have had a say.
+    const hooked = await submitPromptHooks(fullLine);
+    for (const err of hooked.errors) warnLine(`hook ${err}`);
+    if (hooked.denied) {
+      warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
+      return showPrompt();
+    }
+    ctx.messages.push({ role: "user", content: hooked.content });
+    await ctx.session.append({ type: "user", content: hooked.content });
     if (ctx.routerCfg.enabled && ctx.routeMode === "auto" && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: fullLine, settings: ctx.settings });
       setPersonaIndicator(ctx.activePersona);

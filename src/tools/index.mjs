@@ -22,6 +22,7 @@ import { loadScannedSkills } from "../core/skill-index.mjs";
 import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
+import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -3102,8 +3103,12 @@ function spawnSubAgent({ prompt, model, name, permissions = null, confirmTool = 
         permissions,
         confirmTool,
       });
-      rec.status = "done";
       rec.result = lastAssistantText(messages) || "(sub-agent finished with no final text)";
+      if (hasHooks("SubagentStop")) {
+        const hook = await runHooks("SubagentStop", { agentId: id, name: rec.name, model: rec.model, result: rec.result.slice(0, 20000) });
+        if (hook.context) rec.result += "\n\n" + hook.context;
+      }
+      rec.status = "done";
     } catch (e) {
       rec.status = rec.status === "stopping" ? "stopped" : "error";
       rec.error = e?.message || String(e);
@@ -3536,7 +3541,25 @@ async function loadExtensionFile(root, rel) {
     Object.assign(impl, ext.impl);
   }
   extensionToolNames.set(rel, names);
+  registerExtensionHooks(rel, ext);
   return ext.name || rel;
+}
+
+// An extension can also export `hooks: { PreToolUse: fn, PostToolUse: { matcher, run } }`
+// (a list per event works too). They run in-process through the same runner as
+// command hooks — see core/hooks.mjs for what a handler may return.
+function registerExtensionHooks(rel, ext) {
+  const source = `extension:${rel}`;
+  clearHooks(source);
+  if (!ext.hooks || typeof ext.hooks !== "object") return;
+  for (const [event, value] of Object.entries(ext.hooks)) {
+    if (!HOOK_EVENTS.some((e) => e.toLowerCase() === event.toLowerCase())) continue;
+    for (const h of Array.isArray(value) ? value : [value]) {
+      const fn = typeof h === "function" ? h : h?.run;
+      if (typeof fn !== "function") continue;
+      registerHook({ event, fn, matcher: h?.matcher, timeout_ms: h?.timeout_ms, name: `${ext.name || path.basename(rel, ".js")}`, source });
+    }
+  }
 }
 
 // Load extension modules and merge their tools + impls into the registry.

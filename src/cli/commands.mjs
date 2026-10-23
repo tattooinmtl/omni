@@ -47,6 +47,7 @@ import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
 import { loadInstructions, syncInstructions, addInstruction, initPrompt } from "../core/instructions.mjs";
+import { listHooks } from "../core/hooks.mjs";
 
 function pkgVersion() {
   try {
@@ -397,6 +398,23 @@ export const COMMANDS = [
       infoLine(`following ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
         console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+      }
+    },
+  },
+  {
+    name: "hooks", aliases: [], usage: "/hooks", category: "Agent",
+    summary: "list the lifecycle hooks that run in this session",
+    handler: () => {
+      const hooks = listHooks();
+      if (process.env.OMNI_NO_HOOKS) warnLine("OMNI_NO_HOOKS is set: none of these will run");
+      if (!hooks.length) {
+        infoLine("no hooks loaded. Add them under \"hooks\" in agent/settings.json, or in .omni/hooks.json in a trusted project (see docs/EXTENDING.md).");
+        return;
+      }
+      infoLine(`${hooks.length} hook(s):`);
+      for (const h of hooks) {
+        const what = h.kind === "extension" ? "(extension code)" : h.command;
+        console.log(`  ${c.bold(h.event.padEnd(16))} ${h.matcher ? c.cyan(`[${h.matcher}] `) : ""}${what}${h.background ? c.dim(" · background") : ""} ${c.dim(`· ${h.source}`)}`);
       }
     },
   },
