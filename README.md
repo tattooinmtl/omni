@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.5
+# OMNI-AGENT 3.5.25
 
 Omni-present harness for agents
 
@@ -22,6 +22,24 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+**3.5.25**
+- **Project instructions:** Omni follows `OMNI.md` (or an existing
+  `AGENTS.md` / `CLAUDE.md`) from the repo root down to the folder you're
+  in, plus your own `~/.omni/agent/OMNI.md`. `/init` has the agent write
+  one, `/instructions` shows what's loaded, `/instructions add <rule>`
+  appends a rule.
+- **Hooks:** your own commands run at session start, prompt submit, before
+  and after each tool call, before compaction, and when the agent stops.
+  They can block, rewrite or add context. `/hooks` lists them.
+- **Compaction summaries:** when the context fills up, or on
+  `/compact [focus]`, a model writes a structured summary of the older turns
+  instead of only listing the tools used. Point it at a cheaper model with
+  `"compaction": { "model": "<provider/model>" }` in settings.
+- **Resume any conversation:** `/resume` opens a picker of this folder's
+  past conversations, and `/history <words>` (or the agent's
+  `session_search` tool) searches them. `/resume` and `--resume` used to
+  restore the session Omni had just started, which held nothing.
 
 **3.5.5**
 - A key set with `/provider apikey`, `/provider login`, `/provider edit` or
@@ -211,8 +229,8 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 
 | Category | Commands |
 |---|---|
-| Session | `/help` `/image` `/status` `/clear` `/compact [now]` `/resume` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/instructions` `/init` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
@@ -275,6 +293,66 @@ the iteration cap is hit, or the token budget runs out.
   `omni.config.json` in the project folder can set the mode per project.
 - **`/context 200k`** overrides a model's context window; `/context auto` goes
   back to the detected value.
+
+### Project instructions (OMNI.md)
+
+Omni reads one instruction file per folder, from the repo root (the nearest
+parent with `.git`) down to the folder you launched in: `OMNI.md` if there is
+one, otherwise `AGENTS.md`, otherwise `CLAUDE.md`. Your personal rules for
+every project go in `~/.omni/agent/OMNI.md`, which is read first. A deeper
+file wins where two disagree. A line holding only `@docs/style.md` pulls that
+file in. Sub-agents follow the same rules.
+
+```
+/init                         have the agent study the project and write OMNI.md
+/instructions                 which files are loaded, and their size
+/instructions add <rule>      append a rule to ./OMNI.md
+/instructions reload          re-read them after editing
+```
+
+### Compaction
+
+When the conversation nears the model's context window (or on `/compact`),
+the older turns are replaced by a summary a model writes under fixed
+headings: goal, decisions, files touched, what's done, what's open, errors.
+`/compact now` keeps only the last two messages; anything after it is a
+focus, as in `/compact keep the API shapes`. Durable facts are saved to
+memory first. In `agent/settings.json`:
+
+```json
+"compaction": { "model": "agnes/agnes-2.5-flash" }
+```
+
+runs the summary on a cheaper model so it doesn't spend the main one's rate
+limit. Local models use the plain tool list unless you set a model here, and
+`"mode": "mechanical"` always does.
+
+### Hooks
+
+Hooks run your own command at a point in the agent loop. Put them in
+`agent/settings.json`:
+
+```json
+"hooks": [
+  { "event": "PreToolUse", "matcher": "run_shell", "command": "node C:/tools/no-force-push.mjs" },
+  { "event": "Stop", "command": "npm test --silent", "timeout_ms": 120000 }
+]
+```
+
+Events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PreCompact`, `Stop`, `SubagentStop`. The hook gets the event as JSON on
+stdin. Exit 2 blocks (stderr is the reason; on `Stop` it sends the agent back
+to work, up to 3 times a turn). Exit 0 with text adds that text as context.
+A project can ship `.omni/hooks.json`, which only loads once you trust the
+folder. `/hooks` lists what's loaded; `OMNI_NO_HOOKS=1` turns them off. The
+full contract is in [docs/EXTENDING.md](docs/EXTENDING.md#hooks).
+
+### Resuming and searching conversations
+
+`/resume` opens a picker of this folder's earlier conversations. `/resume 2`,
+`/resume latest` or `/resume <id>` skip the picker. `/history <words>`
+searches what was said in them (`--all` searches every project), and the
+agent has the same search as its `session_search` tool.
 
 ### Tool permissions
 
@@ -347,6 +425,7 @@ uses the next free port, and `/neuralview` tells you which Omi holds 5678.
 - **Memory:** `memory_save`, `memory_search`, `memory_list`, `memory_forget`,
   `memory_deprecate`, `memory_explain`, `memory_atoms`. Memory is captured
   automatically as weighted, layered atoms; `/memory` inspects it.
+  `session_search` finds what was said in earlier conversations.
 - **Skills and self-extension:** `find_skill`, `invoke_skill`, `create_tool`
   (writes a new tool and hot-loads it into the running session),
   `settings_add_model`, `settings_set_apikey`
