@@ -8,9 +8,24 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.33 — 2026-10-26
+
+- **Shipped:** this PR · — · TattooAI/readme-refresh · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **README brought up to date.** The title no longer carries a version
+  number that nobody bumped (it still said 3.5.29); `omni --version` and this
+  file carry it. What's new covers 3.5.29 to 3.5.32, and older releases point
+  here instead of repeating it.
+- The command table lists `/update-omni`, and the runtime-pack command for a
+  checkout reads `.installinstall.ps1 -WithRuntime` again (its backslashes
+  had been lost).
+- Project instructions now say what 3.5.32 changed: a project's files wait
+  for folder trust, imports stay inside the project, and secrets files are
+  never imported.
+- The test count (61) is gone from the Tests section; there are 84 suites.
+
 ## 3.5.32 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/instruction-trust · session `169b2a38-7c96-4641-9bbd-c91e9081f01f`
+- **Shipped:** [#44](https://github.com/tattooinmtl/omni/pull/44) · `9f3b5a8` · TattooAI/instruction-trust · session `169b2a38-7c96-4641-9bbd-c91e9081f01f`
 - **A repo's instruction files wait for folder trust.** OMNI.md, AGENTS.md
   and CLAUDE.md become system-prompt text, so a repo you just cloned could
   steer the agent before you agreed to anything. A project's files now load

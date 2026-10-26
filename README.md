@@ -1,4 +1,4 @@
-# OMNI-AGENT 3.5.29
+# OMNI-AGENT
 
 Omni-present harness for agents
 
@@ -22,6 +22,27 @@ built-in `fetch`.
 **[omni.globalwarningnetworks.com](https://omni.globalwarningnetworks.com/)**
 
 ## What's new
+
+The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
+`omni --version` tells you which one you have.
+
+**3.5.32**
+- **Safer with repos you just cloned:** a project's `OMNI.md`, `AGENTS.md` or
+  `CLAUDE.md` loads only once you trust its folder, its `@` imports can't
+  reach outside the project or pull in a secrets file like `.env`, and the
+  agent treats file contents, web pages and tool output as data, never as
+  instructions.
+
+**3.5.31**
+- **`/update-omni`:** checks GitHub for a newer Omni and installs it without
+  leaving the app. `/update-omni check` only reports. It says "updated" only
+  when the new version really landed, and asks you to restart.
+
+**3.5.30**
+- **Reflection works past the first turn:** its Beam models need the earlier
+  answers' reasoning sent back, and Omni used to drop it, so every second
+  message failed with a 400. Other providers never receive it. A conversation
+  from before this fix needs `/clear`.
 
 **3.5.29**
 - **Learned skills:** after a long task that passed review, Omni offers to
@@ -82,53 +103,9 @@ built-in `fetch`.
   `session_search` tool) searches them. `/resume` and `--resume` used to
   restore the session Omni had just started, which held nothing.
 
-**3.5.5**
-- A key set with `/provider apikey`, `/provider login`, `/provider edit` or
-  the `/addprovider` and `/connect` key prompts now survives a restart for
-  providers with several accounts (`nvidia`, `agnes`). `/provider logout` now
-  stays logged out.
-- `OMNI_HOME` is only read from the real environment. Setting it in `.env`
-  used to split settings and the last-used model across two folders.
-- `/help` lists every command, including `/browser`.
-- `docs/EXTENDING.md` now ships with the repo and the install.
-- The shipped `omni.config.json` validates against its own schema.
-
-**3.5.x**
-- **Prompt box:** pinned to the bottom of the terminal like Claude Code. You
-  can keep typing while the agent works, pastes never send by themselves, and
-  `/btw` steers a turn that's already running.
-- **Shell:** `run_shell` no longer freezes Omni. Long builds stream, Esc stops
-  them, timeouts kill the whole process tree, and the real exit code is
-  reported (no more false failures from `cargo` writing to stderr).
-- **Neural view:** tied to Omi's lifetime, restartable, and it tells you when
-  Omi has closed.
-- **Skills:** fixed the provider 400 errors (MiniMax 2013) when loading a skill
-  mid-turn.
-- **Editing tools on Windows:** `edit_file`, `apply_patch` and `edit_lines`
-  work on CRLF files and keep each file's own line endings.
-- **Installer:** updates by default, never moves a dirty or diverged checkout,
-  and tells you plainly when an update didn't apply.
-- **Reliability sweep:** MCP servers start and stop cleanly, the Python
-  router bridge works end to end, memory atom ids no longer collide, and every
-  state file is written atomically.
-
-**3.1–3.4**
-- **Providers:** xKiro (12 free-tier models, the shipped default), Atria ASI,
-  MiniMax folded into one `minimax.io` provider with `/getmodel`, and up to
-  four rotating NVIDIA accounts.
-- **`/connect` and `/disconnect`:** one picker for provider, key and model.
-- **`self_review`:** an independent critic that only sees the task and the
-  diff.
-- **Per-model vision:** only models that can see are sent images.
-- **External skill index:** skills found by an outside scanner are reachable
-  through `find_skill` and `invoke_skill`.
-- **Security:** keys are redacted from logs, env-supplied keys never land in
-  `settings.json`, and `run_test` goes through the same risk gate as
-  `run_shell`.
-
-**3.0**
-- Local llama.cpp with automatic CPU/Vulkan selection from a cached hardware
-  profile, plus video understanding through `read_video_file`.
+Earlier releases (the pinned prompt box, the installer that never moves a
+dirty checkout, xKiro and the other providers, `self_review`, local
+llama.cpp, video understanding) are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
@@ -190,7 +167,7 @@ unpacked. Omni puts `vendor/` first on PATH at startup.
 
 ```powershell
 $env:OMNI_RUNTIME = "1"; irm https://omni.globalwarningnetworks.com/install.ps1 | iex   # with the install
-.installinstall.ps1 -WithRuntime                                                       # from a checkout
+.\install\install.ps1 -WithRuntime                                                     # from a checkout
 ```
 
 Or later, from Omni: `/runtime` shows what is installed and what each part
@@ -267,7 +244,7 @@ node bin\omni.mjs install <pkg>        # package manager (install|uninstall|list
 `omni --version` answers before any config is read, so it still works when
 `settings.json` is broken. Inside the REPL, `/version` reports the same thing.
 Omni checks for a newer version in the background (cached, never on the hot
-path) and tells you when one exists.
+path) and tells you when one exists; `/update-omni` installs it.
 
 ### Headless (scripts and CI)
 
@@ -349,7 +326,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` `/runtime` `/omnibots` |
+| Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
@@ -419,6 +396,13 @@ one, otherwise `AGENTS.md`, otherwise `CLAUDE.md`. Your personal rules for
 every project go in `~/.omni/agent/OMNI.md`, which is read first. A deeper
 file wins where two disagree. A line holding only `@docs/style.md` pulls that
 file in. Sub-agents follow the same rules.
+
+A project's files load only once you trust its folder (`/workspace trust`),
+because they go straight into the agent's instructions. Startup names any it
+left out. Your personal file always loads. An import from a project file must
+stay inside the project, only `.md` and `.txt` files can be imported, and a
+secrets file such as `.env` never is; a refused one shows as
+`(import X skipped: <why>)`.
 
 ```
 /init                         have the agent study the project and write OMNI.md
@@ -847,7 +831,7 @@ Omni/
 ## Tests
 
 ```powershell
-npm test                          # every suite (61), no network needed
+npm test                          # every suite, no network needed
 $env:RUN_LIVE = "1"; npm test     # + live suites (need Python / real providers)
 ```
 
