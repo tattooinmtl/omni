@@ -646,9 +646,9 @@ export const COMMANDS = [
         infoLine("no instruction files here. /init writes an OMNI.md for this project, or /instructions add <rule> starts one.");
         return;
       }
-      infoLine(`following ${files.length} instruction file(s), outermost first:`);
+      infoLine(`following ${files.filter((f) => !f.skipped).length} of ${files.length} instruction file(s), outermost first:`);
       for (const f of files) {
-        console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped ? "skipped: over the size limit" : `${f.chars} chars`})`)}`);
+        console.log(`  ${f.label} ${c.dim(`(${f.scope}, ${f.skipped || `${f.chars} chars`})`)}`);
       }
     },
   },

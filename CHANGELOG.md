@@ -8,9 +8,39 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.32 — 2026-10-26
+
+- **Shipped:** this PR · — · TattooAI/instruction-trust · session `169b2a38-7c96-4641-9bbd-c91e9081f01f`
+- **A repo's instruction files wait for folder trust.** OMNI.md, AGENTS.md
+  and CLAUDE.md become system-prompt text, so a repo you just cloned could
+  steer the agent before you agreed to anything. A project's files now load
+  only once its folder is trusted (`/workspace trust`), the same rule project
+  hooks already follow. That matters for one-shot and headless runs and for
+  repos inside your OmniWorkspace, which never ask. Startup names the files
+  it left out, and `/instructions` marks them as not loaded. Your personal
+  OMNI.md always loads.
+- **`@` imports stay where they belong.** An import from a project file must
+  stay inside the project. `../`, absolute paths, `~/` and symlinks that
+  point out of the project are refused. Your personal OMNI.md can import from
+  your home folder. Only .md and .txt files can be imported, and never a
+  secrets file such as `.env`, `.npmrc` or a private key, so an instruction
+  file can't put your keys into the prompt that goes to the provider. A
+  refused import shows as `(import X skipped: <why>)`.
+- **The system prompt says tool results are data, not instructions.** File
+  contents, web pages, search results, MCP output and command output never
+  direct the agent. When one asks for an action, the agent quotes it to you,
+  says where it came from, and asks.
+- The secrets-file check `git_commit` uses moved to `core/secret-files.mjs`
+  so the instructions loader shares it.
+- Tests: `instructions` covers an untrusted folder (project file left out,
+  personal file kept), trusting the folder, imports that escape by `../`, by
+  absolute path, by `~/` and by a symlink, a `.env` and a non-text import
+  inside the project, the personal file's home imports, and the new
+  system-prompt rule.
+
 ## 3.5.31 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/update-omni · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **Shipped:** [#43](https://github.com/tattooinmtl/omni/pull/43) · `6a45a2a` · TattooAI/update-omni · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
 - **`/update-omni` updates Omni from inside the app** (alias `/upgrade`). It
   asks GitHub for the latest version right away instead of trusting the
   once-a-day cache. If `main` is newer it runs `install/install.ps1` on this

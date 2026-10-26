@@ -275,6 +275,10 @@ export async function main(args) {
   // OMNI.md / AGENTS.md / CLAUDE.md from ~/.omni/agent and the repo root down
   // to the cwd. Each file also becomes a node under this project in /neuralview.
   const instructions = loadInstructions();
+  if (instructions.untrusted.length) {
+    const names = instructions.files.filter((f) => instructions.untrusted.includes(f.path)).map((f) => f.label);
+    warnLine(`${names.join(", ")} ignored: this folder is not trusted (/workspace trust)`);
+  }
   for (const f of instructions.files) {
     publishActivity({
       kind: "live_node", op: "add", nodeId: "instr-" + f.path.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(-60),
