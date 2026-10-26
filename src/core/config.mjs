@@ -162,6 +162,12 @@ export const DEFAULT_SETTINGS = {
       apiKey: "",
       label: "Reflection AI",
       reasoningParam: "reasoning_effort",
+      // Beam refuses a request whose earlier assistant messages lost their
+      // reasoning ("Missing required parameter: messages[N].reasoning_content"),
+      // so the harness has to send the reasoning back. Opt-in per provider:
+      // the field is not in the OpenAI chat spec, so other providers get it
+      // stripped before the request leaves (see applyReasoningEcho).
+      echoReasoning: true,
     },
     "minimax.io": {
       baseUrl: "https://api.minimax.io/v1",

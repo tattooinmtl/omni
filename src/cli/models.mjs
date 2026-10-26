@@ -15,6 +15,8 @@ import { restoreLineEditing } from "./term.mjs";
 // "Custom Provider..." appended as the last row. New entries must keep
 // valid OpenAI-compatible `baseUrl` values; reasoningParam "none" skips
 // sending a reasoning_effort parameter that the endpoint wouldn't understand.
+// echoReasoning: true is for endpoints that require every earlier assistant
+// message to carry back the reasoning that produced it (Reflection's Beam).
 export const PROVIDER_PRESETS = {
   // User-curated first batch
   kimi:    { baseUrl: "https://api.moonshot.cn/v1",  label: "Kimi (Moonshot)", reasoningParam: "none" },
@@ -28,7 +30,9 @@ export const PROVIDER_PRESETS = {
   atria:   { baseUrl: "https://api.atria-asi.ai/v1", label: "Atria ASI", reasoningParam: "none" },
   // Reflection AI — OpenAI-compatible chat/completions with Bearer auth.
   // Keys also read from the vendor's own REFLECTION_API_KEY env var.
-  reflection: { baseUrl: "https://api.reflection.ai/openai/v1", label: "Reflection AI", reasoningParam: "reasoning_effort" },
+  // echoReasoning: Beam requires every earlier assistant message to carry
+  // back the reasoning that produced it.
+  reflection: { baseUrl: "https://api.reflection.ai/openai/v1", label: "Reflection AI", reasoningParam: "reasoning_effort", echoReasoning: true },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",
