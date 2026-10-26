@@ -610,7 +610,7 @@ export const PAGE = `<!doctype html>
           n.kind === "folder" ? "OKF folder · " + n.folder :
           n.kind === "atom" ? ("atom · " + n.atomType + " · " + n.status + " · weight " + (n.confidence != null ? n.confidence.toFixed(2) : "?")) :
           n.kind === "card" ? ("card · " + n.cardType) : "memory";
-        tip.innerHTML = "<b>" + escapeHtml(n.label) + "</b><br><span style=\\"color:#8b93b8\\">" + kindLabel + "</span>";
+        tip.innerHTML = "<b>" + escapeHtml(n.label) + "</b><br><span style=\\"color:#8b93b8\\">" + escapeHtml(kindLabel) + "</span>";
       } else {
         tip.style.display = "none";
       }
@@ -653,7 +653,7 @@ export const PAGE = `<!doctype html>
       n.kind === "folder" ? ("OKF folder · " + n.folder) :
       n.kind === "atom" ? (n.atomType + " · " + n.status) :
       n.kind === "card" ? (n.cardType + (n.folder ? " · " + n.folder : "")) : "memory";
-    var html = "<h2>" + escapeHtml(n.label) + "</h2><div class=\\"meta\\">" + escapeHtml(kindLabel) + (n.confidence != null ? " · weight " + n.confidence : "") + "</div>";
+    var html = "<h2>" + escapeHtml(n.label) + "</h2><div class=\\"meta\\">" + escapeHtml(kindLabel) + (n.confidence != null ? " · weight " + escapeHtml(n.confidence) : "") + "</div>";
     html += "<div class=\\"body\\">" + escapeHtml(n.detail || "") + "</div>";
     if (n.tags && n.tags.length) html += "<div class=\\"tags\\">" + n.tags.map(function (t) { return "<span class=\\"tag\\">" + escapeHtml(t) + "</span>"; }).join("") + "</div>";
     content.innerHTML = html;
@@ -699,8 +699,9 @@ export const PAGE = `<!doctype html>
   function renderStats(graph) {
     var statsEl = document.getElementById("stats");
     var c = graph.counts;
-    statsEl.innerHTML = c.folders + " OKF folders · " + c.cards + " cards · " + c.atoms + " atoms (" + c.activeAtoms + " active) · " + c.memories + " memories<br>" +
-      c.nodes + " nodes · " + c.edges + " edges" + (c.truncated ? " · (truncated)" : "") +
+    var num = function (v) { return Number(v) || 0; };
+    statsEl.innerHTML = num(c.folders) + " OKF folders · " + num(c.cards) + " cards · " + num(c.atoms) + " atoms (" + num(c.activeAtoms) + " active) · " + num(c.memories) + " memories<br>" +
+      num(c.nodes) + " nodes · " + num(c.edges) + " edges" + (c.truncated ? " · (truncated)" : "") +
       "<br><span style=\\"color:#5b6289\\">drag to rotate · shift/right-drag to pan · scroll to zoom · drag a node to pin</span>";
   }
 
@@ -711,7 +712,7 @@ export const PAGE = `<!doctype html>
     activityEntries = activityEntries.slice(0, 10);
     var el = document.getElementById("activityLog");
     el.innerHTML = activityEntries.map(function (e) {
-      return "<div class=\\"row " + e.cls + "\\">" + escapeHtml(e.text) + "</div>";
+      return "<div class=\\"row " + escapeHtml(e.cls) + "\\">" + escapeHtml(e.text) + "</div>";
     }).join("");
   }
 

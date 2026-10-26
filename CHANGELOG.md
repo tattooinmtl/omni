@@ -8,9 +8,45 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.34 — 2026-10-26
+
+- **Shipped:** this PR · — · TattooAI/security-audit · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- A security audit against SQL injection, XSS, path traversal, auth bypass,
+  insecure deserialization, command injection, weak cryptography, input
+  validation and exposed secrets. Four real problems, all fixed here:
+- **`git_clone` could run a command.** Its URL check threw inside a `try`
+  whose `catch` swallowed everything, so any string reached `git clone`,
+  including `--upload-pack=<command>`, which git runs. Now only https, ssh,
+  git and `user@host:path` URLs are accepted, anything starting with `-` is
+  refused, and `--` goes before the URL.
+- **Command tools ignored your shell setting.** `run_test`, `start_process` and
+  `test_coverage` run commands the model writes, but each had its own
+  permission, so `/perm run_shell ask` left them running anything silently.
+  They now follow `run_shell` unless you set them yourself.
+- **API keys reached the model in tool results.** A `.env` the agent read, or a
+  page that printed a key, went to the model as-is, where a prompt injection
+  could tell it to send the key somewhere. Tool results are now redacted
+  first: the known key formats, and the exact keys you have configured
+  (provider keys, account keys, `OMNI_*_KEY` variables), so formats no pattern
+  knows are caught too.
+- **The neural view had an XSS.** The tooltip put a node's folder, card type,
+  atom type and status into the page unescaped, and memory atoms can come
+  from web pages the agent read. They are escaped now, and the page is served
+  with a Content-Security-Policy that lets it talk only to its own server, so
+  nothing that slipped through could send your memories elsewhere.
+- Already covered, no change: no SQL anywhere (data is JSON files), the HTML
+  export escapes everything, every file tool resolves paths inside the
+  workspace with a symlink check, `where_is`/`lint_check` validate what reaches a
+  shell, the web tools refuse private addresses on every redirect hop,
+  downloads are SHA-256 checked, and the router's `pickle` model is only ever
+  written by Omni itself.
+- Tests: `security-audit` covers the git_clone URLs, the command tools'
+  permissions, key redaction (pattern, configured key, env key, ordinary text
+  untouched), the escaped tooltip and the CSP header.
+
 ## 3.5.33 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/readme-refresh · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **Shipped:** [#45](https://github.com/tattooinmtl/omni/pull/45) · `858120d` · TattooAI/readme-refresh · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
 - **README brought up to date.** The title no longer carries a version
   number that nobody bumped (it still said 3.5.29); `omni --version` and this
   file carry it. What's new covers 3.5.29 to 3.5.32, and older releases point

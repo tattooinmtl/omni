@@ -47,6 +47,23 @@ function assertSafeName(name, label = "name") {
   if (/[\0\n\r]/.test(name)) throw new Error(`${label} contains invalid characters`);
 }
 
+// What git_clone accepts: an http(s), git or ssh URL, or the scp-style
+// user@host:path form. This used to throw inside a try whose catch swallowed
+// everything, so any string reached git — including "--upload-pack=<cmd>",
+// which git runs as a command, and the "ext::" transport.
+const CLONE_PROTOCOLS = new Set(["http:", "https:", "git:", "ssh:"]);
+const SCP_STYLE_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/;
+export function assertCloneUrl(url) {
+  if (!url || typeof url !== "string") throw new Error("url is required");
+  if (url.startsWith("-")) throw new Error(`url "${url}" starts with '-' which git may interpret as an option`);
+  if (/[\0\n\r\s]/.test(url)) throw new Error("url contains whitespace or control characters");
+  if (SCP_STYLE_RE.test(url)) return url;
+  let u;
+  try { u = new URL(url); } catch { throw new Error(`not a URL git_clone accepts: ${url} (use https://, ssh://, git:// or user@host:path)`); }
+  if (!CLONE_PROTOCOLS.has(u.protocol)) throw new Error(`Unsupported protocol in URL: ${url} (use https://, ssh://, git:// or user@host:path)`);
+  return url;
+}
+
 export default {
   name: "git-ops",
   tools: [
@@ -339,25 +356,12 @@ export default {
     },
 
     git_clone({ url, dest, branch, depth } = {}) {
-      if (!url) throw new Error("url is required");
-      // Minimal SSRF: reject obviously internal URLs from being cloned
-      // (a clone that phones home to 169.254.x.x etc. would be unusual but possible)
-      try {
-        const u = new URL(url);
-        if (!["http:", "https:", "git:", "ssh:"].includes(u.protocol) &&
-            !url.startsWith("git@")) {
-          throw new Error(`Unsupported protocol in URL: ${url}`);
-        }
-      } catch (e) {
-        // URL parse fails for git@host:path.git — that's fine, pass through
-        if (!url.includes("git@") && !e.message.includes("git@")) {
-          // swallow URL parse errors for SSH shorthand
-        }
-      }
+      assertCloneUrl(url);
       const args = ["clone"];
       if (branch) { assertSafeName(branch, "branch"); args.push("-b", branch); }
       if (depth && Number.isInteger(depth) && depth > 0) args.push("--depth", String(depth));
-      args.push(url);
+      // "--" ends git's options: nothing after it can be read as one.
+      args.push("--", url);
       if (dest) {
         assertSafeName(dest, "dest");
         // Contain the destination to the workspace (lexical + symlink check,

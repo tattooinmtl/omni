@@ -619,6 +619,13 @@ omni --mode plan "…"          start in a mode; or "permissionMode" in settings
 `/perm <tool|*> <allow|deny|ask>` is persisted in `settings.json`. In one-shot
 mode `ask` behaves as `deny`. Destructive shell commands go through a separate
 risk gate that asks you first, whichever tool runs them (and refuses them outright in one-shot mode).
+`run_test`, `start_process` and `test_coverage` also run commands the model
+writes, so they follow your `run_shell` setting unless you set them yourself.
+
+API keys are redacted from tool results before the model sees them: the
+known key formats, plus the exact keys you've configured. So a key in a
+`.env` the agent reads, or on a web page, can't be sent anywhere by a prompt
+injection.
 
 ### Workspace and folder trust
 
