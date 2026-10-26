@@ -54,7 +54,28 @@ export function updateNotice() {
   if (!cache.latestKnownVersion) return "";
   const current = currentVersion();
   if (!isNewer(cache.latestKnownVersion, current)) return "";
-  return `update available: v${current} → v${cache.latestKnownVersion} — re-run the installer to upgrade (see README)`;
+  return `update available: v${current} → v${cache.latestKnownVersion} — run /update-omni to install it`;
+}
+
+// Ask GitHub now, bypassing the daily gate — /update-omni uses this so the
+// answer is current, not yesterday's. Refreshes the cache on success, so the
+// startup notice agrees with it. Returns the version string, or throws.
+export async function fetchLatestVersion({ timeoutMs = FETCH_TIMEOUT_MS, fetchImpl = fetch } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(PKG_URL, { signal: controller.signal, headers: { "User-Agent": "omni-update-check" } });
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    const pkg = await res.json();
+    if (!pkg?.version) throw new Error("package.json on main has no version");
+    writeCache({ lastCheckedAt: Date.now(), latestKnownVersion: pkg.version });
+    return pkg.version;
+  } catch (e) {
+    if (e?.name === "AbortError") throw new Error(`no answer from GitHub within ${Math.round(timeoutMs / 1000)}s`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Fire-and-forget: only actually hits the network when the cache is stale
@@ -64,15 +85,5 @@ export function refreshUpdateCacheInBackground() {
   const cache = readCache();
   const age = Date.now() - (cache.lastCheckedAt || 0);
   if (age < CHECK_INTERVAL_MS) return;
-  (async () => {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      const res = await fetch(PKG_URL, { signal: controller.signal, headers: { "User-Agent": "omni-update-check" } });
-      clearTimeout(timer);
-      if (!res.ok) return;
-      const pkg = await res.json();
-      if (pkg?.version) writeCache({ lastCheckedAt: Date.now(), latestKnownVersion: pkg.version });
-    } catch { /* offline / timeout / GitHub down — silently skip */ }
-  })();
+  fetchLatestVersion().catch(() => { /* offline / timeout / GitHub down — silently skip */ });
 }

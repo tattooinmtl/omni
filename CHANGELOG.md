@@ -8,9 +8,33 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.31 — 2026-10-26
+
+- **Shipped:** this PR · — · TattooAI/update-omni · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **`/update-omni` updates Omni from inside the app** (alias `/upgrade`). It
+  asks GitHub for the latest version right away instead of trusting the
+  once-a-day cache. If `main` is newer it runs `install/install.ps1` on this
+  install and streams its output, so the same safety rules apply: no update
+  over uncommitted work or unpushed commits. It skips the installer's
+  `C:models` question and the `npm link` step, which only matter on a
+  first install.
+- It only says "updated" when the installed version actually moved to the
+  latest. An installer that declined or failed is reported as *did not apply*,
+  pointing at the installer's own messages. The running session keeps the old
+  code until you restart Omni, and it tells you so.
+- `/update-omni check` only reports. Offline it says it could not check.
+  Outside Windows, where there is no installer, it prints the manual
+  `git pull` steps.
+- The startup "update available" notice now points to `/update-omni`
+  instead of "re-run the installer".
+- Tests: `update-omni` covers already-latest, check-only, a successful
+  update, an installer that exits 0 without moving the version, a failed
+  installer, offline, no installer, and how the installer arguments are
+  quoted.
+
 ## 3.5.30 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/reflection-reasoning-echo · session `mvs_7f08f91d50584929a32315c1e41e4870`
+- **Shipped:** [#37](https://github.com/tattooinmtl/omni/pull/37) · `897ec9a` · TattooAI/reflection-reasoning-echo · session `mvs_7f08f91d50584929a32315c1e41e4870`
 - **Reasoning is now sent back to providers that require it.** Reflection's
   Beam models reject a request whose earlier assistant messages lost their
   reasoning — *"Missing required parameter: 'messages[2].reasoning_content'.

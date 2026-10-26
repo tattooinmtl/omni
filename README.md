@@ -167,6 +167,12 @@ The installer refuses to move a checkout with uncommitted changes, or one with
 commits that exist nowhere on the remote. It names them and stops rather than
 losing work.
 
+From inside Omni, `/update-omni` does the same thing: it asks GitHub for the
+latest version right away and, if `main` is newer, runs this installer and
+streams its output. `/update-omni check` only reports. Restart Omni afterwards
+to load the new code. Omni also checks once a day by itself and says so at
+startup when an update is waiting.
+
 ### Optional runtime pack
 
 Portable tools Omni uses when they are there, installed into Omni's own
