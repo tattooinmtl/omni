@@ -22,6 +22,7 @@ import { loadScannedSkills } from "../core/skill-index.mjs";
 import { markEphemeralSkill as markSkillEphemeral } from "../cli/helpers.mjs";
 import { lspRequest, lspRenamePlan } from "../integrations/lsp.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
+import { looksLikeSecretFile } from "../core/secret-files.mjs";
 import { registerHook, clearHooks, runHooks, hasHooks, HOOK_EVENTS } from "../core/hooks.mjs";
 import { searchSessions, formatHits } from "../core/session-search.mjs";
 import { getPermissionMode, setPermissionMode, modeBeforePlan, modeLabel, planSteps } from "../core/permission-mode.mjs";
@@ -2808,35 +2809,6 @@ function applyPatchText(patch) {
   }
 
   return changed.length ? `Patch applied: ${changed.join(", ")}` : "Patch had no changes";
-}
-
-// Filenames that almost always mean "secret material" if committed.
-// Deliberately conservative — a false skip just means re-staging it
-// explicitly after reading why; a false negative means a live secret
-// preserved in git history forever.
-const SECRET_FILE_PATTERNS = [
-  /^\.env(\..+)?$/i,           // .env, .env.local, .env.production, …
-  /^\.envrc$/i,                // direnv
-  /\.pem$/i,
-  /\.key$/i,
-  /\.pfx$/i,
-  /\.p12$/i,
-  /^id_(rsa|dsa|ecdsa|ed25519)$/i,
-  /^credentials\.json$/i,
-  /^secrets?\.json$/i,         // secrets.json / secret.json
-  /^service[-_]?account.*\.json$/i,
-  /^apikeys?.*\.txt$/i,        // apikey.txt / apikeys.txt
-  /^aws[-_]?credentials$/i,    // ~/.aws/credentials conventions
-  /^\.npmrc$/i,                // often contains npm tokens
-  /^\.netrc$/i,                // contains plaintext login credentials
-  /^.*[-_.]secret.*\.(json|ya?ml|txt|env|ini)$/i,  // any *-secret*.{json,yaml,…}
-];
-const SECRET_FILE_ALLOWLIST_RE = /\.(example|sample|template)$/i;
-
-function looksLikeSecretFile(relPath) {
-  const base = path.basename(String(relPath || ""));
-  if (SECRET_FILE_ALLOWLIST_RE.test(base)) return false;
-  return SECRET_FILE_PATTERNS.some((re) => re.test(base));
 }
 
 function isGitIgnored(relPath) {

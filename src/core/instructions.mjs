@@ -14,6 +14,13 @@
 // (relative to the file doing the import, `~/` for the user's home), up to
 // three levels deep, each file once.
 //
+// These files become system-prompt text, so a repo you just cloned must not
+// get to write it. The project's files load only once its folder is trusted
+// (/workspace trust), the same rule as project hooks. An import stays inside
+// the project (the personal file: inside your home folder), must be a .md or
+// .txt file, and never a secrets file such as .env, so an instruction file
+// can't pull your keys into the prompt.
+//
 // The rendered block sits inside the system prompt's session-context block
 // between its own marker, so the per-turn persona swap carries it and
 // /instructions reload can swap it in place.
@@ -22,6 +29,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { HOME } from "./config.mjs";
+import { isFolderTrusted } from "./workspace.mjs";
+import { looksLikeSecretFile } from "./secret-files.mjs";
 
 export const INSTRUCTION_NAMES = ["OMNI.md", "AGENTS.md", "CLAUDE.md"];
 export const INSTRUCTIONS_START = "<!-- omni:instructions:start -->";
@@ -33,6 +42,8 @@ const INSTRUCTIONS_RE = /<!-- omni:instructions:start -->[\s\S]*?<!-- omni:instr
 export const MAX_FILE_CHARS = 20000;
 export const MAX_TOTAL_CHARS = 40000;
 const MAX_IMPORT_DEPTH = 3;
+const IMPORTABLE_EXT = new Set([".md", ".markdown", ".txt"]);
+export const UNTRUSTED_NOTE = "not loaded: this folder is not trusted (/workspace trust)";
 
 // Nearest folder at or above `cwd` holding a .git entry (a folder in a normal
 // checkout, a file in a worktree or submodule). null outside any repo.
@@ -77,9 +88,29 @@ function clipText(text, max) {
   return text.length > max ? text.slice(0, max) + `\n…[truncated at ${max} chars]` : text;
 }
 
+function realOrResolved(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+function isInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+// Why an import may not be read, or "" when it may. `scope.root` is the
+// folder imports must stay inside (real paths, so a symlink can't step out);
+// `scope.home` allows `~/` paths, which only the personal file gets.
+function importRefusal(spec, target, scope) {
+  if (spec.startsWith("~/") && !scope.home) return "outside the project";
+  if (!isInside(realOrResolved(target), scope.root)) return scope.home ? "outside your home folder" : "outside the project";
+  if (looksLikeSecretFile(target)) return "looks like a secrets file";
+  if (!IMPORTABLE_EXT.has(path.extname(target).toLowerCase())) return "only .md and .txt files can be imported";
+  return "";
+}
+
 // Read a file and splice in its @imports. `seen` holds resolved paths already
 // included anywhere in this load, so a cycle or a shared import is read once.
-function readWithImports(file, seen, depth = 0) {
+function readWithImports(file, seen, scope, depth = 0) {
   const resolved = path.resolve(file);
   if (seen.has(resolved.toLowerCase())) return "";
   seen.add(resolved.toLowerCase());
@@ -107,15 +138,22 @@ function readWithImports(file, seen, depth = 0) {
       out.push(`(import ${m[1]} not found)`);
       continue;
     }
-    out.push(readWithImports(target, seen, depth + 1));
+    const refusal = importRefusal(m[1], target, scope);
+    if (refusal) {
+      out.push(`(import ${m[1]} skipped: ${refusal})`);
+      continue;
+    }
+    out.push(readWithImports(target, seen, scope, depth + 1));
   }
   return out.join("\n").trim();
 }
 
 // Find and read every instruction file for `cwd`.
-// Returns { files: [{ path, label, scope, chars }], text } — text is the
-// rendered block ("" when no file exists), already wrapped in its marker.
-export function loadInstructions({ cwd = process.cwd(), home = HOME } = {}) {
+// Returns { files: [{ path, label, scope, chars }], text, untrusted } — text
+// is the rendered block ("" when no file exists), already wrapped in its
+// marker; untrusted lists the project files left out because the folder
+// isn't trusted.
+export function loadInstructions({ cwd = process.cwd(), home = HOME, projectTrusted = isFolderTrusted(cwd) } = {}) {
   const found = [];
   const globalFile = home ? path.join(home, "OMNI.md") : null;
   if (globalFile && fs.existsSync(globalFile)) found.push({ path: globalFile, scope: "personal" });
@@ -126,18 +164,26 @@ export function loadInstructions({ cwd = process.cwd(), home = HOME } = {}) {
     found.push({ path: p, scope: root && path.resolve(dir) === root ? "project root" : "folder" });
   }
 
+  const projectScope = { root: realOrResolved(root || cwd), home: false };
+  const personalScope = { root: realOrResolved(os.homedir()), home: true };
   const seen = new Set();
   const files = [];
+  const untrusted = [];
   const sections = [];
   let total = 0;
   for (const f of found) {
-    let body = readWithImports(f.path, seen);
+    if (f.scope !== "personal" && !projectTrusted) {
+      untrusted.push(f.path);
+      files.push({ path: f.path, label: labelFor(f.path, cwd), scope: f.scope, chars: 0, skipped: UNTRUSTED_NOTE });
+      continue;
+    }
+    let body = readWithImports(f.path, seen, f.scope === "personal" ? personalScope : projectScope);
     if (!body) continue;
     if (total + body.length > MAX_TOTAL_CHARS) {
       const room = Math.max(0, MAX_TOTAL_CHARS - total);
       if (room < 200) {
         sections.push(`## ${labelFor(f.path, cwd)} (${f.scope})\n(skipped: instruction files exceed ${MAX_TOTAL_CHARS} chars in total)`);
-        files.push({ path: f.path, label: labelFor(f.path, cwd), scope: f.scope, chars: 0, skipped: true });
+        files.push({ path: f.path, label: labelFor(f.path, cwd), scope: f.scope, chars: 0, skipped: "skipped: over the size limit" });
         continue;
       }
       body = clipText(body, room);
@@ -147,7 +193,7 @@ export function loadInstructions({ cwd = process.cwd(), home = HOME } = {}) {
     files.push({ path: f.path, label, scope: f.scope, chars: body.length });
     sections.push(`## ${label} (${f.scope})\n${body}`);
   }
-  if (!sections.length) return { files, text: "" };
+  if (!sections.length) return { files, text: "", untrusted };
   const text = [
     INSTRUCTIONS_START,
     "# Project instructions",
@@ -156,7 +202,7 @@ export function loadInstructions({ cwd = process.cwd(), home = HOME } = {}) {
     sections.join("\n\n"),
     INSTRUCTIONS_END,
   ].join("\n");
-  return { files, text };
+  return { files, text, untrusted };
 }
 
 function labelFor(file, cwd) {
