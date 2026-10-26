@@ -16,7 +16,7 @@ entries were rebuilt from git history).
   file carry it. What's new covers 3.5.29 to 3.5.32, and older releases point
   here instead of repeating it.
 - The command table lists `/update-omni`, and the runtime-pack command for a
-  checkout reads `.installinstall.ps1 -WithRuntime` again (its backslashes
+  checkout reads `.\install\install.ps1 -WithRuntime` again (its backslashes
   had been lost).
 - Project instructions now say what 3.5.32 changed: a project's files wait
   for folder trust, imports stay inside the project, and secrets files are

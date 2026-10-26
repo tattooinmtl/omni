@@ -34,8 +34,9 @@ The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
   instructions.
 
 **3.5.31**
-- **`/update-omni`:** checks GitHub for a newer Omni and installs it without
-  leaving the app. `/update-omni check` only reports. It says "updated" only
+- **`/update-omni`:** checks GitHub for a newer Omni and, on Windows,
+  installs it without leaving the app (elsewhere it prints the manual steps).
+  `/update-omni check` only reports. It says "updated" only
   when the new version really landed, and asks you to restart.
 
 **3.5.30**
@@ -400,7 +401,7 @@ file in. Sub-agents follow the same rules.
 A project's files load only once you trust its folder (`/workspace trust`),
 because they go straight into the agent's instructions. Startup names any it
 left out. Your personal file always loads. An import from a project file must
-stay inside the project, only `.md` and `.txt` files can be imported, and a
+stay inside the project, only `.md`, `.markdown` and `.txt` files can be imported, and a
 secrets file such as `.env` never is; a refused one shows as
 `(import X skipped: <why>)`.
 
