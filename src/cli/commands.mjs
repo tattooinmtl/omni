@@ -43,6 +43,7 @@ import {
 import { llamaCommand } from "./llama-cmd.mjs";
 import { hardwareCommand } from "./hardware-cmd.mjs";
 import { runtimeCommand } from "./runtime-cmd.mjs";
+import { updateCommand } from "./update-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
@@ -1279,6 +1280,11 @@ export const COMMANDS = [
     name: "runtime", aliases: ["pack"], usage: "/runtime [install [names|recommended|all] | remove <name>]", category: "Tools",
     summary: "optional runtime pack: ffmpeg (video), ripgrep, fd, jq, language servers — installed into Omni's vendor/ folder",
     handler: (ctx, arg) => runtimeCommand(ctx, arg),
+  },
+  {
+    name: "update-omni", aliases: ["upgrade"], usage: "/update-omni [check]", category: "Tools",
+    summary: "check GitHub for a newer Omni and install it (check: only report)",
+    handler: (ctx, arg) => updateCommand(ctx, arg),
   },
   {
     name: "omnibots", aliases: [], usage: "/omnibots [start|status|stop]", category: "Tools",
