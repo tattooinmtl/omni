@@ -814,6 +814,7 @@ export async function loadSettings() {
     };
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
+    liveSettings = settings;
     return settings;
   } catch (e) {
     // An unreadable settings.json used to fall back to bare defaults in
@@ -844,6 +845,7 @@ export async function loadSettings() {
     }
     migrateSettings(settings);
     applyEnvKeyOverrides(settings);
+    liveSettings = settings;
     return settings;
   }
 }
@@ -1209,6 +1211,34 @@ const SECRET_PATTERNS = [
 function redactSecrets(text) {
   let out = text;
   for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
+  return out;
+}
+
+// The settings object this process loaded. /apikey and friends change it in
+// place, so reading it at redaction time always sees the current keys.
+let liveSettings = null;
+
+// Every API key Omni holds right now: provider keys, per-account keys and
+// OMNI_*_KEY variables. Patterns miss formats they don't know (xKiro, a
+// custom provider), so the exact values are matched too.
+function knownKeyValues() {
+  const vals = new Set();
+  const add = (v) => { const s = String(v || "").trim(); if (s.length >= 12) vals.add(s); };
+  for (const prov of Object.values(liveSettings?.providers || {})) {
+    add(prov?.apiKey);
+    for (const v of Object.values(prov?.accounts || {})) add(v);
+  }
+  for (const [k, v] of Object.entries(process.env)) if (/^OMNI_[A-Z0-9_]*KEY\d*$/.test(k)) add(v);
+  return vals;
+}
+
+// Redact a tool result before the model sees it. A key the agent read from
+// .env or settings.json, or one a web page printed, never reaches the model,
+// so a prompt injection can't talk it into sending the key anywhere.
+export function redactForModel(text) {
+  if (typeof text !== "string" || !text) return text;
+  let out = redactSecrets(text);
+  for (const key of knownKeyValues()) if (out.includes(key)) out = out.split(key).join("[redacted]");
   return out;
 }
 

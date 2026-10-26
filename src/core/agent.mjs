@@ -2,7 +2,7 @@
 // feed results back, repeat until the model answers with plain text.
 
 import { chatStream, completionStream } from "./provider.mjs";
-import { rotateAccount, activateAccount, resolveModel } from "./config.mjs";
+import { rotateAccount, activateAccount, resolveModel, redactForModel } from "./config.mjs";
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
@@ -693,10 +693,23 @@ async function maybeAutoCompact({ model, settings, messages, session, sessionGoa
 // Tools the user answered "always allow" for this session (permission "ask").
 const alwaysAllowed = new Set();
 
+// Tools that run a command the model wrote, like run_shell does. Unless you
+// set one of them yourself, each follows your run_shell setting: otherwise
+// `/perm run_shell ask` left test_coverage, run_test and start_process
+// running any command silently.
+export const COMMAND_TOOLS = new Set(["run_test", "start_process", "test_coverage"]);
+
+export function permissionState(name, permissions) {
+  if (!permissions) return "allow";
+  const own = permissions[name] ?? (COMMAND_TOOLS.has(name) ? permissions.run_shell : undefined);
+  return own ?? permissions["*"] ?? "allow";
+}
+
 // Resolve a tool call against the user's permission settings.
 // States: "allow" (silent), "deny" (blocked with an error message the model
 // sees), "ask" (interactive confirmation via the REPL). "*" sets the default
-// for unlisted tools; no entry at all means allow. The permission mode
+// for unlisted tools; no entry at all means allow. COMMAND_TOOLS fall back to
+// run_shell's entry before "*". The permission mode
 // (core/permission-mode.mjs) applies on top: plan refuses anything that
 // changes state, accept-edits and auto turn some "ask"s into "allow", and no
 // mode ever overrides a "deny".
@@ -704,7 +717,7 @@ const alwaysAllowed = new Set();
 export async function checkPermission(name, summary, permissions, confirmTool, args = {}) {
   const mode = getPermissionMode();
   if (mode === "plan" && !planModeAllows(name, args)) return { allowed: false, message: PLAN_DENIED };
-  let state = (permissions && (permissions[name] ?? permissions["*"])) || "allow";
+  let state = permissionState(name, permissions);
   if (state === "deny") {
     return { allowed: false, message: `DENIED: the user's permission settings block the "${name}" tool. Do not retry it; use another approach or ask the user.` };
   }
@@ -1255,7 +1268,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         role: "tool",
         tool_call_id: call.id,
         name,
-        content: typeof result === "string" ? result : JSON.stringify(result),
+        // Keys in a tool result (a .env the agent read, a page that printed
+        // one) are redacted before the model sees them; see redactForModel.
+        content: redactForModel(typeof result === "string" ? result : JSON.stringify(result)),
       });
       // Vision results: a tool returned {_omni_image, mime, base64, detail,
       // text} (one image) or {_omni_images: [{mime, base64}, ...], detail}

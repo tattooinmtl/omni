@@ -35,8 +35,19 @@ function sendJson(res, status, data) {
   res.end(body);
 }
 
+// The page renders memory and knowledge-base text, which can come from web
+// pages the agent read. If any of it ever slipped past escapeHtml, this
+// policy still stops a script from loading code or sending the graph to
+// another host: everything must come from this server.
+export const PAGE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 function sendHtml(res, status, html) {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(html) });
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(html),
+    "Content-Security-Policy": PAGE_CSP,
+    "X-Content-Type-Options": "nosniff",
+  });
   res.end(html);
 }
 
