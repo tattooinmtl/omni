@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 let pass = 0, fail = 0;
 async function test(label, fn) {
@@ -14,7 +14,7 @@ async function test(label, fn) {
 }
 function ok(cond, msg) { if (!cond) throw new Error(msg); }
 
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z]:)/, "$1"));
+const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, "..");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-update-omni-test-"));
 process.env.OMNI_HOME = tmpHome;
@@ -83,6 +83,29 @@ await test("installer fails → reported as not applied", async () => {
     fetchLatest: async () => "3.5.31", current: () => "3.5.30", invocation: () => INV, run: async () => 1,
   }));
   ok(result === false && out.includes("did not apply"), out);
+});
+
+await test("files moved but the installer failed → says setup may be incomplete, not \"installed\"", async () => {
+  let v = "3.5.30";
+  const { result, out } = await captured(() => updateCommand(null, "", {
+    fetchLatest: async () => "3.5.31", current: () => v, invocation: () => INV, run: async () => { v = "3.5.31"; return 1; },
+  }));
+  ok(result === false, "claimed success");
+  ok(out.includes("setup may be incomplete") && !out.includes("updated to") && !out.includes("installed v"), out);
+});
+
+await test("a second update while one is running is refused", async () => {
+  let release;
+  const deps = {
+    fetchLatest: async () => "3.5.31", current: () => "3.5.30", invocation: () => INV,
+    run: () => new Promise((r) => { release = r; }),
+  };
+  const first = captured(() => updateCommand(null, "", deps));
+  await new Promise((r) => setTimeout(r, 10));
+  const second = await updateCommand(null, "", { ...deps, run: async () => { throw new Error("second installer started"); } });
+  release(1);
+  await first;
+  ok(second === false, "second update was not refused");
 });
 
 await test("offline → a plain error, no installer", async () => {

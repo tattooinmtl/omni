@@ -15,6 +15,10 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
 import { currentVersion, fetchLatestVersion, isNewer } from "../integrations/update-check.mjs";
 
+// A stalled download inside the installer must not hang the REPL forever.
+const INSTALLER_TIMEOUT_MS = 15 * 60 * 1000;
+let running = false;
+
 const psQuote = (s) => `'${String(s).replaceAll("'", "''")}'`;
 
 // The installer invocation for this install, or null where there is none.
@@ -37,7 +41,7 @@ export function installerInvocation(root = INSTALL_ROOT, platform = process.plat
 
 // Stream the installer's output as it runs (no stdin: it must never wait on
 // a prompt the REPL can't answer). Resolves to the exit code.
-function runInstaller({ file, args }) {
+function runInstaller({ file, args }, timeoutMs = INSTALLER_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -48,6 +52,10 @@ function runInstaller({ file, args }) {
       return;
     }
     let tail = "";
+    const timer = setTimeout(() => {
+      errorLine(`the installer has run for ${Math.round(timeoutMs / 60000)} minutes — stopping it.`);
+      child.kill();
+    }, timeoutMs);
     const print = (chunk) => {
       const lines = (tail + chunk.toString()).split(/\r?\n/);
       tail = lines.pop();
@@ -55,8 +63,9 @@ function runInstaller({ file, args }) {
     };
     child.stdout.on("data", print);
     child.stderr.on("data", print);
-    child.on("error", (e) => { errorLine(`installer: ${e.message}`); resolve(1); });
+    child.on("error", (e) => { clearTimeout(timer); errorLine(`installer: ${e.message}`); resolve(1); });
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (tail.trim()) console.log(c.dim(`    ${tail.trimEnd()}`));
       resolve(code ?? 1);
     });
@@ -96,17 +105,29 @@ export async function updateCommand(ctx, argString, deps = {}) {
   const inv = invocation();
   if (!inv) {
     warnLine(`v${latest} is available, but there is no installer for this platform here.`);
-    warnLine(`Update by hand: cd ${INSTALL_ROOT} && git pull --ff-only && node scripts/setup.mjs`);
+    if (fs.existsSync(path.join(INSTALL_ROOT, ".git"))) {
+      warnLine(`Update by hand: cd ${INSTALL_ROOT} && git pull --ff-only && node scripts/setup.mjs`);
+    } else {
+      warnLine(`Update by hand: unpack https://github.com/tattooinmtl/omni/archive/refs/heads/main.zip over ${INSTALL_ROOT}, then run node scripts/setup.mjs there.`);
+    }
+    return false;
+  }
+  if (running) {
+    warnLine("an update is already running.");
     return false;
   }
   infoLine(`updating v${before} → v${latest}…`);
-  const code = await run(inv);
+  running = true;
+  let code;
+  try { code = await run(inv); } finally { running = false; }
   const after = current();
   if (code === 0 && after === latest) {
     infoLine(`${c.green("✓")} updated to v${after}. Restart Omni to use it (/exit, then omni) — this session keeps running v${before} until then.`);
     return true;
   }
-  if (after !== before) {
+  if (after !== before && code !== 0) {
+    warnLine(`the files moved to v${after}, but the installer then failed (exit ${code}) — setup may be incomplete. The installer's messages above say why; re-run /update-omni once it's fixed.`);
+  } else if (after !== before) {
     warnLine(`installed v${after}, but v${latest} is the latest — see the installer's messages above.`);
   } else {
     warnLine(`the update did not apply (still v${before}) — the installer's messages above say why.`);

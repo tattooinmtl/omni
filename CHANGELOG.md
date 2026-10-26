@@ -29,8 +29,10 @@ entries were rebuilt from git history).
   instead of "re-run the installer".
 - Tests: `update-omni` covers already-latest, check-only, a successful
   update, an installer that exits 0 without moving the version, a failed
-  installer, offline, no installer, and how the installer arguments are
-  quoted.
+  installer, files that moved before setup failed, a second update while one
+  runs, offline, no installer, and how the installer arguments are quoted.
+- The installer gets 15 minutes before it is stopped, so a stalled download
+  can't hang the app.
 
 ## 3.5.30 — 2026-10-26
 
