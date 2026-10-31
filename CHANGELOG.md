@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.35 — 2026-10-31
+
+- **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
+- **One legal page for all four products.** Omni, OmniBots, OmniOne and
+  OmniVerse now share one EULA and Terms of Use and one Privacy and Cookie
+  Policy, in French and English, at
+  https://omniverse.globalwarningnetworks.com/legal/ (also reachable as
+  `/disclaimer`, `/terms`, `/eula`, `/privacy` and `/cookies`). Both documents
+  must be scrolled to the end before they can be accepted or refused. They say
+  plainly that the products are experimental, for advanced users who
+  understand AI and SI agents and harnesses, have no warranty, and are used at
+  your own risk, including data loss.
+- **The README's License section is now "License and legal terms"**. It
+  points to that page and says installing or running Omni means accepting
+  it, on top of the MIT License.
+- The four websites (deployed separately, not in this repo) link to the page in
+  their footers. A bottom bar asks visitors to accept, and download links go
+  through the page first. Creating or signing in to an Omni account counts as
+  acceptance, and new sign-ups record the version accepted.
+
 ## 3.5.34 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/security-audit · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **Shipped:** [#46](https://github.com/tattooinmtl/omni/pull/46) · `de4ab2d` · TattooAI/security-audit · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
 - A security audit against SQL injection, XSS, path traversal, auth bypass,
   insecure deserialization, command injection, weak cryptography, input
   validation and exposed secrets. Four real problems, all fixed here:

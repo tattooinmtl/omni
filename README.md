@@ -843,6 +843,15 @@ npm test                          # every suite, no network needed
 $env:RUN_LIVE = "1"; npm test     # + live suites (need Python / real providers)
 ```
 
-## License
+## License and legal terms
 
 MIT — © Erik Boivin / Global Warning Networks
+
+Omni is experimental software for advanced users: an AI agent that can run
+commands and change or delete files on its own. It comes with no warranty,
+and you use it at your own risk, including the risk of losing data. The
+EULA, Terms of Use and Privacy and Cookie Policy shared by Omni, OmniBots,
+OmniOne and OmniVerse are at
+<https://omniverse.globalwarningnetworks.com/legal/> (in French and English).
+Installing or running Omni means you accept them. They add to the MIT
+License and never limit the rights it gives you.
