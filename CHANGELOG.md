@@ -8,9 +8,65 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.35 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/omni-llama-spark-26-877939 · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Spark X2.6 4B is the official local model.** A bare `/llama start` loads
+  it from `C:\models` when `llama.defaultModel` is unset or names a file that
+  is gone. `/llama spark [high|low|none]` starts it directly. Omni prefers the
+  Q4_K_M quant (66.6 prompt / 11.6 generate t/s on the 5700U, against 34.4 /
+  7.5 for Q8_0) and falls back to Q8_0.
+- **Spark launch profile.** The model card's sampling, its thinking budget
+  (`high` / `low`, or reasoning off for `none`, because the template raises on
+  any other level), flash attention, a q8_0 KV cache (5.3 → 9.3 t/s at 8k
+  tokens of context), prompt threads on every logical core,
+  a 1 GB prompt cache, and a 32k context under `contextSize: "auto"`.
+  `llama.think` sets the default level (low). `llama.extraArgs` still wins.
+- **llama.cpp b12125, pinned and verified.** The b8996 in `server/` can't load
+  Spark ("failed to load model"). `/llama update` downloads the official
+  `ggml-org/llama.cpp` b12125 Windows CPU build, checks its SHA-256, proves the
+  new `llama-server.exe` reports build 12125, then swaps it in and keeps the
+  old folder as `server.old/`. `/llama start` refuses a model whose profile
+  needs a newer build and points at `/llama update`. `/llama status` shows the
+  installed build. `/llama bench` runs llama-bench on the default model.
+- **Language guard: no Chinese, Japanese or Korean from local models.** Spark
+  drifted into Chinese past about 12k tokens of context. When Omni starts a
+  model, it now reads the GGUF vocabulary and bans every token whose bytes
+  can begin a CJK character (UTF-8 lead bytes E3–EF; 35,823 tokens for
+  Spark). The ban rides on every request as `logit_bias`, so the model cannot
+  write those scripts at all. English, French accents and emoji are
+  unaffected. Checked live: told in French to answer in Chinese, Spark wrote
+  Chinese without the guard and none with it, at the same ~13 t/s. The list is cached in `agent/cache/`. The local-model prompt also
+  says to answer in English, or in French when the user writes in French.
+  `llama.languageGuard: false` turns the guard off.
+- **Review hardening.** The guard also bans supplementary-plane ideographs
+  (F0 A0–BF; emoji stay), says "language guard is OFF" when it can't read a
+  vocabulary instead of silently skipping, and keys its cache on a hash of the
+  GGUF header so two models never share a ban list. A late exit from a
+  stopped server no longer wipes its replacement's guard and status; a start
+  that times out stops its server; a build that won't report its version is
+  refused for Spark instead of assumed new enough. `/llama restart` and
+  `/llama spark` wait for the old server to free the port, and `/llama spark`
+  does nothing when the same model and level are already running. Updates
+  take a lock per folder, recover a swap that died halfway, give up on a
+  stalled download after 10 minutes, and name split backend binaries
+  (`llama-server-vulkan.exe` …) left in `server.old/`. `/llama status`
+  reports the build of the binary that actually runs. `/llama bench <name>`
+  errors on an unknown name instead of benchmarking the default. A stale
+  `defaultModel` that matches several files falls back to Spark.
+- Tests: `llama-spark` covers profile matching, quant preference, the Spark
+  flags and thinking levels, the default-model fallback, thinking levels in
+  `/llama-start`, `--version` parsing for both build formats, and the update
+  path (swap with backup, wrong-build refusal, checksum mismatch, and a
+  retried version probe: the first run of a freshly unpacked exe can stall
+  while antivirus scans it, which once made `/llama update` refuse a good build).
+  `language-guard` covers the GPT-2 byte decoding, the token classifier on
+  CJK, French, emoji and byte-fallback tokens, and that the guard's fields
+  reach chat and completion request bodies only for the server that set them.
+
 ## 3.5.34 — 2026-10-26
 
-- **Shipped:** this PR · — · TattooAI/security-audit · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
+- **Shipped:** [#46](https://github.com/tattooinmtl/omni/pull/46) · `de4ab2d` · TattooAI/security-audit · session `d270c228-682c-48d9-a9bf-4dc8347bc185`
 - A security audit against SQL injection, XSS, path traversal, auth bypass,
   insecure deserialization, command injection, weak cryptography, input
   validation and exposed secrets. Four real problems, all fixed here:

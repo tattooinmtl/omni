@@ -17,7 +17,10 @@ const T = {
 // Filenames that signal a reasoning model even when the template doesn't.
 const THINK_NAME_RE = /(^|[-_.])(r1|qwq|deepseek-r1|qwen3|reason|reasoning|think|cot|o1)([-_.]|$)/i;
 
-export function readGgufMetadata(filePath, { maxScan = 128 * 1024 * 1024 } = {}) {
+// `keepArrays` lists array keys whose elements should be returned (e.g.
+// "tokenizer.ggml.tokens" for the vocabulary) under `result.arrays[key]`;
+// every other array is skipped to keep the scan cheap.
+export function readGgufMetadata(filePath, { maxScan = 128 * 1024 * 1024, keepArrays = [] } = {}) {
   const fd = fs.openSync(filePath, "r");
   try {
     const BLOCK = 4 * 1024 * 1024;
@@ -73,9 +76,14 @@ export function readGgufMetadata(filePath, { maxScan = 128 * 1024 * 1024 } = {})
     }
     // We must traverse every element to keep the cursor aligned, but we don't
     // store huge arrays (e.g. 150k tokenizer tokens) — just count them.
-    function rArray() {
+    function rArray(keep = false) {
       const elemType = rU32();
       const count = rU64();
+      if (keep) {
+        const items = new Array(count);
+        for (let i = 0; i < count; i++) items[i] = rValue(elemType);
+        return { __array: true, elemType, count, items };
+      }
       for (let i = 0; i < count; i++) rValue(elemType);
       return { __array: true, elemType, count };
     }
@@ -87,11 +95,13 @@ export function readGgufMetadata(filePath, { maxScan = 128 * 1024 * 1024 } = {})
     const kvCount = rU64();
 
     const meta = {};
+    const arrays = {};
     for (let i = 0; i < kvCount; i++) {
       const key = rStr();
       const type = rU32();
-      const val = rValue(type);
+      const val = type === T.ARRAY ? rArray(keepArrays.includes(key)) : rValue(type);
       if (!(val && val.__array)) meta[key] = val; // skip array bodies
+      else if (val.items) arrays[key] = val.items;
     }
 
     const arch = meta["general.architecture"];
@@ -108,6 +118,8 @@ export function readGgufMetadata(filePath, { maxScan = 128 * 1024 * 1024 } = {})
       contextLength,
       chatTemplate,
       hasThinkTemplate: /<think|enable_thinking|reasoning_content|<\|thinking/i.test(chatTemplate),
+      tokenizerModel: meta["tokenizer.ggml.model"] || null,
+      arrays,
     };
   } finally {
     fs.closeSync(fd);
