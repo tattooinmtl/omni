@@ -133,5 +133,51 @@ ok("resolveLastProvider rejects an entry whose modelKey isn't a string", () => {
   assert.equal(resolveLastProvider({ models: { "x/y": {} } }), null);
 });
 
+// --------------------------------------------------------------------------
+// The exit save and a second Omni window
+// --------------------------------------------------------------------------
+// Two windows share last-provider.json. The exit save now always runs (also
+// on a hard exit), so an older window quitting must not write its model over
+// a choice the other window saved after it started.
+
+const { saveLastProviderOnExit } = await import(u("core/last-provider.mjs"));
+const writeFromOtherWindow = (key) => fs.writeFileSync(
+  path.join(process.env.OMNI_HOME, "last-provider.json"),
+  JSON.stringify({ modelKey: key, savedAt: new Date().toISOString(), reason: "/model switch" }),
+);
+
+await ok("exit saves the model in use when nothing else changed the file", () => {
+  process.env.OMNI_HOME = freshHome();
+  setLastProvider("a/one");
+  getLastProvider(); // startup read
+  assert.equal(saveLastProviderOnExit("a/two"), true);
+  assert.equal(getLastProvider().modelKey, "a/two");
+});
+
+await ok("exit leaves alone a model another window saved after this one started", () => {
+  process.env.OMNI_HOME = freshHome();
+  setLastProvider("a/one");
+  getLastProvider(); // this window starts on a/one
+  writeFromOtherWindow("b/newer"); // the other window switches
+  assert.equal(saveLastProviderOnExit("a/one"), false);
+  assert.equal(getLastProvider().modelKey, "b/newer");
+});
+
+await ok("this window's own /model switch is not mistaken for another window's", () => {
+  process.env.OMNI_HOME = freshHome();
+  getLastProvider(); // first run: nothing saved yet
+  setLastProvider("a/switched", "/model switch");
+  assert.equal(saveLastProviderOnExit("a/switched"), true);
+  assert.equal(getLastProvider().modelKey, "a/switched");
+});
+
+await ok("first run: another window saving first wins over this one's exit", () => {
+  process.env.OMNI_HOME = freshHome();
+  getLastProvider(); // nothing saved when this window started
+  writeFromOtherWindow("b/first");
+  assert.equal(saveLastProviderOnExit("a/default"), false);
+  assert.equal(getLastProvider().modelKey, "b/first");
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
