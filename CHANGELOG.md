@@ -30,6 +30,17 @@ entries were rebuilt from git history).
   the new model, but the save that runs at exit used the model Omni started
   with, so quitting wrote the old model back over the choice. The next launch
   was always on the startup model. Exit now saves the model in use.
+- **A new provider loads its models.** `/provider <name>` on a provider with
+  no models used to stop at "has no models configured — add one with
+  /addmodel". It now loads the provider's `/models` list: in a terminal you
+  pick one with the arrows; otherwise the first is used. Setting a key
+  (`/apikey`, `/provider login`, `/provider apikey`) or adding a provider
+  (`/addprovider`, typed or picked) loads the list too, when the provider has
+  none yet. With no key, `/provider` says to set one.
+- **New preset: TokenLab** (`https://api.tokenlab.sh/v1`, OpenAI-compatible).
+- **Tests:** `provider-auto-models` (5) runs the real CLI against a fake
+  `/v1/models` server: `/provider`, `/apikey` and `/addprovider` each load
+  the list, and a provider with no key gets the hint.
 - **Tests:** `last-model-exit` (2) runs the real CLI with a temp home:
   `/model` then `/exit` keeps the new model; no switch keeps the startup one.
 - **Review fixes (vision fallback).** A model qualifies only when the key the

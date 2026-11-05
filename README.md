@@ -236,9 +236,11 @@ logs.
 
 Shipped presets: `xkiro` (default), `nvidia`, `minimax.io`, `agnes`, `atria`,
 `reflection`, `openai`, `openrouter`, `groq`, `deepseek`, `google`, `xai`,
-`grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `ollama`
-and `local`.
-Any other OpenAI-compatible endpoint works through `/addprovider`.
+`grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `tokenlab`,
+`ollama` and `local`.
+Any other OpenAI-compatible endpoint works through `/addprovider`. A provider
+loads its model list as soon as it is added or gets a key, and `/provider <name>`
+loads it if it is still empty, so a new provider is never stuck without models.
 
 ```text
 /connect                      pick provider → add key if needed → pick model
