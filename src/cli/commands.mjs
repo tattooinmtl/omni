@@ -1235,7 +1235,7 @@ export const COMMANDS = [
   },
   {
     name: "connect", aliases: [], usage: "/connect", category: "Models & Providers",
-    summary: "unified provider + model picker — pick a configured provider or a preset, add a key if needed, then choose a model",
+    summary: "open the provider card: pick a provider, enter endpoint and key, pick a model by number",
     handler: async (ctx) => connectInteractive(ctx),
   },
   {
@@ -1245,7 +1245,7 @@ export const COMMANDS = [
   },
   {
     name: "addprovider", aliases: [], usage: "/addprovider [name baseUrl [apiKey]]", category: "Models & Providers",
-    summary: "pick a provider preset (arrow-key menu) or supply <name> <baseUrl> [apiKey] directly",
+    summary: "open the provider card (endpoint, key, then a numbered model list), or supply <name> <baseUrl> [apiKey] directly",
     handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
   },
   {

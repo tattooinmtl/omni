@@ -2,7 +2,7 @@
 // feed results back, repeat until the model answers with plain text.
 
 import { chatStream, completionStream } from "./provider.mjs";
-import { rotateAccount, activateAccount, resolveModel, redactForModel } from "./config.mjs";
+import { rotateAccount, activateAccount, resolveModel, redactForModel, saveSettings } from "./config.mjs";
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
@@ -402,11 +402,20 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
   let failoverIndex = failoverChain.findIndex((hop) => hopMatchesModel(hop, model));
   const failoverActive = failoverIndex >= 0;
   let checkpointOpened = false;
+  // The provider refused max_tokens and named its limit (provider.mjs): keep
+  // that limit in settings, so the next session doesn't hit the same 400.
+  const onTokenCap = (cap) => {
+    const entry = settings?.models?.[model.key];
+    if (!entry || (entry.maxTokens && entry.maxTokens <= cap)) return;
+    entry.maxTokens = cap;
+    warnLine(`${model.key} allows at most ${cap} output tokens — retrying with that (saved)`);
+    Promise.resolve(saveSettings(settings)).catch(() => {});
+  };
 
   while (true) {
     try {
       if (_templatePrompt != null) {
-        const out = await completionStream({ model, prompt: _templatePrompt, signal, onToken });
+        const out = await completionStream({ model, prompt: _templatePrompt, signal, onToken, onTokenCap });
         if (checkpointOpened && session) {
           await session.append({
             type: "interrupt_checkpoint",
@@ -419,7 +428,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
         }
         return out;
       }
-      const out = await chatStream({ model, messages, tools, signal, onToken });
+      const out = await chatStream({ model, messages, tools, signal, onToken, onTokenCap });
       if (checkpointOpened && session) {
         await session.append({
           type: "interrupt_checkpoint",

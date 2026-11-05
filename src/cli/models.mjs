@@ -10,6 +10,7 @@ import * as llama from "../local/llama.mjs";
 import { localStartOptions } from "../local/hardware-profile.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
 import { restoreLineEditing } from "./term.mjs";
+import { createCardState, runCard } from "./provider-card.mjs";
 
 // Provider presets shown by /addprovider and `/provider presets`. Order is
 // significant — /addprovider's arrow picker uses this exact order, with
@@ -127,6 +128,12 @@ export function maxTokensForFetched(providerKey, storedMaxTokens) {
   return storedMaxTokens;
 }
 
+// The smaller of a maxTokens and the provider's reported output limit.
+export function capMaxTokens(maxTokens, maxOutput) {
+  const cap = Number(maxOutput);
+  return Number.isFinite(cap) && cap > 0 && (!maxTokens || maxTokens > cap) ? cap : maxTokens;
+}
+
 export const EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh"];
 
 export function printEffortChoices(ctx) {
@@ -208,7 +215,10 @@ export function providerModelRows(settings, provKey, liveIds) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "", quiet = false } = {}) {
+// quiet: no model list printed. silent: nothing printed at all (the provider
+// card draws its own screen and takes the rows).
+export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "", quiet = false, silent = false } = {}) {
+  if (silent) quiet = true;
   const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
   const provider = ctx.settings.providers[provKey];
   if (!provider) throw new Error(`unknown provider "${provKey}"`);
@@ -246,7 +256,9 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
         ...existing,
         provider: row.provider,
         id: row.id,
-        maxTokens: maxTokensForFetched(row.provider, existing.maxTokens),
+        // Never above what the provider says a reply may be: it refuses the
+        // whole request otherwise (TokenLab: "max_tokens must be <= 4096").
+        maxTokens: capMaxTokens(maxTokensForFetched(row.provider, existing.maxTokens), meta.maxOutput),
         // Reported capabilities fill gaps only: a value the user set wins.
         ...(existing.vision === undefined && meta.vision !== undefined ? { vision: meta.vision } : {}),
         ...(existing.contextWindow === undefined && meta.contextWindow ? { contextWindow: meta.contextWindow } : {}),
@@ -255,10 +267,11 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     await saveSettings(ctx.settings);
   }
   if (!ctx.lastFetchedModels.length) {
+    if (silent) return [];
     infoLine(`no models returned for ${provKey}${q ? ` matching "${filter}"` : ""}`);
     return;
   }
-  infoLine(`${provKey}: ${ctx.lastFetchedModels.length} model(s)${save ? " saved" : ""}`);
+  if (!silent) infoLine(`${provKey}: ${ctx.lastFetchedModels.length} model(s)${save ? " saved" : ""}`);
   if (quiet) return ctx.lastFetchedModels;
   for (const row of ctx.lastFetchedModels.slice(0, 80)) {
     const active = row.key === ctx.model.key ? c.green("● ") : "  ";
@@ -302,6 +315,14 @@ function providerListsWithoutKey(p) {
 // otherwise the first is used and /model names the others.
 export async function switchToProvider(ctx, provKey) {
   let modelKey = firstModelOf(ctx.settings, provKey);
+  // In a terminal, a provider with several models (or none yet) opens the
+  // provider card on its model list (or its key form) instead of silently
+  // taking the alphabetically first model: /provider tokenlab used to land
+  // on allam-2-7b out of 144.
+  if (ctx.canRaw && ctx.rl) {
+    const count = Object.values(ctx.settings.models || {}).filter((m) => m?.provider === provKey).length;
+    if (count !== 1) return Boolean(await openProviderCard(ctx, { provider: provKey, step: count ? "models" : "form" }));
+  }
   if (!modelKey) {
     const p = ctx.settings.providers[provKey];
     if (!String(p?.apiKey || "").trim()) {
@@ -773,40 +794,10 @@ export async function runArrowPicker(rows, opts = {}) {
   }
 }
 
-// Ask a single free-form line question using the existing REPL readline.
-// Falls back to creating a one-shot readline if the REPL is unavailable
-// (e.g. one-shot / piped mode).
-async function askLine(ctx, prompt, { defaultValue = "" } = {}) {
-  const q = prompt + (defaultValue ? c.dim(` [${defaultValue}]`) : "") + " ";
-  if (ctx?.rl) {
-    // Stay in raw mode: the REPL's readline does its own line editing, and in
-    // cooked mode a whole typed line would arrive in one chunk and be taken
-    // for a paste (see paste.mjs) instead of an answer.
-    const wasPaused = Boolean(ctx.rl.paused);
-    const answer = await new Promise((resolve) => ctx.rl.question(q, resolve));
-    if (wasPaused) ctx.rl.pause();
-    const v = (answer || "").trim();
-    return v || defaultValue;
-  }
-  // Piped/one-shot fallback
-  const readline = (await import("node:readline")).default;
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    process.stdout.write(q);
-    const answer = await new Promise((resolve) => rl.question("", resolve));
-    const v = (answer || "").trim();
-    return v || defaultValue;
-  } finally {
-    rl.close();
-  }
-}
-
-// Interactive /addprovider flow. Opens an arrow picker over every preset
-// plus a "Custom Provider..." trailing row; if the user picks a preset we
-// install it and ask for an API key (Enter to skip), if they pick custom we
-// prompt for name → endpoint → API key in sequence. Falls back to the
-// existing `/addprovider <name> <baseUrl> [apiKey]` form when the terminal
-// can't run the picker (non-TTY, piped input).
+// /addprovider. In a terminal it opens the provider card (provider-card.mjs):
+// pick a provider, fill in endpoint and key, pick a model from the list.
+// The typed form `/addprovider <name> <baseUrl> [apiKey]` stays for scripts
+// and piped input.
 export async function addProviderInteractive(ctx, arg = "") {
   // Existing typed-command short-circuit: /addprovider <name> <baseUrl> [key]
   // continues to work for scripts and piped input.
@@ -845,65 +836,7 @@ export async function addProviderInteractive(ctx, arg = "") {
     return;
   }
 
-  // Build picker rows: every preset, then "Custom Provider..." as the last row.
-  const presetNames = Object.keys(PROVIDER_PRESETS);
-  const rows = [
-    ...presetNames.map((name) => ({
-      id: `preset:${name}`,
-      label: name,
-      dim: PROVIDER_PRESETS[name].baseUrl,
-    })),
-    { id: "custom", label: "Custom Provider…", dim: "enter name, endpoint, API key" },
-  ];
-
-  const picked = await runArrowPicker(rows, {
-    ctx,
-    title: "Add a provider — pick a preset or custom",
-    hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
-    initial: 0,
-  });
-
-  if (!picked) { infoLine("addprovider canceled"); return; }
-
-  if (picked === "custom") {
-    await addCustomProviderInteractive(ctx);
-    return;
-  }
-
-  const presetName = picked.slice("preset:".length);
-  const existing = ctx.settings.providers[presetName];
-  const installed = installProviderPreset(ctx, presetName);
-  // Preserve any pre-existing apiKey on the user's settings — we only ask if
-  // the key is empty/missing.
-  if (!existing?.apiKey) {
-    const key = await askLine(ctx, `API key for ${installed}`, { defaultValue: "" });
-    if (key) {
-      setProviderKey(ctx.settings.providers[installed], key);
-      await saveSettings(ctx.settings);
-      infoLine(`saved API key for ${installed}: ${maskKey(key)}`);
-    }
-  }
-  infoLine(`provider ${installed} ready → ${ctx.settings.providers[installed].baseUrl}`);
-  await autoFetchModels(ctx, installed);
-}
-
-async function addCustomProviderInteractive(ctx) {
-  const name = await askLine(ctx, "Provider name");
-  if (!name) { infoLine("canceled (no name)"); return; }
-  if (ctx.settings.providers[name]) {
-    warnLine(`"${name}" already exists — values will be overwritten.`);
-  }
-  const baseUrl = await askLine(ctx, "Endpoint URL  (e.g. https://api.example.com/v1)");
-  if (!baseUrl) { infoLine("canceled (no endpoint)"); return; }
-  const apiKey = await askLine(ctx, "API key  (press Enter to skip — \"not-needed\" will be stored)");
-  ctx.settings.providers[name] = {
-    baseUrl,
-    apiKey: apiKey || "not-needed",
-    label: name,
-  };
-  await saveSettings(ctx.settings);
-  infoLine(`added provider ${name} -> ${baseUrl} (saved)`);
-  await autoFetchModels(ctx, name);
+  await openProviderCard(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -977,8 +910,8 @@ export function buildConnectRows(settings) {
   return rows;
 }
 
-// The /connect flow. Interactive-only — non-raw terminals get a hint to
-// use the typed alternatives (/addprovider, /apikey, /model).
+// The /connect flow: the same provider card as /addprovider. Interactive
+// only; other terminals get a hint to use the typed commands.
 export async function connectInteractive(ctx) {
   if (!ctx.canRaw) {
     infoLine("/connect needs an interactive terminal.");
@@ -986,59 +919,154 @@ export async function connectInteractive(ctx) {
     return;
   }
 
-  const rows = buildConnectRows(ctx.settings);
-  const picked = await runArrowPicker(rows, {
-    ctx,
-    title: "Connect — pick a provider (● has key, ○ needs key, · not installed)",
-    hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
-    initial: 0,
+  await openProviderCard(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// The provider card (provider-card.mjs): pick, endpoint + key, model list.
+// ---------------------------------------------------------------------------
+
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return String(url || ""); }
+}
+
+function compactTokens(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "?";
+  if (v < 1000) return String(v);
+  if (v >= 1000000) return `${Math.round(v / 100000) / 10}`.replace(/\.0$/, "") + "M";
+  return `${Math.round(v / 100) / 10}`.replace(/\.0$/, "") + "k";
+}
+
+// One pick row for a configured provider or a preset.
+function providerCardRow(settings, name) {
+  const p = settings.providers?.[name];
+  if (p) {
+    const keyOptional = p.apiKey === "not-needed";
+    const hasKey = providerHasKey(p);
+    return {
+      kind: "configured", name, label: p.label || name, baseUrl: p.baseUrl || "",
+      hasKey, keyOptional,
+      savedKey: hasKey && !keyOptional ? maskKey(p.apiKey) : "",
+      detail: `${hostOf(p.baseUrl)}${hasKey ? "" : "  · key missing"}`,
+    };
+  }
+  const preset = PROVIDER_PRESETS[name];
+  return {
+    kind: "preset", name, label: preset?.label || name, baseUrl: preset?.baseUrl || "",
+    keyOptional: preset?.apiKey === "not-needed", detail: hostOf(preset?.baseUrl),
+  };
+}
+
+// The card's first list, in /connect's order: providers with a key, then
+// ones missing a key, then presets not set up yet, then a custom one.
+export function providerCardRows(settings) {
+  const rows = buildConnectRows(settings)
+    .filter((r) => r.id !== "custom")
+    .map((r) => providerCardRow(settings, r.id.slice(r.id.indexOf(":") + 1)));
+  rows.push({ kind: "custom", name: "custom", label: "Custom provider…", detail: "any OpenAI-compatible endpoint" });
+  return rows;
+}
+
+// The card's model list for a provider: the rows just fetched, or what
+// settings.json already holds for it.
+export function providerCardModels(ctx, provKey, rows = null) {
+  const keys = rows ? rows.map((r) => r.key)
+    : Object.keys(ctx.settings.models || {}).filter((k) => ctx.settings.models[k]?.provider === provKey).sort((a, b) => a.localeCompare(b));
+  return keys.filter((k) => ctx.settings.models[k]).map((key) => {
+    const m = ctx.settings.models[key];
+    const bits = [];
+    if (m.contextWindow) bits.push(`${compactTokens(m.contextWindow)} ctx`);
+    if (m.maxTokens) bits.push(`${compactTokens(m.maxTokens)} out`);
+    if (m.vision === true) bits.push("vision");
+    return { key, id: m.id, name: m.id, label: m.id, detail: bits.join(" · "), active: key === ctx.model?.key };
   });
-  if (!picked) { infoLine("connect canceled"); return; }
+}
 
-  if (picked === "custom") {
-    await addCustomProviderInteractive(ctx);
-    // After adding a custom provider, chain into the model picker for it.
-    const lastAdded = Object.keys(ctx.settings.providers).slice(-1)[0];
-    if (lastAdded) {
-      try { await pickModelWithArrows(ctx, lastAdded); }
-      catch (e) { warnLine(`could not open model picker for ${lastAdded}: ${e.message}`); }
-    }
-    return;
-  }
-
-  const [kind, name] = picked.split(":");
-  const providerName = kind === "preset" ? installProviderPreset(ctx, name) : name;
-  const p = ctx.settings.providers[providerName];
-
-  // Prompt for a key when the provider genuinely needs one and doesn't have
-  // one. Skips ollama/local (apiKey: "not-needed") and any provider that
-  // already has a key stored.
-  if (providerNeedsKeyPrompt(p)) {
-    const key = await askLine(ctx, `API key for ${providerName} (Enter to skip)`, { defaultValue: "" });
-    if (key) {
-      setProviderKey(ctx.settings.providers[providerName], key);
-      await saveSettings(ctx.settings);
-      infoLine(`saved API key for ${providerName}: ${maskKey(key)}`);
-    } else if (kind === "preset") {
-      // User installed a preset then skipped the key — warn but continue,
-      // they might want to /apikey it later or just browse cached models.
-      warnLine(`no key set for ${providerName} — models fetch will likely fail. Set it later with /apikey ${providerName} <key>.`);
-    }
-  }
-
-  // Fetch models, then hand off to the arrow-picker to select one.
+// Save the form's provider, then load its models with that key. Nothing is
+// kept when the models can't be loaded: the provider goes back to how it
+// was (or away, if it is new).
+export async function connectProviderFromCard(ctx, form) {
+  const name = form.name;
+  const providers = ctx.settings.providers;
+  const before = providers[name] ? structuredClone(providers[name]) : undefined;
   try {
-    await fetchModelsForProvider(ctx, providerName, { save: true, filter: "" });
-  } catch (err) {
-    warnLine(`could not fetch models for ${providerName}: ${err.message}`);
-    infoLine("opening picker with previously-known models (if any).");
-  }
-  try {
-    await pickModelWithArrows(ctx, providerName);
+    if (form.kind === "preset") installProviderPreset(ctx, name);
+    const p = providers[name] || (providers[name] = { label: name, apiKey: "" });
+    p.baseUrl = form.baseUrl;
+    if (form.apiKey) setProviderKey(p, form.apiKey);
+    else if (form.kind === "custom" && !String(p.apiKey || "").trim()) p.apiKey = "not-needed";
+    if (!String(p.apiKey || "").trim()) throw new Error(`${p.label || name} needs an API key`);
+    const rows = (await fetchModelsForProvider(ctx, name, { save: true, silent: true })) || [];
+    return {
+      provider: name,
+      label: p.label || name,
+      savedKey: p.apiKey === "not-needed" ? "" : maskKey(p.apiKey),
+      models: providerCardModels(ctx, name, rows),
+    };
   } catch (e) {
-    errorLine(`could not open model picker: ${e.message}`);
-    infoLine(`switch manually with /model <provider/id> or /model to see the list.`);
+    if (before === undefined) delete providers[name];
+    else providers[name] = before;
+    const msg = String(e.message || e);
+    const status = msg.match(/\b(401|403)\b/);
+    if (status) throw new Error(`the key was refused (${status[1]}) — check it and try again`);
+    if (/fetch failed|ENOTFOUND|ECONNREFUSED|getaddrinfo/i.test(msg)) throw new Error(`could not reach ${form.baseUrl} — check the endpoint`);
+    throw new Error(msg.split(/\r?\n/)[0].slice(0, 300));
   }
+}
+
+// One small request to the picked model, so a bad key or a model the
+// provider won't serve shows up here and not in the middle of a task.
+export async function testModelFromCard(ctx, model, { probe = probeModel } = {}) {
+  let m;
+  try { m = resolveModel(ctx.settings, model.key); } catch (e) { return { ok: false, message: e.message }; }
+  const r = await probe(m, { timeoutMs: 20000 });
+  if (r.ok) return { ok: true };
+  if (r.status === 401 || r.status === 403) return { ok: false, keyRejected: true, message: `the key was refused (${r.status}): ${r.message}` };
+  return { ok: false, message: `${model.id} did not answer (${r.status}): ${String(r.message || "").slice(0, 240)} — pick another model` };
+}
+
+// Open the card. start: { provider, step: "models"|"form" } opens it on one
+// provider. Returns the chosen model key, or null when closed. io is for
+// tests: { input, out, size, probe }.
+export async function openProviderCard(ctx, start = null, io = {}) {
+  const input = io.input || process.stdin;
+  const out = io.out || process.stdout;
+  if (!io.input && !ctx.canRaw) return null;
+  let startState = null;
+  if (start?.provider) {
+    const row = providerCardRow(ctx.settings, start.provider);
+    startState = start.step === "models"
+      ? { models: { provider: row, rows: providerCardModels(ctx, start.provider) } }
+      : { form: row };
+  }
+  const state = createCardState({ rows: providerCardRows(ctx.settings), start: startState });
+  const real = input === process.stdin;
+  if (real) {
+    ctx.rl?.pause();
+    process.stdin.setRawMode?.(true);
+    process.stdin.resume();
+  }
+  let result;
+  try {
+    result = await runCard({
+      state, input, out,
+      size: io.size || (() => ({ cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 })),
+      connect: (form) => connectProviderFromCard(ctx, form),
+      choose: (model) => testModelFromCard(ctx, model, { probe: io.probe }),
+    });
+  } finally {
+    if (real) {
+      restoreLineEditing(ctx.rl);
+      ctx.rl?.resume();
+    }
+  }
+  if (!result) { infoLine("provider setup closed — nothing changed"); return null; }
+  ctx.model = resolveModel(ctx.settings, result.model.key);
+  setLastProvider(ctx.model.key, "/connect");
+  await saveSettings(ctx.settings);
+  infoLine(`switched to ${ctx.model.providerLabel} — model: ${ctx.model.key} (ctx=${formatContextSize(ctx.model.contextWindow)}, max output ${ctx.model.maxTokens})`);
+  return ctx.model.key;
 }
 
 // ---------------------------------------------------------------------------
