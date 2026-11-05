@@ -12,6 +12,7 @@
 // no-op sink and the pinned footer (footer.mjs) renders rl.line inside the
 // input box, which stays on screen while the agent works.
 
+import { syntheticUser, recordFor, promptMessage } from "../core/synthetic.mjs";
 import readline from "node:readline";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -667,9 +668,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       // writing its final answer) would otherwise sit unread — answer it now.
       if (!aborted && ctx.steerQueue.length) {
         for (const note of ctx.steerQueue.splice(0)) {
-          const content = steeringMessage(note);
-          ctx.messages.push({ role: "user", content });
-          await ctx.session.append({ type: "user", content });
+          const msg = syntheticUser(steeringMessage(note), { userText: note });
+          ctx.messages.push(msg);
+          await ctx.session.append(recordFor(msg));
         }
         keepGoing = true;
         continue;
@@ -678,8 +679,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         const continuation = nextGoalStep(ctx);
         if (continuation) {
           infoLine(`goal iteration ${ctx.goal.iterations} — continuing (Esc/Ctrl-C to interrupt, /goal pause to stop)`);
-          ctx.messages.push({ role: "user", content: continuation });
-          await ctx.session.append({ type: "user", content: continuation });
+          const msg = syntheticUser(continuation);
+          ctx.messages.push(msg);
+          await ctx.session.append(recordFor(msg));
           keepGoing = true;
         } else if (ctx.goal?.status === "complete" && !ctx.goal.announced) {
           ctx.goal.announced = true;
@@ -708,9 +710,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       if (offer) {
         const yes = /^y(es)?$/i.test(String(await ctx.askLine(c.cyan(`  that took ${calls} steps and passed review. Save how it was done as a reusable skill? [y/N] `)) || "").trim());
         if (yes) {
-          const content = learnPrompt();
-          ctx.messages.push({ role: "user", content });
-          await ctx.session.append({ type: "user", content });
+          const msg = syntheticUser(learnPrompt());
+          ctx.messages.push(msg);
+          await ctx.session.append(recordFor(msg));
           ctx.learningSkill = true;
           try { await runAgentTurns(); } finally { ctx.learningSkill = false; }
         }
@@ -808,8 +810,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         }
       }
     }
-    ctx.messages.push({ role: "user", content: hooked.content });
-    await ctx.session.append({ type: "user", content: hooked.content });
+    const userMsg = promptMessage(agentText, hooked.content);
+    ctx.messages.push(userMsg);
+    await ctx.session.append(recordFor(userMsg));
     if (ctx.routerCfg.enabled && ctx.routeMode === "auto" && !ctx.routePinned) {
       ctx.activePersona = await classifyIntent({ message: agentText, settings: ctx.settings });
       setPersonaIndicator(ctx.activePersona);

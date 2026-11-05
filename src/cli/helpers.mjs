@@ -1,5 +1,6 @@
 // Small shared CLI utilities — no state, no side effects beyond printing.
 
+import { syntheticUser, markFromRecord } from "../core/synthetic.mjs";
 import { infoLine, warnLine } from "../ui.mjs";
 import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH, Session } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
@@ -154,8 +155,7 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   const skillMsg = { role: "system", content: systemContent };
   markEphemeralSkill(skillMsg);
   msgs.push(skillMsg);
-  const userMsg = skillInvocationPrompt(skill, arg);
-  msgs.push({ role: "user", content: userMsg });
+  msgs.push(syntheticUser(skillInvocationPrompt(skill, arg), { userText: arg }));
   await sess.append({ type: "skill", skill: skill.name, arg, contextMode });
 }
 
@@ -169,7 +169,9 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
 export function restoreSessionMessages(records, msgs) {
   for (const rec of effectiveRecords(records)) {
     if (rec.type === "user") {
-      msgs.push({ role: "user", content: rec.content });
+      // The log says whether the user typed it or Omni wrote it (synthetic.mjs).
+      const msg = { role: "user", content: rec.content };
+      msgs.push(markFromRecord(msg, rec));
     } else if (rec.type === "assistant" && rec.message) {
       msgs.push(rec.message);
     } else if (rec.type === "tool" && rec.tool_call_id) {
@@ -182,7 +184,7 @@ export function restoreSessionMessages(records, msgs) {
       const invocation = rec.arg
         ? `Run the "${rec.skill}" skill. Arguments: ${rec.arg}`
         : `Run the "${rec.skill}" skill.`;
-      msgs.push({ role: "user", content: `[resumed] ${invocation}` });
+      msgs.push(syntheticUser(`[resumed] ${invocation}`, { userText: rec.arg }));
     }
   }
 }

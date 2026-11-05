@@ -5,6 +5,7 @@
 // category, and unknown input gets a nearest-command suggestion. Handlers can
 // return { startTurn: true, prompt } to hand control to the agent loop.
 
+import { syntheticUser } from "../core/synthetic.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -533,7 +534,7 @@ export const COMMANDS = [
       if (!p || !fs.existsSync(p)) { warnLine(`no tool body found for hash ${hash}.`); return; }
       let raw = "";
       try { raw = fs.readFileSync(p, "utf8"); } catch (e) { errorLine(e.message); return; }
-      ctx.messages.push({ role: "user", content: `[expanded tool body, hash=${hash}]\n${raw}` });
+      ctx.messages.push(syntheticUser(`[expanded tool body, hash=${hash}]\n${raw}`));
       infoLine(`expanded tool body (${raw.length} bytes) into the conversation as a new user message.`);
     },
   },
