@@ -49,6 +49,8 @@ if (!ps) {
   // script without running its main block, then call the function.
   const run = (fakeRoot) => {
     const cmd = [
+      // The installer runs under StrictMode Latest (install.ps1), so the tests do too.
+      "Set-StrictMode -Version Latest",
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$null)`,
       `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Info','Get-LocalVersion','Install-RuntimePack') }, $true)`,
       `foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }`,
@@ -87,6 +89,8 @@ if (!ps) {
   const runLlama = (body, { nvidia, pathPrefix } = {}) => {
     const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu"];
     const cmd = [
+      // Like install.ps1 itself: without it, $null.Count is 0 and the bug hides.
+      "Set-StrictMode -Version Latest",
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$null)`,
       `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('${fns.join("','")}') }, $true)`,
       `foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }`,
@@ -114,6 +118,31 @@ if (!ps) {
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'none') -join ',') + ']'"), /\[\]/);
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'cpu') -join ',') + ']'"), /\[cpu\]/);
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'cuda') -join ',') + ']'"), /\[cpu,cuda\]/);
+  });
+
+  // Reported on /update-omni 3.5.38 -> 3.5.40: "ERROR: install failed - The
+  // property 'Count' cannot be found on this object". With no local AI
+  // chosen the function returned @(), which PowerShell hands back as $null,
+  // and the installer read $llamaBuilds.Count under StrictMode. The -join
+  // checks above can't see that: $null joins to "" just like @() does.
+  // The installer's own line that sets $llamaBuilds, taken from install.ps1,
+  // run for each choice, then both of the installer's .Count reads.
+  await ok("the installer's $llamaBuilds line gives a list whose .Count works under StrictMode", () => {
+    const line = fs.readFileSync(script, "utf8").split(/\r?\n/).map((l) => l.trim())
+      .find((l) => /^\$llamaBuilds\s*=.*Resolve-LlamaBuilds\s+\$llamaChoice/.test(l));
+    assert.ok(line, "install.ps1 sets $llamaBuilds from Resolve-LlamaBuilds $llamaChoice");
+    const probe = (choice, opts) => runLlama(
+      `$llamaChoice = '${choice}'; ${line}; ` +
+      `'COUNT=' + $llamaBuilds.Count + ' BUILDS=[' + ($llamaBuilds -join ',') + '] ' + $(if ($llamaBuilds.Count) { 'INSTALL' } else { 'SKIP' }) + ' ' + $(if (-not $llamaBuilds.Count) { 'HINT' } else { 'NOHINT' })`,
+      opts,
+    );
+    const expect = { none: "COUNT=0 BUILDS=[] SKIP HINT", cpu: "COUNT=1 BUILDS=[cpu] INSTALL NOHINT", cuda: "COUNT=2 BUILDS=[cpu,cuda] INSTALL NOHINT" };
+    for (const [choice, want] of Object.entries(expect)) {
+      const out = probe(choice);
+      assert.ok(out.includes(want), `${choice}: ${out}`);
+    }
+    const auto = probe("auto", { nvidia: false });
+    assert.ok(auto.includes("COUNT=1 BUILDS=[cpu] INSTALL"), auto);
   });
 
   await ok("auto adds CUDA only when nvidia-smi finds an NVIDIA GPU", () => {

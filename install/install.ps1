@@ -397,6 +397,12 @@ function Test-NvidiaGpu([int]$TimeoutSec = 15) {
   }
 }
 
+# Call it as @(Resolve-LlamaBuilds ...): PowerShell unrolls a returned array,
+# so `return @()` reaches the caller as $null and `return @("cpu")` as a bare
+# string, and under StrictMode Latest their .Count throws ("The property
+# 'Count' cannot be found on this object"). That failed every update from
+# 3.5.37 to 3.5.40. Do not also return ,@(...): with the caller's @() that
+# nests the list, and "none" would then install a build named System.Object[].
 function Resolve-LlamaBuilds([string]$Choice) {
   switch ($Choice) {
     "cpu"  { return @("cpu") }
@@ -465,7 +471,7 @@ try {
     Write-Warning "OMNI_LLAMA=$llamaChoice is not one of none, cpu, cuda, auto - skipping local AI"
     $llamaChoice = "none"
   }
-  $llamaBuilds = Resolve-LlamaBuilds $llamaChoice
+  $llamaBuilds = @(Resolve-LlamaBuilds $llamaChoice)
   if ($llamaChoice -eq "auto" -and $llamaBuilds -notcontains "cuda") {
     Info "Local AI: no NVIDIA GPU found - installing the CPU build only"
   }

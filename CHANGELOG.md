@@ -8,9 +8,31 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.41 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/installer-count · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **Fix: every update ended in "ERROR: install failed - The property 'Count'
+  cannot be found on this object".** With no local AI chosen (the default) or
+  the CPU build only, the installer's list of llama.cpp builds came back from
+  PowerShell as `$null` or a bare string instead of a list, and reading its `.Count` under
+  StrictMode stopped the installer after the files had already moved. Since
+  3.5.37 every `/update-omni` and one-liner update reported a failure even
+  though the update itself had applied. The list is now always a list.
+- **Fix: quitting sometimes forgot your model.** The model is saved when Omni
+  exits, but only on Node's `beforeExit`, and `/exit` falls back to a hard
+  exit after 250 ms when something (an MCP server, the update check) still
+  holds the process open. A hard exit skips `beforeExit`, so the save was
+  lost and the next launch opened on an older model. It is now also saved on
+  `exit`, once. `last-model-exit` caught it: it failed every run here.
+- **Tests:** `installer-runtime` runs the installer's own `$llamaBuilds` line
+  (taken from install.ps1) for each choice under StrictMode, as the installer
+  does, and checks both of its `.Count` reads; the installer tests now run under
+  StrictMode too. Without it `$null.Count` is 0, which is how this slipped
+  through. Changelog: 3.5.39, 3.5.40 and 3.5.22 get their PR and merge commit.
+
 ## 3.5.40 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/provider-card · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **Shipped:** [#53](https://github.com/tattooinmtl/omni/pull/53) · `56648e3` · TattooAI/provider-card · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
 - **Fix: `Provider 400: max_tokens must be less than or equal to 4096`.**
   Fetched models got Omni's default output cap (8192) whatever the provider
   allowed, so TokenLab's `allam-2-7b` (4096) refused every message. Models
@@ -47,7 +69,7 @@ entries were rebuilt from git history).
 
 ## 3.5.39 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/omni-audit-review-e49b75 · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **Shipped:** [#52](https://github.com/tattooinmtl/omni/pull/52) · `6d94014` · TattooAI/omni-audit-review-e49b75 · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
 - **The built-in sub-agents ship.** `explorer`, `reviewer` and `tester`
   (README, `/agents`, `spawn_agent`) were never in the repo: `.gitignore`
   ignores `*.md` with a list of exceptions, and `agents/` wasn't on it, so the
@@ -665,7 +687,7 @@ entries were rebuilt from git history).
 
 ## 3.5.22 — 2026-10-19
 
-- **Shipped:** this PR · — · TattooAI/installer-ignore-untracked · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
+- **Shipped:** [#35](https://github.com/tattooinmtl/omni/pull/35) · `e256d94` · TattooAI/installer-ignore-untracked · session `e47ed03a-177f-4114-b238-4d94d0d7923a`
 - The installer no longer refuses to update because of an untracked folder
   in the install directory. Its local-changes check used
   `git status --porcelain`, which lists untracked files too, so one side
