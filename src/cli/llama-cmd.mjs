@@ -327,6 +327,7 @@ function cudaServerExe(cfg) {
 
 // /llama update [cuda] [--force] — install the pinned llama.cpp build: CPU
 // into binDir, or the CUDA build (llama + CUDA runtime) into <binDir>-cuda.
+// Returns true when the build is in place (installed now or already current).
 async function updateCommand(cfg, arg) {
   const force = /(^|\s)(--force|-f)(\s|$)/.test(arg || "");
   const variant = /(^|\s)cuda(\s|$)/i.test(arg || "") ? "cuda" : "cpu";
@@ -334,12 +335,12 @@ async function updateCommand(cfg, arg) {
   const label = variant === "cuda" ? "llama.cpp CUDA" : "llama.cpp";
   if (llama.status().running) {
     errorLine("stop the local llama server first (/llama stop) — Windows locks its files while it runs");
-    return;
+    return false;
   }
   const have = installedBuild(variant === "cuda" ? cudaServerExe(cfg) : serverExe(cfg));
   if (have !== null && have >= LLAMA_BUILD.build && !force) {
     infoLine(`${label} is already b${have} (pinned: b${LLAMA_BUILD.build}). Add --force to reinstall it.`);
-    return;
+    return true;
   }
   if (variant === "cuda") infoLine("CUDA 13.4 build: about 595 MB to download, for NVIDIA GPUs with driver 580 or newer (RTX 50-series needs it)");
   infoLine(`updating ${label} in ${dir}: ${have === null ? "none" : `b${have}`} → b${LLAMA_BUILD.build}`);
@@ -365,13 +366,35 @@ async function updateCommand(cfg, arg) {
     if (r.leftBehind && r.leftBehind.length) {
       warnLine(`not carried over (the pinned build is CPU-only, and these need the old DLLs): ${r.leftBehind.join(", ")} — still in ${r.backup}`);
     }
+    return true;
   } catch (e) {
     endProgress();
     const locked = /EBUSY|EPERM|EACCES/.test(`${e.code || ""} ${e.message}`);
     errorLine(locked
       ? `could not replace ${cfg.binDir}: a program is still using it (another llama-server?). Close it and retry. (${e.message})`
       : e.message);
+    return false;
   }
+}
+
+// Split `omni llama …` arguments: { sub, rest } or null when not an update.
+export function parseHeadlessArgs(argStr) {
+  const [sub, ...rest] = String(argStr || "").trim().split(/\s+/);
+  if (sub !== "update" && sub !== "upgrade") return null;
+  return { sub, rest: rest.join(" ") };
+}
+
+// `omni llama update [cuda] [--force]` from a shell (the installer's llama
+// option): no REPL, no model — settings only for binDir/cudaBinDir.
+export async function llamaHeadless(argStr, { loadSettings, update = updateCommand } = {}) {
+  const parsed = parseHeadlessArgs(argStr);
+  if (!parsed) {
+    errorLine("usage: omni llama update [cuda] [--force]");
+    return false;
+  }
+  const load = loadSettings || (await import("../core/config.mjs")).loadSettings;
+  const settings = await load();
+  return update(llama.llamaConfig(settings), parsed.rest);
 }
 
 // /llama bench [model] — llama-bench on a model, same threads /llama start uses.

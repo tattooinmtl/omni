@@ -40,6 +40,18 @@
 #
 # Later, from Omni: /runtime install (or: omni runtime install).
 #
+# Optional local AI (llama.cpp, pinned and checksum-verified) with -Llama, or
+# OMNI_LLAMA from the one-liner:
+#   none  (default) nothing - add it later with /llama update
+#   cpu   the CPU build, for any PC
+#   cuda  the CPU build plus the CUDA 13.4 build for NVIDIA GPUs (~595 MB more,
+#         needs NVIDIA driver 580+; RTX 50-series needs this one)
+#   auto  the CPU build, plus CUDA only if nvidia-smi finds an NVIDIA GPU
+#
+#   $env:OMNI_LLAMA = "auto"; irm https://omni.globalwarningnetworks.com/install.ps1 | iex
+#
+# Later, from Omni: /llama update and /llama update cuda.
+#
 # Safe to re-run. It never overwrites an existing .env or agent/settings.json:
 # your API keys are never touched, and no secret is ever downloaded, generated,
 # or required by this script - only .env.example / settings.example.json
@@ -61,6 +73,9 @@ param(
   [switch]$WithRouter,
   # Also install the optional runtime pack (same as OMNI_RUNTIME=1).
   [switch]$WithRuntime,
+  # Optional local AI: none | cpu | cuda | auto (same as OMNI_LLAMA).
+  [ValidateSet("", "none", "cpu", "cuda", "auto")]
+  [string]$Llama = "",
   [switch]$SkipLink,
   # Local GGUF models directory. Default target is C:\models. Pass an explicit
   # path for silent installs; pass "" to skip the create prompt entirely.
@@ -347,6 +362,82 @@ function Install-RuntimePack([string]$Root) {
   }
 }
 
+# Which llama.cpp builds the -Llama / OMNI_LLAMA choice means. "auto" asks
+# nvidia-smi: a machine without an NVIDIA GPU never downloads CUDA.
+# True when nvidia-smi names at least one GPU. Bounded: a hung driver or
+# utility must not stall the install, so after $TimeoutSec it is killed and
+# the answer is "no" (CPU only).
+function Test-NvidiaGpu([int]$TimeoutSec = 15) {
+  $smi = Get-Command nvidia-smi -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $smi) { return $false }
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $smi.Source
+    $psi.Arguments = "--query-gpu=name --format=csv,noheader"
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+      # The whole tree: a wrapper script's children would otherwise keep
+      # running and hold the output pipe open.
+      # Started as a bare process, not `& taskkill`, so no stderr reaches
+      # PowerShell's streams (see Invoke-External for why that matters on 5.1).
+      try { [System.Diagnostics.Process]::Start("taskkill.exe", "/PID $($p.Id) /T /F").WaitForExit(5000) | Out-Null } catch { }
+      try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+      Write-Warning "nvidia-smi did not answer within $TimeoutSec s - installing the CPU build only"
+      return $false
+    }
+    return ($p.ExitCode -eq 0) -and [bool]($out.Result.Trim())
+  }
+  catch {
+    return $false
+  }
+}
+
+function Resolve-LlamaBuilds([string]$Choice) {
+  switch ($Choice) {
+    "cpu"  { return @("cpu") }
+    "cuda" { return @("cpu", "cuda") }
+    "auto" {
+      if (Test-NvidiaGpu) { return @("cpu", "cuda") }
+      return @("cpu")
+    }
+    default { return @() }
+  }
+}
+
+# Local AI is optional: a failed download must not fail the install.
+function Install-LlamaBuilds([string]$Root, [string[]]$Builds) {
+  # The headless `omni llama update` arrived in 3.5.37 (3.5.36 already has the
+  # CUDA pins, but not the command). On an Omni without the dispatch the words
+  # would be sent to the model as a prompt, so check for the dispatch itself.
+  $mainFile = Join-Path $Root "src\cli\main.mjs"
+  if (-not ((Test-Path $mainFile) -and (Select-String -Path $mainFile -Pattern 'args\[0\] === "llama"' -Quiet))) {
+    Write-Warning "Skipping local AI: this Omni ($(Get-LocalVersion $Root)) predates it. Update Omni, then run: omni llama update"
+    return
+  }
+  Push-Location $Root
+  try {
+    foreach ($b in $Builds) {
+      if ($b -eq "cuda") {
+        Info "Installing llama.cpp for NVIDIA GPUs (CUDA 13.4, about 595 MB)"
+        & node ./bin/omni.mjs llama update cuda
+        if ($LASTEXITCODE -ne 0) { Info "WARNING: the CUDA build did not install - run: omni llama update cuda" }
+      } else {
+        Info "Installing llama.cpp (CPU build)"
+        & node ./bin/omni.mjs llama update
+        if ($LASTEXITCODE -ne 0) { Info "WARNING: the CPU build did not install - run: omni llama update" }
+      }
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 try {
   Ensure-Command "node" "Install Node.js 20+ from https://nodejs.org, then re-run this installer."
   $nodeMajor = [int]((& node -e "console.log(process.versions.node.split('.')[0])").Trim())
@@ -369,6 +460,16 @@ try {
   Initialize-Install $root
   $wantRuntime = $WithRuntime -or ($env:OMNI_RUNTIME -eq "1")
   if ($wantRuntime) { Install-RuntimePack $root }
+  $llamaChoice = if ($Llama) { $Llama } elseif ($env:OMNI_LLAMA) { $env:OMNI_LLAMA.Trim().ToLower() } else { "none" }
+  if (@("none", "cpu", "cuda", "auto") -notcontains $llamaChoice) {
+    Write-Warning "OMNI_LLAMA=$llamaChoice is not one of none, cpu, cuda, auto - skipping local AI"
+    $llamaChoice = "none"
+  }
+  $llamaBuilds = Resolve-LlamaBuilds $llamaChoice
+  if ($llamaChoice -eq "auto" -and $llamaBuilds -notcontains "cuda") {
+    Info "Local AI: no NVIDIA GPU found - installing the CPU build only"
+  }
+  if ($llamaBuilds.Count) { Install-LlamaBuilds $root $llamaBuilds }
 
   $installed = Get-LocalVersion $root
   # Don't declare victory on a version that isn't the latest. The old ending
@@ -392,6 +493,9 @@ try {
   Write-Host "  3. Run: omni"
   if (-not $wantRuntime) {
     Write-Host "  Optional: omni runtime install  (video tools, faster search - see /runtime)"
+  }
+  if (-not $llamaBuilds.Count) {
+    Write-Host "  Optional: omni llama update     (local AI on this PC; add 'cuda' for an NVIDIA GPU)"
   }
   Write-Host ""
 }
