@@ -65,7 +65,9 @@ function runOmni(input, providers) {
       clearTimeout(timer);
       const read = (f) => { try { return JSON.parse(fs.readFileSync(path.join(home, f), "utf8")); } catch { return null; } };
       const result = { out, settings: read("settings.json"), last: read("last-provider.json") };
-      fs.rmSync(home, { recursive: true, force: true });
+      // A process the child started (an MCP server) can hold the folder for a
+      // moment after exit on Windows: retry, and never fail the suite over it.
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* temp dir, left for the OS */ }
       resolve(result);
     });
     child.stdin.end(input);

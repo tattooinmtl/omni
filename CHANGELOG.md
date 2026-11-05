@@ -8,9 +8,37 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.39 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/omni-audit-review-e49b75 · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **The built-in sub-agents ship.** `explorer`, `reviewer` and `tester`
+  (README, `/agents`, `spawn_agent`) were never in the repo: `.gitignore`
+  ignores `*.md` with a list of exceptions, and `agents/` wasn't on it, so the
+  three files lived only on one developer's disk and no install had them.
+  They are now tracked (the original definitions, unchanged).
+- **Memory no longer saves Omni's own notes as facts.** The automatic
+  extractor read every user-role message as the user's words, including the
+  ones Omni writes: compaction digests ("[CONTEXT COMPACTED] … Continue the
+  task from the recent messages below."), the "[system note]" iteration
+  warning, Stop-hook nudges, image labels, goal continuations and the
+  malformed-tool-call retry. Those are skipped now. A `/btw` note keeps the
+  user's words without its wrapper.
+- **The test suite no longer writes into your real memory.** `race-fixes`
+  ran without its own `OMNI_HOME`, so every `npm test` added a "cache
+  invalidation probe" atom to `~/.omni/agent/memory-atoms.jsonl`. It now uses
+  a temp home seeded with 1200 atoms. Existing probe atoms are not removed.
+- **Tests:** the atom-cache timing check compares warm calls with cold reads
+  instead of a fixed 100 ms budget, which a working cache missed on Windows
+  (each call still stats the file). `provider-auto-models` and
+  `last-model-exit` retry their temp-folder cleanup instead of crashing the
+  suite with EPERM when a process the child started still holds it.
+  `agents` checks with git that the built-in agents are not ignored;
+  `memory` (2 new) builds each injected note with the code that writes it and
+  checks none is memorized, and that a `/btw` note keeps its words.
+
 ## 3.5.38 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/vision-fallback · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** [#51](https://github.com/tattooinmtl/omni/pull/51) · `99c4a86` · TattooAI/vision-fallback · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **Fix: 400 "tool calls with no result" after an image.** When a batch of
   two or more tool calls returned an image, the image went in as a user
   message right after that call's result, splitting the batch's results.

@@ -520,6 +520,25 @@ function messageText(content) {
   return "";
 }
 
+// User-role messages that Omni writes itself, not the user: compaction
+// digests, iteration and hook nudges, image labels, goal continuations, the
+// malformed-tool-call retry, /expand bodies, resumed skill calls, and
+// tool results flattened for text-tool providers. These used to be scanned
+// like the user's words, so "[CONTEXT COMPACTED] … Continue the task from
+// the recent messages below." ended up in memory as a fact.
+const SYNTHETIC_USER_RE = /^\s*(?:\[(?:CONTEXT COMPACTED|system note|hook |image attached from |\d+ frames attached from |expanded tool body|resumed\])|SYSTEM: |GOAL CONTINUATION\b|Tool result\b)/;
+// A /btw note (agent.mjs steeringMessage) is the user's own words inside a
+// wrapper: keep the words, drop the wrapper.
+const STEERING_PREFIX_RE = /^\s*\(btw — [^)]*\):\s*/;
+
+// The text of a message worth scanning for memory, or "" for one Omni wrote.
+export function memorableText(msg) {
+  const text = messageText(msg?.content);
+  if (msg?.role !== "user") return text;
+  if (SYNTHETIC_USER_RE.test(text)) return "";
+  return text.replace(STEERING_PREFIX_RE, "");
+}
+
 // Scans user AND assistant messages for cue phrases (typed statements of
 // preference/constraint/decision/correction/outcome) and weighs+places a
 // matching sentence straight into the index (layeredProvider.propose — no
@@ -534,7 +553,7 @@ export function extractAtomsFromMessages(messages, { source = "session" } = {}) 
   let catchAllUsed = 0;
   for (const msg of messages || []) {
     if (msg.role !== "user" && msg.role !== "assistant") continue;
-    const text = messageText(msg.content);
+    const text = memorableText(msg);
     for (const sentence of sentencesOf(text)) {
       if (sentence.length < 8 || sentence.length > 300) continue;
       const norm = sentence.toLowerCase().trim();

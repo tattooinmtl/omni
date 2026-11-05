@@ -119,6 +119,28 @@ assert("questions are never captured by the catch-all tier",
 assert("assistant text is scanned for cue phrases but not the catch-all tier (avoids restating the same fact twice)",
   catchAll, (list) => list.filter((a) => /staging database/.test(a.text)).length === 1);
 
+// ---- Omni's own injected user messages are never memorized -----------------
+// These are built by the real code paths that inject them, so a reworded
+// note can't slip past the filter unnoticed.
+
+const { mechanicalDigest } = await import(u("core/compaction.mjs"));
+const { steeringMessage } = await import(u("core/agent.mjs"));
+const { recoveryMessage } = await import(u("core/toolcalls.mjs"));
+const syntheticMessages = [
+  { role: "user", content: mechanicalDigest([{ role: "user", content: "Refactor the billing module into smaller services." }]) },
+  { role: "user", content: "[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains." },
+  { role: "user", content: "[hook lint] Not done yet: the linter still reports twelve warnings in the parser module." },
+  { role: "user", content: [{ type: "text", text: "[image attached from read_media_file — look at it and answer from what you see]" }] },
+  { role: "user", content: "GOAL CONTINUATION (iteration 2): the goal is not yet complete.\nObjective: Ship the release candidate for the payments service.\nContinue working." },
+  { role: "user", content: recoveryMessage() },
+  { role: "user", content: steeringMessage("The production cluster lives in the Montreal region now.") },
+];
+const synthetic = extractAtomsFromMessages(syntheticMessages, { source: "test" });
+assert("compaction digests, system notes, hook nudges, image labels, goal continuations and retries are not memorized",
+  synthetic, (list) => !list.some((a) => /CONTEXT COMPACTED|Continue the task|iterations remain|Not done yet|image attached|GOAL CONTINUATION|Objective:|malformed|Re-emit|billing module/i.test(a.text)));
+assert("a /btw note keeps the user's words and drops the wrapper",
+  synthetic, (list) => list.some((a) => a.text === "The production cluster lives in the Montreal region now.") && !list.some((a) => /btw —|not a new task/.test(a.text)));
+
 // ---- Zero-effort capture: tool outcomes (bypasses OKF entirely) ------------
 
 const failAtom = captureToolActivity({ tool: "run_shell", args: {}, result: "ERROR: command not found: fooo" });
