@@ -740,7 +740,8 @@ Skills are discovered from:
 
 ## Local models (llama.cpp)
 
-Omni ships two `llama-server` builds, CPU and Vulkan, in `server/`. The default
+Omni runs `llama-server` on three backends: CPU and Vulkan from `server/`, and
+CUDA for NVIDIA cards from `server-cuda/` (`/llama update cuda`). The default
 models directory is `C:\models`; the installer offers to create it.
 
 ```text
@@ -766,7 +767,18 @@ so it stops guessing. `/hardware` shows each choice and why;
 `/hardware set <browserGpu|localBackend> <value|auto>` overrides one.
 
 **Backend choice:** With less than 6 GB of VRAM,
-`/llama-start` picks `cpu`; 6 GB or more gets `vulkan`.
+`/llama-start` picks `cpu`. 6 GB or more gets `cuda` on an NVIDIA card and
+`vulkan` on any other. CUDA offloads every layer to the GPU (`-ngl 999`).
+
+**CUDA (NVIDIA).** `/llama update cuda` installs the pinned b12125 CUDA 13.4
+build and its CUDA runtime (cuBLAS, cudart; about 595 MB) into `server-cuda/`,
+beside the CPU build, so the two never share DLLs. CUDA 13.4 because RTX
+50-series cards (Blackwell) get native kernels only from CUDA 12.8 on. It
+needs NVIDIA driver 580 or newer. After installing, Omni asks the build which
+GPUs it sees and says so, or tells you to check the driver. Then
+`/llama spark cuda` or `/llama start <model> cuda`. With no CUDA build
+installed, a `cuda` start falls back to CPU and says how to fix it.
+`llama.cudaBinDir` points at a CUDA build elsewhere.
 
 - Change the threshold: `settings.llama.gpuMinVramGB` (default 6).
 - Always allow Vulkan: `settings.llama.allowLowVram: true`.
@@ -790,6 +802,8 @@ names another model that is still on disk.
 
 ```text
 /llama update                     # install the pinned llama.cpp build (b12125)
+/llama update cuda                # the CUDA 13.4 build for NVIDIA GPUs
+/llama spark cuda                 # Spark on the GPU
 /llama spark                      # start Spark, thinking low (fast turns)
 /llama spark high                 # think harder, slower
 /llama spark none                 # no thinking at all

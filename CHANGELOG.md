@@ -8,9 +8,47 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.36 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/llama-cuda · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **CUDA is a third local backend, next to CPU and Vulkan.** `/llama update
+  cuda` installs llama.cpp b12125 built for CUDA 13.4, plus its CUDA runtime
+  (cuBLAS, cudart), into `server-cuda/` beside the CPU build. Both archives
+  are pinned to the official ggml-org release and checked against GitHub's
+  SHA-256. CUDA 13.4, not 12.4, because RTX 50-series cards (Blackwell,
+  compute 12.0) have native kernels only from CUDA 12.8 on; it needs NVIDIA
+  driver 580 or newer. After installing, Omni runs `--list-devices` and
+  either names the GPU it found or says to check the driver.
+- `/llama start <model> cuda`, `/llama spark cuda` and `/hardware set
+  localBackend cuda` run on the GPU with every layer offloaded. A `cuda`
+  start with no CUDA build installed falls back to CPU and says to run
+  `/llama update cuda`. `/llama status` shows the CUDA build too.
+- The hardware scan now recommends `cuda` for an NVIDIA card with 6 GB of
+  VRAM or more (an RTX 5060 Ti 8 GB gets it), and `vulkan` for other GPUs.
+  The profile schema moves to 3, so every install rescans once.
+- llama-server now starts from its binary's own folder, so each build loads
+  its own ggml DLLs.
+- **Review hardening.** Automatic starts (the `local` provider waking the
+  server, `/llama default`) now use the saved or recommended backend instead
+  of always CPU. CUDA is recommended only where a CUDA build is pinned
+  (Windows x64); elsewhere an NVIDIA card gets Vulkan. With several GPUs the
+  one with the most VRAM decides. `llama.cudaBinDir` is honoured everywhere,
+  recovery included. A `cuda` start on a split-CPU-only install falls back
+  to `llama-server-cpu`. Startup no longer "recovers" a folder that a live
+  update is swapping; the update lock gets a heartbeat, so a long CUDA
+  download keeps it, and only a lock untouched for 5 minutes counts as
+  stale. An unknown build variant is refused instead of installing CPU.
+  `/llama status` probes each binary once for 10 s instead of twice for
+  60 s. The extension guide lists `cuda`.
+- Tests: the CUDA pin (two archives, one tag, full hashes), `listDevices`
+  with and without a GPU, `binaryFor` picking `server-cuda/` and falling
+  back to CPU, full offload on cuda, `cuda` in `/llama-start`, a two-archive
+  install unpacking into one folder, `gpuBackendFor`, and an RTX 5060 Ti
+  profile getting `cuda`.
+
 ## 3.5.35 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/omni-llama-spark-26-877939 · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** [#48](https://github.com/tattooinmtl/omni/pull/48) · `90a2bc7` · TattooAI/omni-llama-spark-26-877939 · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **Spark X2.6 4B is the official local model.** A bare `/llama start` loads
   it from `C:\models` when `llama.defaultModel` is unset or names a file that
   is gone. `/llama spark [high|low|none]` starts it directly. Omni prefers the

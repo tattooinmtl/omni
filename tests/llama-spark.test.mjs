@@ -148,6 +148,97 @@ async function main() {
     assert.equal(build.installedBuild(exe, { run: () => ({ stdout: "", stderr: "" }) }), null);
   });
 
+  await ok("CUDA pin: the CUDA 13.4 llama zip plus its runtime, same build tag, full hashes", () => {
+    const assets = build.pinnedAssets("cuda", "win32-x64");
+    assert.equal(assets.length, 2);
+    assert.match(assets[0].url, /\/b12125\/llama-b12125-bin-win-cuda-13\.4-x64\.zip$/);
+    assert.match(assets[1].url, /\/b12125\/cudart-llama-bin-win-cuda-13\.4-x64\.zip$/);
+    for (const a of assets) assert.match(a.sha256, /^[0-9a-f]{64}$/);
+    assert.equal(build.pinnedAssets("cpu", "win32-x64").length, 1);
+    assert.equal(build.variantDir("C:/o/server", "cuda"), "C:/o/server-cuda");
+    assert.equal(build.variantDir("C:/o/server", "cpu"), "C:/o/server");
+  });
+
+  await ok("listDevices reads the device lines and nothing else", () => {
+    const exe = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "omni-dev-")), "llama-server.exe");
+    fs.writeFileSync(exe, "");
+    const gpu = () => ({ stdout: "", stderr: "ggml_cuda_init: found 1 CUDA devices:\nAvailable devices:\n  CUDA0: NVIDIA GeForce RTX 5060 Ti (8151 MiB, 7800 MiB free)\n" });
+    assert.deepEqual(build.listDevices(exe, { run: gpu }), ["CUDA0: NVIDIA GeForce RTX 5060 Ti (8151 MiB, 7800 MiB free)"]);
+    const none = () => ({ stdout: "", stderr: "E ggml_cuda_init: failed to initialize CUDA: (null)\nAvailable devices:\n  (none)\n" });
+    assert.deepEqual(build.listDevices(exe, { run: none }), []);
+  });
+
+  await ok("binaryFor cuda: the CUDA folder first, else a CPU fallback the caller explains", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cuda-"));
+    const binDir = path.join(root, "server");
+    fs.mkdirSync(binDir);
+    fs.writeFileSync(path.join(binDir, "llama-server.exe"), "");
+    assert.deepEqual(llama.binaryFor({ binDir }, "cuda"), { path: path.join(binDir, "llama-server.exe"), source: "legacy-cpu", backend: "cpu" });
+    fs.mkdirSync(`${binDir}-cuda`);
+    fs.writeFileSync(path.join(`${binDir}-cuda`, "llama-server.exe"), "");
+    const b = llama.binaryFor({ binDir }, "cuda");
+    assert.equal(b.source, "cuda-dir");
+    assert.equal(b.path, path.join(`${binDir}-cuda`, "llama-server.exe"));
+    // The CPU backend never picks up the CUDA folder.
+    assert.equal(llama.binaryFor({ binDir }, "cpu").path, path.join(binDir, "llama-server.exe"));
+  });
+
+  await ok("llama.cudaBinDir is honoured by the config and by binaryFor", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cudadir-"));
+    const binDir = path.join(root, "server");
+    const custom = path.join(root, "elsewhere", "cuda-build");
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(custom, { recursive: true });
+    fs.writeFileSync(path.join(custom, "llama-server.exe"), "");
+    const cfg = llama.llamaConfig({ llama: { binDir, cudaBinDir: custom } });
+    assert.equal(cfg.cudaBinDir, custom);
+    assert.equal(llama.cudaDirFor(cfg), custom);
+    assert.equal(llama.binaryFor(cfg, "cuda").path, path.join(custom, "llama-server.exe"));
+    assert.equal(llama.cudaDirFor(llama.llamaConfig({ llama: { binDir } })), `${binDir}-cuda`);
+  });
+
+  await ok("a cuda request on a split-CPU-only install falls back to llama-server-cpu", () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-split-"));
+    fs.writeFileSync(path.join(binDir, "llama-server-cpu.exe"), "");
+    const b = llama.binaryFor({ binDir }, "cuda");
+    assert.equal(b.path, path.join(binDir, "llama-server-cpu.exe"));
+    assert.equal(b.backend, "cpu");
+    assert.equal(b.source, "legacy-cpu");
+  });
+
+  await ok("llama-server is spawned from its binary's own folder (CUDA DLLs resolve)", () => {
+    const exe = path.join("C:", "o", "server-cuda", "llama-server.exe");
+    assert.equal(llama.spawnOptionsFor(exe).cwd, path.dirname(exe));
+    assert.equal(llama.spawnOptionsFor(exe).windowsHide, true);
+  });
+
+  await ok("recovery leaves a folder alone while a live update holds its lock", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-rec2-"));
+    const binDir = path.join(root, "server-cuda");
+    fs.mkdirSync(`${binDir}.old`);
+    fs.writeFileSync(`${binDir}.update.lock`, "");
+    assert.equal(build.recoverInterruptedUpdate(binDir), false);
+    assert.ok(!fs.existsSync(binDir), "mid-swap folder untouched");
+    assert.equal(build.recoverInterruptedUpdate(binDir, { heldLock: true }), true);
+    // A lock nobody has touched for longer than LOCK_STALE_MS is a crash.
+    fs.renameSync(binDir, `${binDir}.old`);
+    const old = new Date(Date.now() - build.LOCK_STALE_MS - 60000);
+    fs.utimesSync(`${binDir}.update.lock`, old, old);
+    assert.equal(build.recoverInterruptedUpdate(binDir), true);
+  });
+
+  await ok("an unknown build variant is refused, never installed as CPU", async () => {
+    assert.equal(build.pinnedAssets("rocm", "win32-x64"), null);
+    await assert.rejects(build.installPinnedBuild(os.tmpdir(), { variant: "rocm" }), /unknown llama\.cpp build variant "rocm"/);
+  });
+
+  await ok("cuda offloads every layer; parseStartArgs takes cuda as a backend", () => {
+    const cfg = llama.llamaConfig({ llama: { binDir: os.tmpdir(), modelsDir: os.tmpdir() } });
+    const args = llama.buildStartArgs(cfg, "Spark-X2.6-4B-Q4_K_M.gguf", { backend: "cuda", threads: 6, nCtx: 32768 });
+    assert.equal(args[args.indexOf("-ngl") + 1], "999");
+    assert.deepEqual(cmd.parseStartArgs("spark cuda high"), { model: "spark", backend: "cuda", force: false, think: "high" });
+  });
+
   await ok("the pin is an official ggml-org release with a full SHA-256, new enough for Spark", () => {
     const a = build.LLAMA_BUILD.builds["win32-x64"];
     assert.match(a.url, /^https:\/\/github\.com\/ggml-org\/llama\.cpp\/releases\/download\/b\d+\//);
@@ -226,6 +317,25 @@ async function main() {
       }
     });
 
+    await ok("a stale lock (no heartbeat for LOCK_STALE_MS) does not block a new update", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server");
+      fs.mkdirSync(binDir);
+      fs.writeFileSync(path.join(binDir, "llama-server.exe"), "old");
+      fs.writeFileSync(`${binDir}.update.lock`, "");
+      const old = new Date(Date.now() - build.LOCK_STALE_MS - 60000);
+      fs.utimesSync(`${binDir}.update.lock`, old, old);
+      build.LLAMA_BUILD.builds["win32-test"] = asset();
+      try {
+        const probe = (p) => (fs.readFileSync(p, "utf8") === "new" ? build.LLAMA_BUILD.build : 8996);
+        const r = await build.installPinnedBuild(binDir, { fetchImpl, key: "win32-test", probe });
+        assert.equal(r.to, build.LLAMA_BUILD.build);
+        assert.ok(!fs.existsSync(`${binDir}.update.lock`));
+      } finally {
+        delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
     await ok("a stalled download times out with a retryable message and releases the lock", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
       const binDir = path.join(root, "server");
@@ -262,6 +372,33 @@ async function main() {
         assert.deepEqual(r.leftBehind, ["llama-server-vulkan.exe"]);
       } finally {
         delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
+    await ok("the cuda variant unpacks every archive into one folder", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-zip2-"));
+      const runtime = fakeZip(dir, { "cudart64_13.dll": "rt" });
+      const rtSha = crypto.createHash("sha256").update(runtime).digest("hex");
+      const urls = {
+        "https://github.com/ggml-org/llama.cpp/releases/download/b1/x.zip": bytes,
+        "https://github.com/ggml-org/llama.cpp/releases/download/b1/rt.zip": runtime,
+      };
+      const multiFetch = async (url) => new Response(urls[url], { status: 200, headers: { "content-length": String(urls[url].length) } });
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server-cuda");
+      build.LLAMA_BUILD.cudaBuilds["win32-test"] = [
+        asset(),
+        { url: "https://github.com/ggml-org/llama.cpp/releases/download/b1/rt.zip", sha256: rtSha, size: runtime.length },
+      ];
+      try {
+        const probe = (p) => (fs.existsSync(p) && fs.readFileSync(p, "utf8") === "new" ? build.LLAMA_BUILD.build : null);
+        const r = await build.installPinnedBuild(binDir, { fetchImpl: multiFetch, key: "win32-test", probe, variant: "cuda" });
+        assert.equal(r.to, build.LLAMA_BUILD.build);
+        assert.equal(r.from, null);
+        assert.ok(fs.existsSync(path.join(binDir, "llama-server.exe")));
+        assert.equal(fs.readFileSync(path.join(binDir, "cudart64_13.dll"), "utf8"), "rt");
+      } finally {
+        delete build.LLAMA_BUILD.cudaBuilds["win32-test"];
       }
     });
 
