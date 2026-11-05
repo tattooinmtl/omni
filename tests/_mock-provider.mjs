@@ -5,7 +5,8 @@
 //
 // A scripted reply is either a string (a final text answer) or
 // { tool: "name", args: {...} } (one native tool call), or a function
-// (requestBody) => one of those.
+// (requestBody) => one of those, or { tools: [{ tool, args }, ...] } (several
+// native tool calls in one reply).
 
 import http from "node:http";
 
@@ -23,7 +24,12 @@ export async function startMockProvider(script = []) {
       if (typeof reply === "function") reply = reply(parsed);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
-      if (reply && typeof reply === "object" && reply.tool) {
+      if (reply && typeof reply === "object" && Array.isArray(reply.tools)) {
+        // Several native tool calls in one reply (a parallel batch).
+        const calls = reply.tools.map((t, index) => ({ index, id: `call_${requests.length}_${index}`, type: "function", function: { name: t.tool, arguments: JSON.stringify(t.args || {}) } }));
+        send({ choices: [{ delta: { tool_calls: calls }, finish_reason: null }] });
+        send({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+      } else if (reply && typeof reply === "object" && reply.tool) {
         send({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call_${requests.length}`, type: "function", function: { name: reply.tool, arguments: JSON.stringify(reply.args || {}) } }] }, finish_reason: null }] });
         send({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
       } else {

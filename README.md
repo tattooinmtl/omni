@@ -236,9 +236,11 @@ logs.
 
 Shipped presets: `xkiro` (default), `nvidia`, `minimax.io`, `agnes`, `atria`,
 `reflection`, `openai`, `openrouter`, `groq`, `deepseek`, `google`, `xai`,
-`grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `ollama`
-and `local`.
-Any other OpenAI-compatible endpoint works through `/addprovider`.
+`grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `tokenlab`,
+`ollama` and `local`.
+Any other OpenAI-compatible endpoint works through `/addprovider`. A provider
+loads its model list as soon as it is added or gets a key, and `/provider <name>`
+loads it if it is still empty, so a new provider is never stuck without models.
 
 ```text
 /connect                      pick provider → add key if needed → pick model
@@ -888,7 +890,17 @@ at pixels:
   capped at 16 frames and 20 MB. Needs `ffmpeg`: `/runtime install ffmpeg`
   (or any `ffmpeg` on PATH).
 
-Text-only models get a one-line "image omitted" note instead of an error.
+**Vision fallback.** When new images reach a model that can't see them, the
+step that brings them in goes to a vision-capable model from your providers
+instead, and the next step is back on your model. A model qualifies when it
+is marked `"vision": true` (on the model or its provider), uses native tool
+calls, and its provider has a key. A model on the active provider is tried
+first, then the order of `models` in `settings.json`. Set
+`"visionFallback": "<model key>"` to pick one, or `false` to turn it off.
+
+With no vision model available, text-only models get a one-line "image
+omitted" note instead of an error, and Omni says that nothing could take
+the images.
 
 ## Extending
 

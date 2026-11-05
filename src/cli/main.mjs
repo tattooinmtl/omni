@@ -308,7 +308,11 @@ export async function main(args) {
   // Not from a one-shot or headless run: a script's `--model x` (which may
   // not even have a key) must not become the next interactive session's model.
   let persistModelOnExit = true;
-  const saveOnExit = () => { if (!persistModelOnExit) return; try { saveLastProvider(model.key, "exit"); } catch {} };
+  // The model in use at exit, not the one Omni started with: /model replaces
+  // ctx.model, so saving the startup `model` here wrote the old model back
+  // over the user's /model choice every time they closed the window.
+  let modelAtExit = () => model;
+  const saveOnExit = () => { if (!persistModelOnExit) return; try { saveLastProvider(modelAtExit()?.key, "exit"); } catch {} };
   process.on("beforeExit", saveOnExit);
   // These fire when stdin isn't a TTY (piped input, one-shot runs). In the
   // interactive REPL readline keeps stdin in raw mode, so Ctrl-C arrives as a
@@ -354,6 +358,7 @@ export async function main(args) {
   };
   setSessionCtx(ctx);
   registerGoalTool(ctx);
+  modelAtExit = () => ctx.model;
 
   // One-shot / headless: `omni "do this"`, `omni -p "do this" --output json`,
   // `omni /skill args`, `omni /template args`, or the prompt piped on stdin

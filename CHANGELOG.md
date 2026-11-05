@@ -8,9 +8,63 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.38 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/vision-fallback · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Fix: 400 "tool calls with no result" after an image.** When a batch of
+  two or more tool calls returned an image, the image went in as a user
+  message right after that call's result, splitting the batch's results.
+  Strict providers (Reflection's Beam) rejected every later request in the
+  conversation. Image messages now follow the whole batch. On the wire, a
+  history that is already broken is repaired: each result moves right after
+  its call, a call with no result (a turn stopped mid-batch) gets a short
+  error result, and a result with no call is dropped. A stuck session works
+  again without /clear.
+- **Vision fallback.** New images on a model that can't see them go, for that
+  one step, to a vision-capable model from your providers (one with a key
+  and native tool calls; the active provider's own models first). The next
+  step is back on your model. `visionFallback` in settings.json picks the
+  model, or `false` turns it off. With no such model, Omni says so once,
+  and the "image(s) not sent" warning no longer repeats every step.
+- **Fix: the model you switched to is kept after you quit.** `/model` saves
+  the new model, but the save that runs at exit used the model Omni started
+  with, so quitting wrote the old model back over the choice. The next launch
+  was always on the startup model. Exit now saves the model in use.
+- **A new provider loads its models.** `/provider <name>` on a provider with
+  no models used to stop at "has no models configured — add one with
+  /addmodel". It now loads the provider's `/models` list: in a terminal you
+  pick one with the arrows; otherwise the first is used. Setting a key
+  (`/apikey`, `/provider login`, `/provider apikey`) or adding a provider
+  (`/addprovider`, typed or picked) loads the list too, when the provider has
+  none yet. With no key, `/provider` says to set one.
+- **New preset: TokenLab** (`https://api.tokenlab.sh/v1`, OpenAI-compatible).
+- **Fetched models keep what the provider reports.** Where `/models` says so
+  (TokenLab's capabilities, OpenRouter's input modalities), a fetched model
+  is marked `vision` and gets its context window, so the vision fallback can
+  use it. Models labeled image, audio or embedding are left out. A value you
+  set yourself is never overwritten.
+- **Tests:** `provider-auto-models` (7) runs the real CLI against a fake
+  `/v1/models` server: `/provider`, `/apikey` and `/addprovider` each load
+  the list, a provider with no key gets the hint, and reported vision and
+  context windows are kept.
+- **Tests:** `last-model-exit` (2) runs the real CLI with a temp home:
+  `/model` then `/exit` keeps the new model; no switch keeps the startup one.
+- **Review fixes (vision fallback).** A model qualifies only when the key the
+  request sends (the active account's) is set, its provider accepts this
+  history (one that needs every reply's reasoning is skipped when a reply has
+  none), and its context window holds the request. A failed vision request
+  redoes the step on your model without the images instead of ending the
+  turn, and it never fails over to another model. A vision-capable model on
+  the template or text-tool path, which can't carry images, uses the fallback
+  too.
+- **Tests:** `vision-fallback` (18): the pairing repair (nothing lost, in
+  order), the pick rules, and a real `runTurn` against two mock providers
+  with a two-call image batch: with a fallback, without one, with the vision
+  provider down, and from the text-tool path.
+
 ## 3.5.37 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** [#50](https://github.com/tattooinmtl/omni/pull/50) · `d0322d5` · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **Local AI is an install-time choice.** The installer takes `-Llama`, or
   `OMNI_LLAMA` from the one-liner: `none` (the default: nothing), `cpu`
   (the CPU llama.cpp build), `cuda` (CPU plus the CUDA 13.4 build) or `auto`
