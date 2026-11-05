@@ -781,6 +781,65 @@ so it stops guessing. `/hardware` shows each choice and why;
 so small GGUFs call real Omni tools instead of inventing them. Cloud providers
 don't get them.
 
+### Spark X2.6, the official local model
+
+Spark X2.6 4B by XHToken (arch `spark2_5`, Apache-2.0,
+1M native context) is the model Omni is tuned for. Put a Spark X2.6 GGUF in
+`C:\models` and a bare `/llama start` loads it, unless `llama.defaultModel`
+names another model that is still on disk.
+
+```text
+/llama update                     # install the pinned llama.cpp build (b12125)
+/llama spark                      # start Spark, thinking low (fast turns)
+/llama spark high                 # think harder, slower
+/llama spark none                 # no thinking at all
+/llama bench                      # llama-bench on the default model
+/llama status                     # also shows the llama.cpp build in server/
+```
+
+- **llama.cpp build.** Spark needs b10828 or later; older installs carry
+  b8996, which fails with "failed to load model". `/llama update` downloads
+  the official `ggml-org/llama.cpp` CPU release Omni pins, checks its SHA-256,
+  proves the new `llama-server.exe` runs and reports the right build, then
+  swaps it into `server/`. The previous build stays in `server.old/`.
+  `/llama start` refuses a too-old build with a pointer to `/llama update`.
+- **Quant.** With several Spark files present Omni picks Q4_K_M first, then
+  Q5_K_M, Q6_K, Q8_0. Make a Q4_K_M from the Q8_0 with the bundled tool:
+  `server\llama-quantize.exe --allow-requantize Spark-X2.6-4B-Q8_0.gguf Spark-X2.6-4B-Q4_K_M.gguf Q4_K_M`.
+- **Launch profile.** Spark's own sampling (temp 1.0, top_p 0.95, top_k off),
+  its thinking budget (`--reasoning-effort high|low`; the template rejects
+  any other level, so `none` turns reasoning off), flash attention, a q8_0 KV
+  cache (at 8k tokens of context, generation went from 5.3 to 9.3 t/s), prompt
+  threads on every logical core, a 1 GB prompt cache so Omni's system prompt
+  and tools are not reprocessed each turn, and a 32k context when
+  `llama.contextSize` is `auto`. Set the default level with
+  `llama.think: "high" | "low" | "none"`. `llama.extraArgs` still wins over
+  every profile flag.
+
+Measured on a Ryzen 7 5700U (8 cores, DDR4, CPU only), llama.cpp b12125:
+
+| Spark X2.6 4B | prompt t/s | generate t/s |
+|---|---|---|
+| Q8_0 (4.1 GB) | 34.4 | 7.5 |
+| Q4_K_M (2.4 GB) | 66.6 | 11.6 |
+
+Through Omni (`/llama spark`, Q4_K_M, q8_0 KV), the server is ready in about
+3 s and generates about 13 t/s.
+
+### Language guard
+
+Small models drift into Chinese as the context fills: Spark does it past about
+12k tokens. Omni blocks that at the sampler, not with a prompt rule.
+When it starts a model, it reads the GGUF's vocabulary and lists every token
+whose bytes can begin a Chinese, Japanese or Korean character (UTF-8 lead
+bytes `E3`–`EF`, which covers CJK punctuation, kana, ideographs, Hangul and
+full-width forms). It sends that list as `logit_bias` on every request to the
+server it started. The model cannot pick those tokens, so it cannot write
+those scripts at all. English, French accents, `— … « »` and emoji are
+untouched. For Spark that is 35,823 of 131,072 tokens. The list is cached in
+`agent/cache/`. The local-model prompt also says English, or French when you
+write in French. Turn the guard off with `llama.languageGuard: false`.
+
 ## Vision: images and videos
 
 Vision is a per-model capability. Any model marked as vision-capable can look

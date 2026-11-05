@@ -5,19 +5,25 @@ import { saveSettings, resolveModel } from "../core/config.mjs";
 import * as llama from "../local/llama.mjs";
 import { installProviderPreset } from "./models.mjs";
 import { getHardwareProfileSync, ensureHardwareProfile } from "../local/hardware-profile.mjs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { LLAMA_BUILD, installedBuild, installPinnedBuild } from "../local/llama-build.mjs";
+import { THINK_LEVELS, SPARK, officialModelFile, profileFor } from "../local/model-profiles.mjs";
 
-// Parse "[model] [backend] [--force]" from a /llama-start argument string.
-// Order-tolerant: backend can come before or after model, --force anywhere.
-// Returns { model, backend, force }. All fields may be undefined.
+// Parse "[model] [backend] [high|low|none] [--force]" from a /llama-start
+// argument string. Order-tolerant: backend and thinking level can come before
+// or after the model, --force anywhere. Returns { model, backend, force } plus
+// `think` when a thinking level was given.
 export function parseStartArgs(argStr) {
   const tokens = String(argStr || "").trim().split(/\s+/).filter(Boolean);
   const out = { model: undefined, backend: undefined, force: false };
   for (const t of tokens) {
     if (t === "--force" || t === "-f") { out.force = true; continue; }
     if (llama.SUPPORTED_BACKENDS.includes(t.toLowerCase())) { out.backend = t.toLowerCase(); continue; }
+    if (THINK_LEVELS.includes(t.toLowerCase())) { out.think = t.toLowerCase(); continue; }
     if (out.model === undefined) { out.model = t; continue; }
     // Extra tokens after a model — probably a mistyped backend.
-    throw new Error(`unexpected argument "${t}" — expected one of: ${llama.SUPPORTED_BACKENDS.join(", ")} or --force`);
+    throw new Error(`unexpected argument "${t}" — expected one of: ${llama.SUPPORTED_BACKENDS.join(", ")}, ${THINK_LEVELS.join(", ")} or --force`);
   }
   return out;
 }
@@ -92,10 +98,12 @@ export async function llamaCommand(ctx, sub, subArg) {
         infoLine(`llama server running — ${s.model} @ ${s.url} (pid ${s.pid})`);
         console.log(`    binary:  ${s.binary || "?"}${s.binarySource === "legacy-cpu" ? c.dim(" (legacy)") : ""}`);
         console.log(`    backend: ${s.backend || "?"}    threads: ${s.threads || "?"}    context: ${s.contextSize}`);
+        if (s.profile) console.log(`    profile: ${s.profile}    thinking: ${s.think}`);
       } else {
-        infoLine("llama server not running. Start with /llama-start [model] [cpu|vulkan]");
+        infoLine("llama server not running. Start with /llama-start [model] [cpu|vulkan], or /llama spark");
         infoLine(`bin dir: ${cfg.binDir}`);
       }
+      reportBuild(cfg);
       break;
     }
     case "stop": {
@@ -157,6 +165,29 @@ export async function llamaCommand(ctx, sub, subArg) {
       }
       break;
     }
+    case "spark": {
+      // Shortcut for the official model: "/llama spark", "/llama spark high".
+      const official = officialModelFile(llama.listModels(ctx.settings));
+      if (!official) {
+        warnLine(`${SPARK.label} is not in ${cfg.modelsDir} — put Spark-X2.6-4B-Q8_0.gguf there`);
+        break;
+      }
+      if (llama.status().running) {
+        llama.stopServer();
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      await llamaCommand(ctx, "start", `${official} ${subArg || ""}`.trim());
+      break;
+    }
+    case "update":
+    case "upgrade": {
+      await updateCommand(cfg, subArg);
+      break;
+    }
+    case "bench": {
+      benchCommand(ctx, cfg, subArg);
+      break;
+    }
     case "start":
     case "load": {
       let parsed;
@@ -169,7 +200,7 @@ export async function llamaCommand(ctx, sub, subArg) {
 
       let target;
       try {
-        target = (parsed.model ? pickModel(parsed.model) : "") || cfg.defaultModel;
+        target = (parsed.model ? pickModel(parsed.model) : "") || llama.defaultModelFor(ctx.settings);
       } catch (e) {
         errorLine(e.message);
         break;
@@ -210,8 +241,11 @@ export async function llamaCommand(ctx, sub, subArg) {
           onLog: (m) => warnLine(m),
           backend: safety.backend,
           threads,
+          think: parsed.think,
         });
-        const think = info.thinking ? " · thinking 🧠" : "";
+        const think = info.profile
+          ? ` · ${info.profile} · thinking ${info.think}`
+          : (info.thinking ? " · thinking 🧠" : "");
         infoLine(`llama server ready — ${info.model} @ ${info.url} (${info.contextSize} ctx${think})`);
         console.log(`    binary: ${info.binary}    backend: ${info.backend}    threads: ${info.threads}`);
         installProviderPreset(ctx, "local");
@@ -233,6 +267,79 @@ export async function llamaCommand(ctx, sub, subArg) {
       break;
     }
     default:
-      errorLine(`unknown /llama subcommand "${sub}". Usage: /llama [list|default <number>|start [model] [cpu|vulkan] [--force]|stop|restart|status]`);
+      errorLine(`unknown /llama subcommand "${sub}". Usage: ${LLAMA_USAGE}`);
   }
+}
+
+export const LLAMA_USAGE =
+  "/llama [list|spark [high|low|none]|start [model] [cpu|vulkan] [high|low|none] [--force]|default <number>|stop|restart|status|update|bench [model]]";
+
+function serverExe(cfg) {
+  return path.join(cfg.binDir, process.platform === "win32" ? "llama-server.exe" : "llama-server");
+}
+
+function reportBuild(cfg) {
+  const build = installedBuild(serverExe(cfg));
+  if (build === null) return;
+  const behind = build < LLAMA_BUILD.build;
+  console.log(`    llama.cpp: b${build}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update)`) : c.dim("  (current)")}`);
+}
+
+// /llama update [--force] — install the pinned llama.cpp build into binDir.
+async function updateCommand(cfg, arg) {
+  const force = /(^|\s)(--force|-f)(\s|$)/.test(arg || "");
+  if (llama.status().running) {
+    errorLine("stop the local llama server first (/llama stop) — Windows locks its files while it runs");
+    return;
+  }
+  const have = installedBuild(serverExe(cfg));
+  if (have !== null && have >= LLAMA_BUILD.build && !force) {
+    infoLine(`llama.cpp is already b${have} (pinned: b${LLAMA_BUILD.build}). /llama update --force reinstalls it.`);
+    return;
+  }
+  infoLine(`updating llama.cpp in ${cfg.binDir}: ${have === null ? "none" : `b${have}`} → b${LLAMA_BUILD.build}`);
+  let lastPct = -1;
+  const endProgress = () => { if (lastPct >= 0) process.stdout.write("\n"); lastPct = -1; };
+  try {
+    const r = await installPinnedBuild(cfg.binDir, {
+      onStep: (m) => { endProgress(); infoLine(m); },
+      onProgress: (got, total) => {
+        if (!total || !process.stdout.isTTY) return;
+        const pct = Math.floor((got / total) * 100);
+        if (pct !== lastPct) { lastPct = pct; process.stdout.write(`\r    ${pct}%`); }
+      },
+    });
+    endProgress();
+    infoLine(`llama.cpp is now b${r.to}${r.backup ? ` — previous build kept in ${r.backup}` : ""}`);
+  } catch (e) {
+    endProgress();
+    const locked = /EBUSY|EPERM|EACCES/.test(`${e.code || ""} ${e.message}`);
+    errorLine(locked
+      ? `could not replace ${cfg.binDir}: a program is still using it (another llama-server?). Close it and retry. (${e.message})`
+      : e.message);
+  }
+}
+
+// /llama bench [model] — llama-bench on a model, same threads /llama start uses.
+function benchCommand(ctx, cfg, arg) {
+  const exe = path.join(cfg.binDir, process.platform === "win32" ? "llama-bench.exe" : "llama-bench");
+  let file;
+  try {
+    file = (arg && llama.resolveModelFile(ctx.settings, arg.trim())) || llama.defaultModelFor(ctx.settings);
+  } catch (e) {
+    errorLine(e.message);
+    return;
+  }
+  if (!file) { warnLine("which model? /llama bench <model>"); return; }
+  if (llama.status().running) warnLine("the llama server is running and shares the CPU — numbers will read low");
+  const profile = getHardwareProfileSync();
+  const threads = (profile && profile.recommendedThreads) || cfg.threads || 4;
+  const fa = profileFor(file) ? ["-fa", "1"] : [];
+  infoLine(`llama-bench ${file} — ${threads} threads (prompt 512, generate 128)`);
+  const r = spawnSync(exe, ["-m", path.join(cfg.modelsDir, file), "-t", String(threads), "-p", "512", "-n", "128", "-r", "2", ...fa], {
+    cwd: cfg.binDir,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  if (r.error) errorLine(`could not run ${exe}: ${r.error.message}`);
 }

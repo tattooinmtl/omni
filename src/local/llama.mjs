@@ -10,9 +10,15 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readGgufMetadata, isThinkingModel } from "./gguf.mjs";
+import { profileFor, profileArgs, officialModelFile, normalizeThink } from "./model-profiles.mjs";
+import { installedBuild } from "./llama-build.mjs";
+import { cjkBanList, logitBiasBody } from "./language-guard.mjs";
+import { setRequestExtras, clearRequestExtras } from "./request-extras.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
+// Same home as core/config.mjs (not imported, to keep this module standalone).
+const CACHE_DIR = path.join(process.env.OMNI_HOME || path.join(INSTALL_ROOT, "agent"), "cache");
 
 let child = null;    // current llama-server child process (or null)
 let current = null;  // { model, host, port, pid, url } while running
@@ -58,8 +64,9 @@ export function binaryFor(cfg, backend) {
 
 // Build the spawn args for llama-server. Pure function so tests can assert
 // the flag layout without spawning. Threads are always passed explicitly so
-// logs show what we picked.
-export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx }) {
+// logs show what we picked. A profiled model (model-profiles.mjs) adds its own
+// flags; the user's llama.extraArgs come last so they win over the profile.
+export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx, think, threadsBatch }) {
   const ngl = backend === "cpu" ? 0 : (Number.isFinite(cfg.ngl) && cfg.ngl > 0 ? cfg.ngl : 999);
   const args = [
     "-m", modelPath,
@@ -69,6 +76,7 @@ export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx }) {
     "-ngl", String(ngl),
     "-t", String(threads),
     "--jinja",
+    ...profileArgs(profileFor(modelPath), { think: think ?? cfg.think, threadsBatch }),
     ...cfg.extraArgs,
   ];
   return args;
@@ -97,6 +105,12 @@ export function llamaConfig(settings) {
     // the whole system.
     ngl: cfg.ngl ?? 0,
     defaultModel: cfg.defaultModel || "",
+    // Thinking budget for models with a profile that supports it
+    // (high | low | none). Unset = the profile's default.
+    think: cfg.think || "",
+    // Ban every token that can start a Chinese/Japanese/Korean character
+    // (language-guard.mjs). On unless set to false.
+    languageGuard: cfg.languageGuard !== false,
     extraArgs: Array.isArray(cfg.extraArgs) ? cfg.extraArgs : [],
     // Explicit -t <n>. If unset here, startServer falls back to
     // hardware-profile physical cores (Phase C) or os.cpus() at the tail.
@@ -164,6 +178,21 @@ export function resolveModelFile(settings, name) {
   return null;
 }
 
+// The model a bare `/llama start` loads: llama.defaultModel when that file is
+// still in the models folder, otherwise the official model (Spark X2.6) when
+// present. Returns "" when neither is available.
+export function defaultModelFor(settings) {
+  const cfg = llamaConfig(settings);
+  if (cfg.defaultModel) {
+    try {
+      if (resolveModelFile(settings, cfg.defaultModel)) return cfg.defaultModel;
+    } catch {
+      return cfg.defaultModel; // ambiguous: let startServer report it
+    }
+  }
+  return officialModelFile(listModels(settings)) || "";
+}
+
 export function status() {
   if (child && current) return { running: true, ...current };
   return { running: false };
@@ -173,7 +202,7 @@ export function status() {
 // Resolves once the /health endpoint reports ready, or throws on failure.
 // opts.backend: "cpu" | "vulkan" — picks which binary to spawn.
 // opts.threads: physical-core count to pass with -t.
-export async function startServer(settings, modelName, { onLog, backend, threads } = {}) {
+export async function startServer(settings, modelName, { onLog, backend, threads, think } = {}) {
   const cfg = llamaConfig(settings);
   if (child) {
     throw new Error(
@@ -188,7 +217,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   }
   const resolvedBackend = bin.backend;
 
-  const wanted = modelName || cfg.defaultModel;
+  const wanted = modelName || defaultModelFor(settings);
   const file = resolveModelFile(settings, wanted);
   if (!file) {
     throw new Error(
@@ -198,6 +227,19 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     );
   }
   const modelPath = path.join(cfg.modelsDir, file);
+  const profile = profileFor(file);
+
+  // A profiled model can need a newer llama.cpp than the one installed (Spark
+  // X2.6 needs b10828+; older builds fail with a bare "failed to load model").
+  let build = null;
+  if (profile && profile.minBuild) {
+    build = installedBuild(bin.path);
+    if (build !== null && build < profile.minBuild) {
+      throw new Error(
+        `${profile.label} needs llama.cpp build ${profile.minBuild} or later; ${path.basename(bin.path)} is build ${build}. Run /llama update.`
+      );
+    }
+  }
 
   // Decide context size: explicit setting, or auto-detect from the GGUF header
   // (capped at maxAutoContext to keep memory in check).
@@ -207,6 +249,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   if (auto) {
     const trained = insp && insp.contextLength ? insp.contextLength : 0;
     nCtx = trained ? Math.min(trained, cfg.maxAutoContext) : 4096;
+    if (profile && profile.contextSize) nCtx = Math.min(nCtx, profile.contextSize);
   }
 
   // Threads: explicit opt → settings → default to logical count. Physical
@@ -215,11 +258,17 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     ? threads
     : (Number.isFinite(cfg.threads) && cfg.threads > 0 ? cfg.threads : os.cpus().length);
 
+  const thinkLevel = profile ? normalizeThink(think ?? cfg.think, profile) : null;
   const args = buildStartArgs(cfg, modelPath, {
     backend: resolvedBackend,
     threads: resolvedThreads,
     nCtx,
+    think: thinkLevel,
   });
+
+  // Built from the GGUF vocabulary (cached after the first time), applied to
+  // every request once the server is up.
+  const banned = cfg.languageGuard ? cjkBanList(modelPath, { cacheDir: CACHE_DIR }) : [];
 
   const proc = spawn(bin.path, args, {
     cwd: cfg.binDir,        // so the bundled ggml-*.dll / llama.dll resolve
@@ -240,7 +289,12 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     threads: resolvedThreads,
     binary: path.basename(bin.path),
     binarySource: bin.source,
+    build,
+    profile: profile ? profile.label : null,
+    think: thinkLevel,
+    languageGuard: banned.length,
   };
+  const url = current.url;
 
   // Surface fatal startup errors (e.g. failed model load) to the caller's log.
   let stderrTail = "";
@@ -249,11 +303,13 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   });
   proc.on("exit", (code) => {
     if (onLog && code) onLog(`llama server exited (code ${code})`);
+    clearRequestExtras(url);
     child = null;
     current = null;
   });
   proc.on("error", (err) => {
     if (onLog) onLog(`llama server error: ${err.message}`);
+    clearRequestExtras(url);
     child = null;
     current = null;
   });
@@ -267,6 +323,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     }
     throw new Error("llama server did not become ready within 180s (large model still loading?)");
   }
+  if (banned.length) setRequestExtras(url, { logit_bias: logitBiasBody(banned) });
   return { ...current };
 }
 
@@ -292,6 +349,7 @@ async function waitForReady(host, port, timeoutMs, alive) {
 export function stopServer() {
   if (!child) return false;
   const pid = child.pid;
+  if (current) clearRequestExtras(current.url);
   try {
     if (process.platform === "win32") {
       spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
