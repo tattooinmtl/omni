@@ -5,6 +5,7 @@
 // category, and unknown input gets a nearest-command suggestion. Handlers can
 // return { startTurn: true, prompt } to hand control to the agent loop.
 
+import { syntheticUser } from "../core/synthetic.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -533,7 +534,7 @@ export const COMMANDS = [
       if (!p || !fs.existsSync(p)) { warnLine(`no tool body found for hash ${hash}.`); return; }
       let raw = "";
       try { raw = fs.readFileSync(p, "utf8"); } catch (e) { errorLine(e.message); return; }
-      ctx.messages.push({ role: "user", content: `[expanded tool body, hash=${hash}]\n${raw}` });
+      ctx.messages.push(syntheticUser(`[expanded tool body, hash=${hash}]\n${raw}`));
       infoLine(`expanded tool body (${raw.length} bytes) into the conversation as a new user message.`);
     },
   },
@@ -1234,7 +1235,7 @@ export const COMMANDS = [
   },
   {
     name: "connect", aliases: [], usage: "/connect", category: "Models & Providers",
-    summary: "unified provider + model picker — pick a configured provider or a preset, add a key if needed, then choose a model",
+    summary: "open the provider card: pick a provider, enter endpoint and key, pick a model by number",
     handler: async (ctx) => connectInteractive(ctx),
   },
   {
@@ -1244,7 +1245,7 @@ export const COMMANDS = [
   },
   {
     name: "addprovider", aliases: [], usage: "/addprovider [name baseUrl [apiKey]]", category: "Models & Providers",
-    summary: "pick a provider preset (arrow-key menu) or supply <name> <baseUrl> [apiKey] directly",
+    summary: "open the provider card (endpoint, key, then a numbered model list), or supply <name> <baseUrl> [apiKey] directly",
     handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
   },
   {

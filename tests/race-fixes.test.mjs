@@ -24,6 +24,17 @@ const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([a-zA-Z
 const root = path.join(here, "..");
 const u = (p) => pathToFileURL(path.join(root, "src", p)).href;
 
+// A home of its own, seeded with 1200 atoms. Without it this suite wrote a
+// "cache invalidation probe" fact into the real ~/.omni/agent memory on
+// every npm test run (111 of them had piled up).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "omni-race-home-"));
+process.env.OMNI_HOME = home;
+process.on("exit", () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ } });
+const seedAt = new Date().toISOString();
+fs.writeFileSync(path.join(home, "memory-atoms.jsonl"), Array.from({ length: 1200 }, (_, i) =>
+  JSON.stringify({ id: `seed${i}`, type: "fact", text: `seeded fact number ${i} about the cache`, confidence: 0.5, status: "active", createdAt: seedAt })
+).join("\n") + "\n");
+
 // ============================================================================
 // #11 extractAtomsFromMessages — disk reads are bounded by the cache
 // ============================================================================
@@ -63,14 +74,27 @@ await ok("#11 currentAtoms() invalidates after an append (propose changes the fi
 await ok("#11 cache hit is materially faster than a cold read (1000+ atoms)", async () => {
   const memMod = await import(u("core/memory-provider.mjs"));
   const { currentAtoms } = memMod;
-  // Warm cache.
+  const file = path.join(home, "memory-atoms.jsonl");
+  assert.ok(currentAtoms().length >= 1000, "the seeded store should hold 1000+ atoms");
+  // Cold: move the mtime before each call, so every call re-reads and
+  // re-parses the store.
+  const N = 50;
+  let t0 = performance.now();
+  for (let i = 0; i < N; i++) {
+    const t = new Date(Date.now() + (i + 1) * 1000);
+    fs.utimesSync(file, t, t);
+    currentAtoms();
+  }
+  const coldPer = (performance.now() - t0) / N;
+  // Warm: the file is unchanged, so each call is a stat and the cached array.
   currentAtoms();
-  const t0 = Date.now();
-  for (let i = 0; i < 1000; i++) currentAtoms();
-  const warmMs = Date.now() - t0;
-  // 1000 cache hits in single-digit ms — anything slower suggests the cache
-  // is being bypassed (which is what made the O(n²) cliff so steep).
-  assert.ok(warmMs < 100, `1000 cached currentAtoms() calls took ${warmMs}ms — cache appears to be bypassed`);
+  t0 = performance.now();
+  for (let i = 0; i < N; i++) currentAtoms();
+  const warmPer = (performance.now() - t0) / N;
+  // Relative, not a fixed budget: a stat costs ~0.1 ms on Windows with
+  // Defender, which failed the old "1000 calls under 100 ms" bound on a
+  // working cache. A bypassed cache makes warm calls as slow as cold ones.
+  assert.ok(warmPer * 5 < coldPer, `warm call ${warmPer.toFixed(3)}ms vs cold ${coldPer.toFixed(3)}ms — cache appears to be bypassed`);
 });
 
 // ============================================================================

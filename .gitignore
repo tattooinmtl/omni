@@ -41,6 +41,9 @@ docs/*
 !/CLAUDE.md
 !prompts/**/*.md
 !skills/**/*.md
+# The built-in sub-agents (explorer, reviewer, tester). This line was missing,
+# so they never reached the repo and no install had them.
+!/agents/*.md
 !packages/**/SKILL.md
 !packages/**/README.md
 !docs/EXTENDING.md

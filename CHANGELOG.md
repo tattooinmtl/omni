@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.39 — 2026-11-05
+## 3.5.41 — 2026-11-05
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,80 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.40 — 2026-11-05
+
+- **Shipped:** [#53](https://github.com/tattooinmtl/omni/pull/53) · `56648e3` · TattooAI/provider-card · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **Fix: `Provider 400: max_tokens must be less than or equal to 4096`.**
+  Fetched models got Omni's default output cap (8192) whatever the provider
+  allowed, so TokenLab's `allam-2-7b` (4096) refused every message. Models
+  are now capped at the output limit the provider reports (TokenLab's
+  `max_output_tokens`, OpenRouter's `top_provider.max_completion_tokens`).
+  For a model already saved with too high a cap, a 400 that names the limit
+  is retried once with it, and the limit is saved, so the conversation goes
+  on and the next session doesn't hit it.
+- **The provider card.** `/addprovider` and `/connect` open one small window
+  over the terminal (the alternate screen, so the conversation behind it is
+  untouched). Pick a provider by number or name (configured ones first, then
+  presets, then a custom one), fill in the endpoint and the API key (shown
+  masked; a saved key is kept unless you type a new one), and Enter. Omni
+  loads the model list with that key and shows it numbered, with each
+  model's context window, output limit and vision. Type the number (or
+  letters to filter) and Enter: Omni sends the model one small request, and
+  only switches to it when it answers. A refused key returns to the form
+  with the reason; a model that won't answer stays on the list with the
+  provider's message. A provider whose models can't be loaded is not kept.
+  Esc goes back one step.
+- **`/provider <name>` no longer takes the first model A–Z.** With several
+  models (TokenLab has 144) it opens the card on that provider's list, the
+  current model marked; with none, on its key form. Scripts and piped input
+  keep the old behaviour, and the typed forms (`/addprovider <name> <url>
+  [key]`, `/apikey`, `/provider add|edit|login`) are unchanged.
+- **Tests:** `provider-card` (11) runs the card on a fake keyboard and screen
+  against a local TokenLab-shaped server: a custom provider from name to a
+  model picked by number (saved, tested, switched), a wrong key (refused,
+  nothing kept), `/provider` opening on the list with the current model
+  marked, Ctrl+C while the list loads (nothing drawn after), the limit
+  parsed from TokenLab's message and others, the retry with the limit, the
+  cap on fetched models, list numbering and filtering, form checks, and that
+  every card line is the same width with the key masked.
+
+## 3.5.39 — 2026-11-05
+
+- **Shipped:** [#52](https://github.com/tattooinmtl/omni/pull/52) · `6d94014` · TattooAI/omni-audit-review-e49b75 · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **The built-in sub-agents ship.** `explorer`, `reviewer` and `tester`
+  (README, `/agents`, `spawn_agent`) were never in the repo: `.gitignore`
+  ignores `*.md` with a list of exceptions, and `agents/` wasn't on it, so the
+  three files lived only on one developer's disk and no install had them.
+  They are now tracked (the original definitions, unchanged).
+- **Memory no longer saves Omni's own notes as facts.** The automatic
+  extractor read every user-role message as the user's words, including the
+  ones Omni writes: compaction digests ("[CONTEXT COMPACTED] … Continue the
+  task from the recent messages below."), the "[system note]" iteration
+  warning, Stop-hook nudges, image labels, goal continuations and the
+  malformed-tool-call retry, skill invocations, the learned-skill request,
+  and context a prompt hook adds. Each user-role message now says where it
+  came from (`core/synthetic.mjs`, kept off the message so strict providers
+  never see it, and in the session log so a resumed session knows too).
+  Memory keeps only the user's own words: a `/btw` note without its wrapper,
+  a skill's arguments, a prompt without the hook's additions. A message you
+  typed is kept whole even if it starts like one of Omni's notes; only logs
+  written before this change are told apart by how a message starts.
+- **The test suite no longer writes into your real memory.** `race-fixes`
+  ran without its own `OMNI_HOME`, so every `npm test` added a "cache
+  invalidation probe" atom to `~/.omni/agent/memory-atoms.jsonl`. It now uses
+  a temp home seeded with 1200 atoms. Existing probe atoms are not removed.
+- **Tests:** the atom-cache timing check compares warm calls with cold reads
+  instead of a fixed 100 ms budget, which a working cache missed on Windows
+  (each call still stats the file). `provider-auto-models` and
+  `last-model-exit` retry their temp-folder cleanup instead of crashing the
+  suite with EPERM when a process the child started still holds it.
+  `agents` asks git (`check-ignore --no-index`, which also catches a rule
+  matching a tracked file) that the built-in agents are not ignored;
+  `memory` (3 new) builds each note with the code that writes it and checks
+  the exact set of atoms extracted, live, from a resumed log, and from an
+  old unmarked log, including a typed message that starts with
+  "[system note]" and a prompt a hook added a rule to.
 
 ## 3.5.38 — 2026-11-05
 

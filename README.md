@@ -207,7 +207,7 @@ Omni ships **with no API keys**; supply your own. The first run writes a clean
 ```powershell
 node bin\omni.mjs --set-key nvidia nvapi-xxxxxxxx   # save a key, then exit
 # …or inside the REPL:  /apikey nvidia nvapi-xxxxxxxx
-# …or /connect for a guided provider + key + model picker
+# …or /addprovider (or /connect): endpoint, key, then pick a model by number
 ```
 
 Keys can also come from environment variables or a `.env` file
@@ -238,12 +238,20 @@ Shipped presets: `xkiro` (default), `nvidia`, `minimax.io`, `agnes`, `atria`,
 `reflection`, `openai`, `openrouter`, `groq`, `deepseek`, `google`, `xai`,
 `grok`, `mistral`, `kimi`, `claude`, `cursor`, `together`, `fireworks`, `tokenlab`,
 `ollama` and `local`.
-Any other OpenAI-compatible endpoint works through `/addprovider`. A provider
-loads its model list as soon as it is added or gets a key, and `/provider <name>`
-loads it if it is still empty, so a new provider is never stuck without models.
+Any other OpenAI-compatible endpoint works through `/addprovider`, which opens
+the **provider card**: a small window over the terminal where you pick a
+provider by number or name, fill in its endpoint and API key, and Enter. Omni
+loads the model list with that key and shows it numbered, with each model's
+context window, output limit and vision support; type the number and Enter.
+The chosen model gets one small test request before Omni switches to it, so a
+bad key or a model the provider won't serve shows up there, not mid-task.
+`/provider <name>` opens the same list for a provider with several models.
+Each model's output limit comes from the provider's list, and a provider that
+refuses `max_tokens` and names its limit is retried with it.
 
 ```text
-/connect                      pick provider → add key if needed → pick model
+/addprovider                  the provider card: endpoint + key → numbered model list
+/connect                      the same card
 /model                        arrow-key model picker
 /getmodel minimax             fetch a provider's live model list and save it
 /addprovider myhost https://api.example.com/v1 sk-xxxx

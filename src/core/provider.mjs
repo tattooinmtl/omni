@@ -220,29 +220,50 @@ function ensureValidBaseUrl(provider, context = "provider") {
   return base.replace(/\/$/, "");
 }
 
-export async function chatStream({ model, messages, tools, signal, onToken }) {
-  const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/chat/completions";
-  const body = buildChatBody({ model, messages, tools });
+// The output cap a provider names when it refuses max_tokens, or null.
+// Seen: TokenLab/Groq "`max_tokens` must be less than or equal to `4096`",
+// OpenAI "max_tokens is too large: 9000. This model supports at most 4096
+// completion tokens", Anthropic-style "max_tokens: 9000 > 4096".
+export function maxTokensCapFrom(text) {
+  const s = String(text || "");
+  if (!/max_tokens|max_completion_tokens|completion tokens|output tokens/i.test(s)) return null;
+  const m = s.match(/(?:less than or equal to|<=|at most|maximum(?: value)?(?: for \S+)? is|cannot exceed|must not exceed|up to)\s*`?(\d{2,7})`?/i)
+    || s.match(/max_tokens\S*:?\s*\d+\s*>\s*(\d{2,7})/i);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: authHeaders(model.provider),
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  if (!res.ok) {
+// POST a request; when the provider refuses max_tokens and names its
+// ceiling, lower max_tokens to it and try once more. The new cap is kept on
+// `model` for the rest of the session and reported through onTokenCap so the
+// caller can save it.
+async function postWithTokenCap(url, model, body, { signal, onTokenCap } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body), signal });
+    if (res.ok) return res;
     const text = await res.text().catch(() => "");
+    const cap = res.status === 400 && attempt === 0 ? maxTokensCapFrom(extractProviderMessage(text) || text) : null;
+    if (cap && body.max_tokens && cap < body.max_tokens) {
+      body.max_tokens = cap;
+      model.maxTokens = cap;
+      try { onTokenCap?.(cap); } catch { /* saving is best effort */ }
+      continue;
+    }
     throw new Error(formatProviderError(res, text, model));
   }
+}
 
+export async function chatStream({ model, messages, tools, signal, onToken, onTokenCap }) {
+  const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/chat/completions";
+  const body = buildChatBody({ model, messages, tools });
+  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap });
   return await consumeStream(res, onToken);
 }
 
 // Template-based path: the prompt is already rendered by Jinja2.
 // Uses /v1/completions (raw text) instead of /v1/chat/completions.
 // Tool definitions are baked into the prompt; the caller parses <tool_call> XML.
-export async function completionStream({ model, prompt, signal, onToken }) {
+export async function completionStream({ model, prompt, signal, onToken, onTokenCap }) {
   const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/completions";
   const body = {
     model: model.id,
@@ -255,11 +276,7 @@ export async function completionStream({ model, prompt, signal, onToken }) {
   applyReasoning(body, model);
   applyRequestExtras(body, model.provider?.baseUrl);
 
-  const res = await fetch(url, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body), signal });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(formatProviderError(res, text, model));
-  }
+  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap });
   return await consumeCompletionStream(res, onToken);
 }
 
@@ -315,6 +332,9 @@ export function modelMetaFrom(m) {
   else if (Array.isArray(inputs)) meta.vision = inputs.includes("image");
   const ctx = Number(ext.max_input_tokens ?? m.context_length ?? m.context_window);
   if (Number.isFinite(ctx) && ctx > 0) meta.contextWindow = ctx;
+  // The most a reply may be: requests asking for more are refused outright.
+  const out = Number(ext.max_output_tokens ?? m.top_provider?.max_completion_tokens ?? m.max_output_tokens ?? m.max_completion_tokens);
+  if (Number.isFinite(out) && out > 0) meta.maxOutput = out;
   const category = ext.category ?? m.category;
   if (typeof category === "string") meta.chat = category.toLowerCase() === "chat";
   return meta;
