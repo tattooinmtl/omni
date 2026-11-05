@@ -391,10 +391,13 @@ function abortableSleep(ms, signal) {
 // accounts (settings.providers.<name>.accounts), a rate-limit error first
 // rotates to the next account and retries almost immediately — backoff only
 // kicks in once every account has been tried.
-async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt }) {
+// `allowFailover: false` keeps the request on this model (account rotation
+// and backoff still apply): a vision-fallback step carries image parts that a
+// failover model may not be able to see.
+async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt, allowFailover = true }) {
   let attempt = 0;
   let rotations = 0;
-  const failoverChain = buildRateLimitChain(settings);
+  const failoverChain = allowFailover ? buildRateLimitChain(settings) : [];
   let failoverIndex = failoverChain.findIndex((hop) => hopMatchesModel(hop, model));
   const failoverActive = failoverIndex >= 0;
   let checkpointOpened = false;
@@ -844,6 +847,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   // description of an image it never received. Pixels now go only to a model
   // declared vision-capable (`vision: true` on the model or its provider).
   const canSeeImages = model.vision === true;
+  // Whether this model's own request path can carry the pixels: the template
+  // and text-tool paths strip them even for a vision-capable model.
+  const sendsImages = canSeeImages && !useTemplate && !useTextTools;
 
   // Schema registry for the tolerant text-tool parser, and a budget of
   // corrective retries when the model emits a malformed/truncated tool call.
@@ -855,6 +861,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   let stopContinuations = 0;
   // Vision models already announced this turn (one note per model).
   const visionNoted = new Set();
+  // Set when a vision-fallback request fails: the rest of the turn stays on
+  // the user's model (images omitted) instead of stopping.
+  let visionFallbackFailed = false;
 
   for (let i = 0; i < maxIterations; i++) {
     // Keep the conversation inside the model's context window. Classic mode
@@ -910,8 +919,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // vision-fallback.mjs). It is always a native-tools model, so the step
     // uses the native path whatever the active model's own path is.
     let hopModel = model;
-    if (!canSeeImages && hasNewImages(messages)) {
-      const visionKey = pickVisionModel(settings, model);
+    if (!sendsImages && !visionFallbackFailed && hasNewImages(messages)) {
+      const visionKey = pickVisionModel(settings, model, { messages, tokens: estimateTokens(messages) });
       if (visionKey) {
         try {
           hopModel = resolveModel(settings, visionKey);
@@ -983,6 +992,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           session,
           messages: providerMessages,
           tools: hopTextTools ? null : turnTools,
+          allowFailover: hopModel === model,
           signal,
           // Always count real deltas so the generation panel's token/TPS
           // readout is accurate. In text-tools mode we still skip routing
@@ -1009,6 +1019,15 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       if (e.name === "AbortError" || signal?.aborted) {
         warnLine("interrupted");
         return { stop: "aborted" };
+      }
+      // The vision fallback failed, not the user's model: redo this step on
+      // the user's model, with the images omitted, rather than end the turn.
+      if (hopModel !== model) {
+        visionFallbackFailed = true;
+        const why = (e.message || String(e)).split(/\r?\n/)[0].slice(0, 160);
+        warnLine(`vision fallback ${hopModel.key} failed (${why}) — continuing on ${model.key} without the images`);
+        i--;
+        continue;
       }
       errorLine(e.message || String(e));
       session.append({ type: "error", message: e.message || String(e) });

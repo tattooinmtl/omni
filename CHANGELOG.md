@@ -32,9 +32,18 @@ entries were rebuilt from git history).
   was always on the startup model. Exit now saves the model in use.
 - **Tests:** `last-model-exit` (2) runs the real CLI with a temp home:
   `/model` then `/exit` keeps the new model; no switch keeps the startup one.
-- **Tests:** `vision-fallback` (14): the pairing repair, the pick order, and
-  a real `runTurn` against the mock provider with a two-call image batch,
-  with and without a fallback model.
+- **Review fixes (vision fallback).** A model qualifies only when the key the
+  request sends (the active account's) is set, its provider accepts this
+  history (one that needs every reply's reasoning is skipped when a reply has
+  none), and its context window holds the request. A failed vision request
+  redoes the step on your model without the images instead of ending the
+  turn, and it never fails over to another model. A vision-capable model on
+  the template or text-tool path, which can't carry images, uses the fallback
+  too.
+- **Tests:** `vision-fallback` (18): the pairing repair (nothing lost, in
+  order), the pick rules, and a real `runTurn` against two mock providers
+  with a two-call image batch: with a fallback, without one, with the vision
+  provider down, and from the text-tool path.
 
 ## 3.5.37 — 2026-11-05
 

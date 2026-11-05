@@ -115,6 +115,12 @@ await ok("buildChatBody sends the repaired order on native-tools providers", () 
     tools: [],
   });
   assertPaired(body.messages);
+  // Nothing lost: both calls, both results' contents, then the image.
+  const asst = body.messages.find((m) => m.role === "assistant");
+  assert.deepEqual(asst?.tool_calls?.map((c) => c.id), ["a", "b"]);
+  assert.deepEqual(body.messages.map((m) => m.role), ["user", "assistant", "tool", "tool", "user"]);
+  assert.deepEqual(body.messages.filter((m) => m.role === "tool").map((m) => m.content), ["ra", "rb"]);
+  assert.ok(body.messages.at(-1).content.some((p) => p.type === "image_url"), "image message kept, after the results");
 });
 
 // ── hasNewImages / pickVisionModel ─────────────────────────────────────────
@@ -154,14 +160,38 @@ await ok("prefers a vision model on the active model's own provider", () => {
   assert.equal(pickVisionModel(s, active), "blind/eye");
 });
 
-await ok("a provider key held only in accounts counts", () => {
+await ok("only the key the request sends counts, not an inactive account's", () => {
   const s = pickSettings();
   delete s.models["seeing/eye"];
+  // accts holds a key only in a non-active account: apiKey is empty, so a
+  // request would go out with no credentials.
+  assert.equal(pickVisionModel(s, active), null);
+  // loadSettings mirrors the active account's key into apiKey.
+  s.providers.accts.apiKey = "k1";
+  s.providers.accts.activeAccount = "one";
   assert.equal(pickVisionModel(s, active), "accts/eye");
 });
 
+await ok("a provider that needs every reply's reasoning is skipped for a history without it", () => {
+  const s = pickSettings();
+  s.providers.seeing.echoReasoning = true;
+  s.providers.accts.apiKey = "k1";
+  const bare = [{ role: "user", content: "hi" }, { role: "assistant", content: "391" }];
+  assert.equal(pickVisionModel(s, active, { messages: bare }), "accts/eye");
+  const reasoned = [{ role: "user", content: "hi" }, { role: "assistant", content: "391", reasoning_content: "because" }];
+  assert.equal(pickVisionModel(s, active, { messages: reasoned }), "seeing/eye");
+});
+
+await ok("a model whose context window can't hold the request is skipped", () => {
+  const s = pickSettings();
+  s.models["seeing/eye"].contextWindow = 8000;
+  s.providers.accts.apiKey = "k1";
+  assert.equal(pickVisionModel(s, active, { tokens: 7500 }), "accts/eye");
+  assert.equal(pickVisionModel(s, active, { tokens: 1000 }), "seeing/eye");
+});
+
 await ok("visionFallback: a model key is used, false turns it off", () => {
-  assert.equal(pickVisionModel(pickSettings({ visionFallback: "accts/eye" }), active), "accts/eye");
+  assert.equal(pickVisionModel(pickSettings({ visionFallback: "seeing/eye" }), active), "seeing/eye");
   assert.equal(pickVisionModel(pickSettings({ visionFallback: "nokey/eye" }), active), null);
   assert.equal(pickVisionModel(pickSettings({ visionFallback: false }), active), null);
   assert.equal(pickVisionModel(pickSettings({ visionFallback: "off" }), active), null);
@@ -177,54 +207,81 @@ await ok("no vision model anywhere: null", () => {
 impl.test_snap = async () => ({ _omni_image: true, mime: "image/png", base64: "AAAA", text: "snap" });
 impl.test_echo = async () => "echoed";
 
-async function turn(extraSettings) {
-  const mock = await startMockProvider([
-    { tools: [{ tool: "test_snap" }, { tool: "test_snap" }] },
-    { tool: "test_echo" },
-    "all done",
-  ]);
+// The user's provider and the vision provider are separate mock servers, so
+// each request is checked by where it arrived, not only by its model id.
+const BATCH = [{ tools: [{ tool: "test_snap" }, { tool: "test_snap" }] }, { tool: "test_echo" }, "all done"];
+async function turn({
+  extraSettings = {}, mainScript = BATCH, eyesScript = [{ tool: "test_echo" }, "all done"],
+  eyesDown = false, mainExtra = {}, firstUser = "take two snaps",
+} = {}) {
+  const main = await startMockProvider(mainScript);
+  const eyes = await startMockProvider(eyesScript);
   try {
     const settings = {
       defaultModel: "mock/main",
       providers: {
-        mock: { baseUrl: mock.baseUrl, apiKey: "k-test" },
-        eyes: { baseUrl: mock.baseUrl, apiKey: "k-test" },
+        mock: { baseUrl: main.baseUrl, apiKey: "k-test" },
+        // eyesDown: an endpoint that refuses connections.
+        eyes: { baseUrl: eyesDown ? "http://127.0.0.1:9/v1" : eyes.baseUrl, apiKey: "k-test" },
       },
       models: {
-        "mock/main": { provider: "mock", id: "main-model", maxTokens: 512, contextWindow: 32768 },
+        "mock/main": { provider: "mock", id: "main-model", maxTokens: 512, contextWindow: 32768, ...mainExtra },
         "eyes/see": { provider: "eyes", id: "vision-model", maxTokens: 512, contextWindow: 32768, vision: true },
       },
       ...extraSettings,
     };
-    const messages = [{ role: "system", content: "sys" }, { role: "user", content: "take two snaps" }];
-    await runTurn({ model: resolveModel(settings, "mock/main"), settings, messages, session: new MockSession(), maxIterations: 6, diffPreview: false });
-    return { requests: mock.requests, messages };
+    const messages = [{ role: "system", content: "sys" }, { role: "user", content: firstUser }];
+    const out = await runTurn({ model: resolveModel(settings, "mock/main"), settings, messages, session: new MockSession(), maxIterations: 6, diffPreview: false });
+    return { main: main.requests, eyes: eyes.requests, messages, out };
   } finally {
-    await mock.close();
+    await main.close();
+    await eyes.close();
   }
 }
 
-const withFallback = await turn({});
+// main: the batch, then (after the vision step's test_echo) the answer.
+const withFallback = await turn({ mainScript: [BATCH[0], "all done"] });
 await ok("a two-call image batch is sent with both results right after the calls", () => {
-  assert.ok(withFallback.requests.length >= 2, `only ${withFallback.requests.length} request(s)`);
-  for (const r of withFallback.requests) assertPaired(r.messages);
+  const all = [...withFallback.main, ...withFallback.eyes];
+  assert.ok(all.length >= 2, `only ${all.length} request(s)`);
+  for (const r of all) assertPaired(r.messages);
   const roles = withFallback.messages.slice(2).map((m) => m.role);
   assert.deepEqual(roles.slice(0, 5), ["assistant", "tool", "tool", "user", "user"]);
 });
 
-await ok("the step with new images goes to the vision model, the next one back", () => {
-  const ids = withFallback.requests.map((r) => r.model);
-  assert.deepEqual(ids, ["main-model", "vision-model", "main-model"]);
-  const sent = JSON.stringify(withFallback.requests[1].messages);
-  assert.match(sent, /data:image\/png;base64,AAAA/);
-  assert.doesNotMatch(JSON.stringify(withFallback.requests[2].messages), /base64,AAAA/);
+await ok("the step with new images reaches the vision provider; the next is back on the user's", () => {
+  assert.deepEqual(withFallback.eyes.map((r) => r.model), ["vision-model"]);
+  assert.match(JSON.stringify(withFallback.eyes[0].messages), /data:image\/png;base64,AAAA/);
+  assert.deepEqual(withFallback.main.map((r) => r.model), ["main-model", "main-model"]);
+  for (const r of withFallback.main) assert.doesNotMatch(JSON.stringify(r.messages), /base64,AAAA/);
 });
 
-const noFallback = await turn({ visionFallback: false });
+const noFallback = await turn({ extraSettings: { visionFallback: false } });
 await ok("visionFallback false: stays on the user's model, images dropped, still paired", () => {
-  assert.deepEqual(noFallback.requests.map((r) => r.model), ["main-model", "main-model", "main-model"]);
-  for (const r of noFallback.requests) assertPaired(r.messages);
-  assert.doesNotMatch(JSON.stringify(noFallback.requests[1].messages), /base64,AAAA/);
+  assert.equal(noFallback.eyes.length, 0);
+  assert.deepEqual(noFallback.main.map((r) => r.model), ["main-model", "main-model", "main-model"]);
+  for (const r of noFallback.main) assertPaired(r.messages);
+  assert.doesNotMatch(JSON.stringify(noFallback.main[1].messages), /base64,AAAA/);
+});
+
+const outage = await turn({ eyesDown: true });
+await ok("a vision provider that is down: the step is redone on the user's model and the turn goes on", () => {
+  assert.equal(outage.out.stop, "done", JSON.stringify(outage.out));
+  assert.deepEqual(outage.main.map((r) => r.model), ["main-model", "main-model", "main-model"]);
+  assert.doesNotMatch(JSON.stringify(outage.main[1].messages), /base64,AAAA/);
+});
+
+// A vision-capable model on the text-tool path, which can't carry pixels:
+// the user's own image goes to the fallback all the same.
+const textPath = await turn({
+  mainExtra: { vision: true, nativeTools: false },
+  mainScript: [], eyesScript: ["looks like a cat"],
+  firstUser: [{ type: "text", text: "what is this?" }, image],
+});
+await ok("a vision model on the text-tool path still hands new images to the fallback", () => {
+  assert.equal(textPath.main.length, 0);
+  assert.deepEqual(textPath.eyes.map((r) => r.model), ["vision-model"]);
+  assert.match(JSON.stringify(textPath.eyes[0].messages), /data:image\/png;base64,AAAA/);
 });
 
 delete impl.test_snap;
