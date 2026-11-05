@@ -56,7 +56,7 @@ async function main() {
     assert.equal(typeof p.gpuVramSource, "string");
     assert.equal(typeof p.fingerprint, "string");
     assert.ok(p.fingerprint.length >= 8, "fingerprint has content");
-    assert.ok(["cpu", "vulkan"].includes(p.recommendedBackend), "recommendedBackend in {cpu, vulkan}");
+    assert.ok(["cpu", "vulkan", "cuda"].includes(p.recommendedBackend), "recommendedBackend in {cpu, vulkan, cuda}");
     assert.equal(p.recommendedThreads, p.cpuCores);
     assert.ok(Array.isArray(p.notes), "notes is array");
   });
@@ -68,8 +68,28 @@ async function main() {
       assert.ok(p.notes.some((n) => /gpuVramGB.*→ recommendedBackend forced to cpu/i.test(n)),
         `expected VRAM-floor note in ${JSON.stringify(p.notes)}`);
     } else {
-      assert.equal(p.recommendedBackend, "vulkan");
+      assert.equal(p.recommendedBackend, hw.gpuBackendFor(p.gpuName));
     }
+  });
+
+  await ok("gpuBackendFor: NVIDIA cards get cuda, AMD and Intel get vulkan", () => {
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti"), "cuda");
+    assert.equal(hw.gpuBackendFor("NVIDIA RTX A4000"), "cuda");
+    assert.equal(hw.gpuBackendFor("AMD Radeon RX 7800 XT"), "vulkan");
+    assert.equal(hw.gpuBackendFor("Intel(R) Arc(TM) A770 Graphics"), "vulkan");
+    assert.equal(hw.gpuBackendFor(""), "vulkan");
+  });
+
+  await ok("deriveSettings: an RTX 5060 Ti rig gets cuda and is told how to install it", () => {
+    const rig = {
+      cpuName: "Intel(R) Core(TM) Ultra 5 225", cpuCores: 10, cpuThreads: 10, totalRamGB: 16,
+      gpuName: "NVIDIA GeForce RTX 5060 Ti", gpuKind: "discrete", gpuVramGB: 8, recommendedBackend: "cuda", recommendedThreads: 10,
+      battery: { present: false, onBattery: false }, tools: {},
+    };
+    const e = hw.deriveSettings(rig);
+    assert.equal(e.localBackend, "cuda");
+    assert.match(e.decisions.find((d) => d.key === "localBackend").why, /CUDA.*\/llama update cuda/);
+    assert.equal(hw.deriveSettings(rig, { localBackend: "vulkan" }).localBackend, "vulkan");
   });
 
   await ok("ensureHardwareProfile writes the cache file", async () => {

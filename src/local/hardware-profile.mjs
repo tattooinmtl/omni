@@ -34,7 +34,14 @@ const VRAM_FLOOR_GB = 6;
 
 // Bump when scanHardware() gains fields, so caches written by an older Omni
 // count as stale and get rescanned instead of silently lacking them.
-export const PROFILE_SCHEMA = 2;
+// 3: recommendedBackend can be "cuda" (NVIDIA cards).
+export const PROFILE_SCHEMA = 3;
+
+// The GPU backend for a card that clears the VRAM floor: CUDA for NVIDIA
+// (faster than Vulkan on the same card), Vulkan for everything else.
+export function gpuBackendFor(gpuName) {
+  return /nvidia|geforce|quadro|\brtx\b|\bgtx\b|tesla/i.test(String(gpuName || "")) ? "cuda" : "vulkan";
+}
 
 // Below this much RAM the agent is told not to stack heavy processes.
 const LOW_RAM_GB = 8;
@@ -435,7 +442,7 @@ export async function scanHardware() {
   // lspci / system_profiler with no VRAM figure (so local models stay on CPU).
   const gpu = gpuRes || { name: primary ? primary.name : "unknown", vramGB: 0, vramSource: primary ? "none" : "unsupported-platform" };
 
-  const recommendedBackend = gpu.vramGB >= VRAM_FLOOR_GB ? "vulkan" : "cpu";
+  const recommendedBackend = gpu.vramGB >= VRAM_FLOOR_GB ? gpuBackendFor(gpu.name) : "cpu";
   const notes = [];
   if (gpu.vramGB < VRAM_FLOOR_GB) {
     notes.push(`gpuVramGB=${gpu.vramGB}<${VRAM_FLOOR_GB} → recommendedBackend forced to cpu`);
@@ -554,7 +561,7 @@ export function applyMachineEnv(settings, env = process.env) {
 
 export const HARDWARE_SETTINGS = {
   browserGpu:   { values: ["on", "off"],     label: "browser GPU" },
-  localBackend: { values: ["cpu", "vulkan"], label: "local-model backend" },
+  localBackend: { values: ["cpu", "vulkan", "cuda"], label: "local-model backend" },
 };
 
 export function deriveSettings(profile, overrides = {}) {
@@ -574,9 +581,10 @@ export function deriveSettings(profile, overrides = {}) {
     hasGpu ? `${kind} GPU found (${p.gpuName || "GPU"})`
       : kind === "unknown" ? "GPU could not be detected — software rendering is the safe default"
       : "no hardware GPU — software rendering");
-  const vulkan = p.recommendedBackend === "vulkan";
-  const localBackend = pick("localBackend", vulkan ? "vulkan" : "cpu",
-    vulkan ? `${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB`
+  const gpuBackend = p.recommendedBackend === "vulkan" || p.recommendedBackend === "cuda" ? p.recommendedBackend : null;
+  const localBackend = pick("localBackend", gpuBackend || "cpu",
+    gpuBackend === "cuda" ? `NVIDIA GPU, ${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB — CUDA (install it with /llama update cuda)`
+      : gpuBackend ? `${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB`
       : `${p.gpuVramGB ?? 0} GB VRAM < ${VRAM_FLOOR_GB} GB — CPU is faster`);
 
   return {

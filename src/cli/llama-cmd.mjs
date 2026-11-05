@@ -7,7 +7,7 @@ import { installProviderPreset } from "./models.mjs";
 import { getHardwareProfileSync, ensureHardwareProfile } from "../local/hardware-profile.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { LLAMA_BUILD, installedBuild, installPinnedBuild } from "../local/llama-build.mjs";
+import { LLAMA_BUILD, installedBuild, installPinnedBuild, listDevices, variantDir } from "../local/llama-build.mjs";
 import { THINK_LEVELS, SPARK, officialModelFile, profileFor } from "../local/model-profiles.mjs";
 
 // Parse "[model] [backend] [high|low|none] [--force]" from a /llama-start
@@ -78,7 +78,7 @@ export async function llamaCommand(ctx, sub, subArg) {
         warnLine(`no .gguf models found in ${cfg.modelsDir}`);
         break;
       }
-      infoLine(`models in ${cfg.modelsDir} — load with /llama-start <number> [cpu|vulkan]:`);
+      infoLine(`models in ${cfg.modelsDir} — load with /llama-start <number> [cpu|vulkan|cuda]:`);
       const running = llama.status();
       const width = String(models.length).length;
       models.forEach((m, i) => {
@@ -100,7 +100,7 @@ export async function llamaCommand(ctx, sub, subArg) {
         console.log(`    backend: ${s.backend || "?"}    threads: ${s.threads || "?"}    context: ${s.contextSize}`);
         if (s.profile) console.log(`    profile: ${s.profile}    thinking: ${s.think}`);
       } else {
-        infoLine("llama server not running. Start with /llama-start [model] [cpu|vulkan], or /llama spark");
+        infoLine("llama server not running. Start with /llama-start [model] [cpu|vulkan|cuda], or /llama spark");
         infoLine(`bin dir: ${cfg.binDir}`);
       }
       reportBuild(cfg);
@@ -223,7 +223,7 @@ export async function llamaCommand(ctx, sub, subArg) {
         break;
       }
       if (!target) {
-        warnLine("which model? run /llama list, then /llama-start <model> [cpu|vulkan]");
+        warnLine("which model? run /llama list, then /llama-start <model> [cpu|vulkan|cuda]");
         break;
       }
 
@@ -239,7 +239,7 @@ export async function llamaCommand(ctx, sub, subArg) {
       // An explicit arg wins, then a valid `/hardware set localBackend`, then
       // the profile. The override is the user's explicit choice, so it skips
       // the low-VRAM fallback the same way --force does.
-      const override = ["cpu", "vulkan"].includes(ctx.settings?.hardware?.localBackend)
+      const override = llama.SUPPORTED_BACKENDS.includes(ctx.settings?.hardware?.localBackend)
         ? ctx.settings.hardware.localBackend : undefined;
       const safety = applyVramSafety({
         requestedBackend: parsed.backend || override,
@@ -289,7 +289,7 @@ export async function llamaCommand(ctx, sub, subArg) {
 }
 
 export const LLAMA_USAGE =
-  "/llama [list|spark [high|low|none]|start [model] [cpu|vulkan] [high|low|none] [--force]|default <number>|stop|restart|status|update|bench [model]]";
+  "/llama [list|spark [high|low|none] [cuda]|start [model] [cpu|vulkan|cuda] [high|low|none] [--force]|default <number>|stop|restart|status|update [cuda]|bench [model]]";
 
 // The binary /llama start would spawn on CPU — a split llama-server-cpu.exe
 // when present, else the generic llama-server.exe — so the build reported is
@@ -304,28 +304,46 @@ export function serverExe(cfg) {
 
 function reportBuild(cfg) {
   const build = installedBuild(serverExe(cfg));
-  if (build === null) return;
-  const behind = build < LLAMA_BUILD.build;
-  console.log(`    llama.cpp: b${build}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update)`) : c.dim("  (current)")}`);
+  if (build !== null) {
+    const behind = build < LLAMA_BUILD.build;
+    console.log(`    llama.cpp: b${build}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update)`) : c.dim("  (current)")}`);
+  }
+  const cudaExe = cudaServerExe(cfg);
+  const cuda = installedBuild(cudaExe);
+  if (cuda !== null) {
+    const behind = cuda < LLAMA_BUILD.build;
+    console.log(`    llama.cpp CUDA: b${cuda}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update cuda)`) : c.dim("  (current)")}  ${path.dirname(cudaExe)}`);
+  }
 }
 
-// /llama update [--force] — install the pinned llama.cpp build into binDir.
+function cudaServerExe(cfg) {
+  const ext = process.platform === "win32" ? ".exe" : "";
+  return path.join(cfg.cudaBinDir || variantDir(cfg.binDir, "cuda"), `llama-server${ext}`);
+}
+
+// /llama update [cuda] [--force] — install the pinned llama.cpp build: CPU
+// into binDir, or the CUDA build (llama + CUDA runtime) into <binDir>-cuda.
 async function updateCommand(cfg, arg) {
   const force = /(^|\s)(--force|-f)(\s|$)/.test(arg || "");
+  const variant = /(^|\s)cuda(\s|$)/i.test(arg || "") ? "cuda" : "cpu";
+  const dir = variant === "cuda" ? path.dirname(cudaServerExe(cfg)) : cfg.binDir;
+  const label = variant === "cuda" ? "llama.cpp CUDA" : "llama.cpp";
   if (llama.status().running) {
     errorLine("stop the local llama server first (/llama stop) — Windows locks its files while it runs");
     return;
   }
-  const have = installedBuild(serverExe(cfg));
+  const have = installedBuild(variant === "cuda" ? cudaServerExe(cfg) : serverExe(cfg));
   if (have !== null && have >= LLAMA_BUILD.build && !force) {
-    infoLine(`llama.cpp is already b${have} (pinned: b${LLAMA_BUILD.build}). /llama update --force reinstalls it.`);
+    infoLine(`${label} is already b${have} (pinned: b${LLAMA_BUILD.build}). Add --force to reinstall it.`);
     return;
   }
-  infoLine(`updating llama.cpp in ${cfg.binDir}: ${have === null ? "none" : `b${have}`} → b${LLAMA_BUILD.build}`);
+  if (variant === "cuda") infoLine("CUDA 13.4 build: about 595 MB to download, for NVIDIA GPUs with driver 580 or newer (RTX 50-series needs it)");
+  infoLine(`updating ${label} in ${dir}: ${have === null ? "none" : `b${have}`} → b${LLAMA_BUILD.build}`);
   let lastPct = -1;
   const endProgress = () => { if (lastPct >= 0) process.stdout.write("\n"); lastPct = -1; };
   try {
-    const r = await installPinnedBuild(cfg.binDir, {
+    const r = await installPinnedBuild(dir, {
+      variant,
       onStep: (m) => { endProgress(); infoLine(m); },
       onProgress: (got, total) => {
         if (!total || !process.stdout.isTTY) return;
@@ -334,7 +352,12 @@ async function updateCommand(cfg, arg) {
       },
     });
     endProgress();
-    infoLine(`llama.cpp is now b${r.to}${r.backup ? ` — previous build kept in ${r.backup}` : ""}`);
+    infoLine(`${label} is now b${r.to}${r.backup ? ` — previous build kept in ${r.backup}` : ""}`);
+    if (variant === "cuda") {
+      const devices = listDevices(cudaServerExe(cfg)).filter((d) => /^CUDA/i.test(d));
+      if (devices.length) infoLine(`GPU ready: ${devices.join("; ")} — start with /llama start cuda or /llama spark cuda`);
+      else warnLine("the CUDA build sees no NVIDIA GPU — check that an NVIDIA card is installed and its driver is 580 or newer (nvidia-smi shows the version)");
+    }
     if (r.leftBehind && r.leftBehind.length) {
       warnLine(`not carried over (the pinned build is CPU-only, and these need the old DLLs): ${r.leftBehind.join(", ")} — still in ${r.backup}`);
     }
