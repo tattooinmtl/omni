@@ -20,6 +20,7 @@
 // next to the model's mtime/size, so it is built once per model file.
 
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { readGgufMetadata } from "./gguf.mjs";
 import { atomicWriteFileSync } from "../core/atomic-write.mjs";
@@ -43,8 +44,18 @@ function gpt2UnicodeToByte() {
 const U2B = gpt2UnicodeToByte();
 
 const isLeadCJK = (b) => b >= 0xe3 && b <= 0xef;
-// U+3000–U+FFFF written as text (special/added tokens, SentencePiece vocab).
-const CJK_TEXT = /[　-￿]/u;
+// Supplementary-plane ideographs (CJK Extensions B–H, U+20000–U+3FFFF) are
+// 4-byte sequences F0 A0..BF … . F0 alone also leads emoji (F0 9F …), so only
+// the pair is banned: a token carrying F0 followed by A0–BF.
+const hasSupplementaryCJK = (bytes) => {
+  for (let i = 0; i + 1 < bytes.length; i++) {
+    if (bytes[i] === 0xf0 && bytes[i + 1] >= 0xa0 && bytes[i + 1] <= 0xbf) return true;
+  }
+  return false;
+};
+// U+3000–U+FFFF and U+20000–U+3FFFF written as text (special/added tokens,
+// SentencePiece vocab).
+const CJK_TEXT = /[　-￿\u{20000}-\u{3ffff}]/u;
 
 // Byte-fallback tokens in SentencePiece vocabularies: "<0xE4>".
 const BYTE_TOKEN = /^<0x([0-9A-Fa-f]{2})>$/;
@@ -54,6 +65,7 @@ export function tokenCanStartCJK(token, tokenizerModel = "gpt2") {
   const bt = t.match(BYTE_TOKEN);
   if (bt) return isLeadCJK(parseInt(bt[1], 16));
   if (tokenizerModel === "gpt2") {
+    const bytes = [];
     for (const ch of t) {
       const b = U2B.get(ch);
       if (b === undefined) {
@@ -62,8 +74,9 @@ export function tokenCanStartCJK(token, tokenizerModel = "gpt2") {
         continue;
       }
       if (isLeadCJK(b)) return true;
+      bytes.push(b);
     }
-    return false;
+    return hasSupplementaryCJK(bytes);
   }
   return CJK_TEXT.test(t);
 }
@@ -74,27 +87,36 @@ export function cjkTokenIds(tokens, tokenizerModel = "gpt2") {
   return ids;
 }
 
-// Banned token ids for a GGUF model, cached in `cacheDir` keyed by the model's
-// name, size and mtime. Returns [] when the vocabulary cannot be read.
+// The cache key: a hash of the file's first 8 MB (the GGUF header, where the
+// vocabulary lives) plus its size, so two different models never share a ban
+// list, whatever their names or dates.
+function vocabKey(modelPath, size) {
+  const fd = fs.openSync(modelPath, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(size, 8 * 1024 * 1024));
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return crypto.createHash("sha256").update(buf.subarray(0, n)).update(String(size)).digest("hex").slice(0, 32);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Banned token ids for a GGUF model, cached in `cacheDir` by vocabKey.
+// Throws when the vocabulary cannot be read, so the caller can say the guard
+// is off instead of silently running without it.
 export function cjkBanList(modelPath, { cacheDir } = {}) {
-  let stat;
-  try { stat = fs.statSync(modelPath); } catch { return []; }
-  const key = `${path.basename(modelPath)}-${stat.size}-${Math.floor(stat.mtimeMs)}`.replace(/[^\w.-]/g, "_");
-  const cacheFile = cacheDir ? path.join(cacheDir, `cjk-ban-${key}.json`) : null;
+  const stat = fs.statSync(modelPath);
+  const cacheFile = cacheDir ? path.join(cacheDir, `cjk-ban-${vocabKey(modelPath, stat.size)}.json`) : null;
   if (cacheFile) {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
       if (Array.isArray(cached.ids)) return cached.ids;
     } catch { /* build it */ }
   }
-  let ids = [];
-  try {
-    const meta = readGgufMetadata(modelPath, { keepArrays: ["tokenizer.ggml.tokens"], maxScan: 512 * 1024 * 1024 });
-    const tokens = meta.arrays["tokenizer.ggml.tokens"] || [];
-    ids = cjkTokenIds(tokens, meta.tokenizerModel || "gpt2");
-  } catch {
-    return [];
-  }
+  const meta = readGgufMetadata(modelPath, { keepArrays: ["tokenizer.ggml.tokens"], maxScan: 512 * 1024 * 1024 });
+  const tokens = meta.arrays["tokenizer.ggml.tokens"];
+  if (!Array.isArray(tokens) || !tokens.length) throw new Error("the GGUF has no tokenizer.ggml.tokens vocabulary");
+  const ids = cjkTokenIds(tokens, meta.tokenizerModel || "gpt2");
   if (cacheFile) {
     try {
       fs.mkdirSync(cacheDir, { recursive: true });
@@ -105,7 +127,9 @@ export function cjkBanList(modelPath, { cacheDir } = {}) {
 }
 
 // llama-server's per-request `logit_bias` accepts [[id, false], …] where
-// false means "never sample this token".
+// false means "never sample this token". Checked against b12125 with Spark:
+// told to answer in Chinese, it wrote Chinese without this field and none
+// with it.
 export function logitBiasBody(ids) {
   return ids.map((id) => [id, false]);
 }

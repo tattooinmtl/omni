@@ -64,15 +64,60 @@ export function pinnedAsset(key = platformKey()) {
   return LLAMA_BUILD.builds[key] || null;
 }
 
+// The swap renames binDir → binDir.old, then binDir.new → binDir. If the
+// process dies between the two, binDir is missing and .old holds the last
+// good build: put it back. Called before every update and every server start.
+export function recoverInterruptedUpdate(binDir) {
+  const backup = `${binDir}.old`;
+  if (!fs.existsSync(binDir) && fs.existsSync(backup)) {
+    fs.renameSync(backup, binDir);
+    return true;
+  }
+  return false;
+}
+
+// One update per server folder at a time: both would share .new and .old.
+// A lock older than 30 minutes is a leftover from a crashed update.
+function takeLock(binDir) {
+  const lock = `${binDir}.update.lock`;
+  try {
+    if (Date.now() - fs.statSync(lock).mtimeMs > 30 * 60 * 1000) fs.rmSync(lock, { force: true });
+  } catch { /* no lock */ }
+  try {
+    fs.closeSync(fs.openSync(lock, "wx"));
+  } catch (e) {
+    if (e.code === "EEXIST") throw new Error(`another llama.cpp update is already running for ${binDir} (lock: ${lock})`);
+    throw e;
+  }
+  return () => fs.rmSync(lock, { force: true });
+}
+
+// A stalled connection must not leave /llama update hanging forever; the
+// signal also bounds the body stream.
+export const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
 // Download, verify, stage, prove, swap. `binDir` is the folder Omni spawns
-// llama-server from. Returns { from, to, binDir, backup }.
-export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl, key, probe = installedBuild } = {}) {
+// llama-server from. Returns { from, to, binDir, backup, leftBehind }, where
+// leftBehind lists split backend binaries (llama-server-vulkan.exe …) the CPU
+// archive doesn't carry: they stay in the backup, since they link against the
+// old build's DLLs and would break next to the new ones.
+export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl = fetch, key, probe = installedBuild, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
   const asset = pinnedAsset(key);
   if (!asset) {
     throw new Error(
       `no pinned llama.cpp build for ${key || platformKey()} — download one from https://github.com/ggml-org/llama.cpp/releases and set llama.binDir`
     );
   }
+  const release = takeLock(binDir);
+  try {
+    recoverInterruptedUpdate(binDir);
+    return await installLocked(binDir, asset, { onProgress, onStep, fetchImpl, key, probe, timeoutMs });
+  } finally {
+    release();
+  }
+}
+
+async function installLocked(binDir, asset, { onProgress, onStep, fetchImpl, key, probe, timeoutMs }) {
   const exeName = process.platform === "win32" || (key || "").startsWith("win32") ? "llama-server.exe" : "llama-server";
   const from = probe(path.join(binDir, exeName));
 
@@ -80,9 +125,17 @@ export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl
   const zip = path.join(tmp, path.basename(new URL(asset.url).pathname));
   const staged = `${binDir}.new`;
   const backup = `${binDir}.old`;
+  const timedFetch = (url, opts = {}) => fetchImpl(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
   try {
     onStep?.(`downloading ${LLAMA_BUILD.tag} (${(asset.size / 1048576).toFixed(1)} MB)`);
-    await downloadVerified(asset.url, zip, asset.sha256, { onProgress, fetchImpl, maxBytes: asset.size });
+    try {
+      await downloadVerified(asset.url, zip, asset.sha256, { onProgress, fetchImpl: timedFetch, maxBytes: asset.size });
+    } catch (e) {
+      if (e.name === "TimeoutError" || e.name === "AbortError") {
+        throw new Error(`the download stalled and was stopped after ${Math.round(timeoutMs / 60000)} min; nothing was installed — run /llama update again`);
+      }
+      throw e;
+    }
 
     onStep?.("checksum ok — unpacking");
     fs.rmSync(staged, { recursive: true, force: true });
@@ -105,7 +158,10 @@ export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl
       if (hadOld) fs.renameSync(backup, binDir); // roll back
       throw e;
     }
-    return { from, to, binDir, backup: hadOld ? backup : null };
+    const leftBehind = hadOld
+      ? fs.readdirSync(backup).filter((f) => /^llama-server-.+\.exe$|^llama-server-[^.]+$/i.test(f) && !fs.existsSync(path.join(binDir, f)))
+      : [];
+    return { from, to, binDir, backup: hadOld ? backup : null, leftBehind };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(staged, { recursive: true, force: true });

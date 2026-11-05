@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readGgufMetadata, isThinkingModel } from "./gguf.mjs";
 import { profileFor, profileArgs, officialModelFile, normalizeThink } from "./model-profiles.mjs";
-import { installedBuild } from "./llama-build.mjs";
+import { installedBuild, recoverInterruptedUpdate } from "./llama-build.mjs";
 import { cjkBanList, logitBiasBody } from "./language-guard.mjs";
 import { setRequestExtras, clearRequestExtras } from "./request-extras.mjs";
 
@@ -183,14 +183,13 @@ export function resolveModelFile(settings, name) {
 // present. Returns "" when neither is available.
 export function defaultModelFor(settings) {
   const cfg = llamaConfig(settings);
-  if (cfg.defaultModel) {
-    try {
-      if (resolveModelFile(settings, cfg.defaultModel)) return cfg.defaultModel;
-    } catch {
-      return cfg.defaultModel; // ambiguous: let startServer report it
-    }
+  const models = listModels(settings);
+  // Only an exact file counts: a stale name that now substring-matches several
+  // other models must fall back to Spark, not fail as "ambiguous".
+  if (cfg.defaultModel && (models.includes(cfg.defaultModel) || models.includes(`${cfg.defaultModel}.gguf`))) {
+    return cfg.defaultModel;
   }
-  return officialModelFile(listModels(settings)) || "";
+  return officialModelFile(models) || "";
 }
 
 export function status() {
@@ -211,6 +210,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   }
 
   // Resolve backend binary (may downgrade to legacy-cpu with a note in onLog).
+  try { recoverInterruptedUpdate(cfg.binDir); } catch { /* binaryFor reports what is missing */ }
   const bin = binaryFor(cfg, backend);
   if (bin.source === "legacy-cpu" && backend && backend !== "cpu") {
     if (onLog) onLog(`only legacy llama-server binary present; falling back to CPU (requested ${backend})`);
@@ -231,10 +231,16 @@ export async function startServer(settings, modelName, { onLog, backend, threads
 
   // A profiled model can need a newer llama.cpp than the one installed (Spark
   // X2.6 needs b10828+; older builds fail with a bare "failed to load model").
+  // Fail closed: a build that can't be identified is not assumed to be new enough.
   let build = null;
   if (profile && profile.minBuild) {
     build = installedBuild(bin.path);
-    if (build !== null && build < profile.minBuild) {
+    if (build === null) {
+      throw new Error(
+        `${profile.label} needs llama.cpp build ${profile.minBuild} or later, and ${path.basename(bin.path)} did not report its build. Run /llama update.`
+      );
+    }
+    if (build < profile.minBuild) {
       throw new Error(
         `${profile.label} needs llama.cpp build ${profile.minBuild} or later; ${path.basename(bin.path)} is build ${build}. Run /llama update.`
       );
@@ -268,7 +274,14 @@ export async function startServer(settings, modelName, { onLog, backend, threads
 
   // Built from the GGUF vocabulary (cached after the first time), applied to
   // every request once the server is up.
-  const banned = cfg.languageGuard ? cjkBanList(modelPath, { cacheDir: CACHE_DIR }) : [];
+  let banned = [];
+  if (cfg.languageGuard) {
+    try {
+      banned = cjkBanList(modelPath, { cacheDir: CACHE_DIR });
+    } catch (e) {
+      if (onLog) onLog(`language guard is OFF for ${file}: could not read its vocabulary (${e.message})`);
+    }
+  }
 
   const proc = spawn(bin.path, args, {
     cwd: cfg.binDir,        // so the bundled ggml-*.dll / llama.dll resolve
@@ -301,17 +314,21 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   proc.stderr.on("data", (d) => {
     stderrTail = (stderrTail + d.toString()).slice(-2000);
   });
-  proc.on("exit", (code) => {
-    if (onLog && code) onLog(`llama server exited (code ${code})`);
+  // Only the active process may clear the shared state: a stopped server that
+  // exits late must not wipe the guard or status of its replacement.
+  const settle = () => {
+    if (child !== proc) return;
     clearRequestExtras(url);
     child = null;
     current = null;
+  };
+  proc.on("exit", (code) => {
+    if (onLog && code && child === proc) onLog(`llama server exited (code ${code})`);
+    settle();
   });
   proc.on("error", (err) => {
-    if (onLog) onLog(`llama server error: ${err.message}`);
-    clearRequestExtras(url);
-    child = null;
-    current = null;
+    if (onLog && child === proc) onLog(`llama server error: ${err.message}`);
+    settle();
   });
 
   const ready = await waitForReady(cfg.host, cfg.port, 180000, () => child === proc);
@@ -321,7 +338,9 @@ export async function startServer(settings, modelName, { onLog, backend, threads
       const tail = stderrTail.trim().split("\n").slice(-3).join(" | ");
       throw new Error(`llama server failed to start${tail ? `: ${tail}` : ""}`);
     }
-    throw new Error("llama server did not become ready within 180s (large model still loading?)");
+    // Don't leave a half-started server running unguarded behind a failed start.
+    stopServer();
+    throw new Error("llama server did not become ready within 180s (large model still loading?) — stopped it");
   }
   if (banned.length) setRequestExtras(url, { logit_bias: logitBiasBody(banned) });
   return { ...current };
@@ -340,6 +359,24 @@ async function waitForReady(host, port, timeoutMs, alive) {
       /* server socket not open yet */
     }
     await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+// After stopServer: wait until nothing answers on the port any more, so a
+// replacement's readiness check can't be satisfied by the old process.
+// Resolves true once the port is free, false after timeoutMs.
+export async function waitForPortFree(settings, { timeoutMs = 15000, fetchImpl = fetch } = {}) {
+  const cfg = llamaConfig(settings);
+  const url = `http://${cfg.host}:${cfg.port}/health`;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fetchImpl(url, { method: "GET", signal: AbortSignal.timeout(1000) });
+    } catch {
+      return true; // connection refused: the port is free
+    }
+    await new Promise((r) => setTimeout(r, 250));
   }
   return false;
 }

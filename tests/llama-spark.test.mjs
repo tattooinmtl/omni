@@ -97,6 +97,27 @@ async function main() {
     assert.equal(llama.defaultModelFor({ llama: { modelsDir: dir, defaultModel: "other.gguf" } }), "other.gguf");
   });
 
+  await ok("a stale default that now substring-matches several models falls back to Spark", () => {
+    const dir = tmpModels(["Spark-X2.6-4B-Q4_K_M.gguf", "qwen-a.gguf", "qwen-b.gguf"]);
+    assert.equal(llama.defaultModelFor({ llama: { modelsDir: dir, defaultModel: "qwen" } }), "Spark-X2.6-4B-Q4_K_M.gguf");
+  });
+
+  await ok("waitForPortFree: true once nothing answers, false while the old server still does", async () => {
+    const s = { llama: { modelsDir: os.tmpdir(), binDir: os.tmpdir(), port: 9 } };
+    assert.equal(await llama.waitForPortFree(s, { fetchImpl: async () => { throw new Error("ECONNREFUSED"); } }), true);
+    assert.equal(await llama.waitForPortFree(s, { timeoutMs: 600, fetchImpl: async () => new Response("ok") }), false);
+  });
+
+  await ok("recoverInterruptedUpdate puts the backup back when the swap died halfway", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-rec-"));
+    const binDir = path.join(root, "server");
+    fs.mkdirSync(`${binDir}.old`);
+    fs.writeFileSync(path.join(`${binDir}.old`, "llama-server.exe"), "old");
+    assert.equal(build.recoverInterruptedUpdate(binDir), true);
+    assert.equal(fs.readFileSync(path.join(binDir, "llama-server.exe"), "utf8"), "old");
+    assert.equal(build.recoverInterruptedUpdate(binDir), false); // nothing to do now
+  });
+
   await ok("no Spark and no default → empty string", () => {
     const dir = tmpModels(["other.gguf"]);
     assert.equal(llama.defaultModelFor({ llama: { modelsDir: dir } }), "");
@@ -186,6 +207,59 @@ async function main() {
         );
         assert.equal(fs.readFileSync(path.join(binDir, "llama-server.exe"), "utf8"), "old");
         assert.ok(!fs.existsSync(`${binDir}.new`));
+      } finally {
+        delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
+    await ok("a second update on the same folder is refused while one holds the lock", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server");
+      fs.mkdirSync(binDir);
+      fs.writeFileSync(`${binDir}.update.lock`, "");
+      build.LLAMA_BUILD.builds["win32-test"] = asset();
+      try {
+        await assert.rejects(build.installPinnedBuild(binDir, { fetchImpl, key: "win32-test", probe: () => 1 }), /already running/);
+        assert.ok(fs.existsSync(`${binDir}.update.lock`), "the other update's lock is left alone");
+      } finally {
+        delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
+    await ok("a stalled download times out with a retryable message and releases the lock", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server");
+      fs.mkdirSync(binDir);
+      build.LLAMA_BUILD.builds["win32-test"] = asset();
+      const stall = (url, opts) => new Promise((_, reject) => {
+        opts.signal.addEventListener("abort", () => reject(opts.signal.reason));
+      });
+      // AbortSignal.timeout's timer is unref'd; a real fetch's socket keeps
+      // the process alive, this fake does not, so hold the loop open.
+      const keepAlive = setTimeout(() => {}, 10000);
+      try {
+        await assert.rejects(
+          build.installPinnedBuild(binDir, { fetchImpl: stall, key: "win32-test", probe: () => 1, timeoutMs: 200 }),
+          /stalled.*run \/llama update again/
+        );
+        assert.ok(!fs.existsSync(`${binDir}.update.lock`));
+      } finally {
+        clearTimeout(keepAlive);
+        delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
+    await ok("split backend binaries the CPU archive lacks are reported as left behind", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server");
+      fs.mkdirSync(binDir);
+      fs.writeFileSync(path.join(binDir, "llama-server.exe"), "old");
+      fs.writeFileSync(path.join(binDir, "llama-server-vulkan.exe"), "old");
+      build.LLAMA_BUILD.builds["win32-test"] = asset();
+      try {
+        const probe = (p) => (fs.readFileSync(p, "utf8") === "new" ? build.LLAMA_BUILD.build : 8996);
+        const r = await build.installPinnedBuild(binDir, { fetchImpl, key: "win32-test", probe });
+        assert.deepEqual(r.leftBehind, ["llama-server-vulkan.exe"]);
       } finally {
         delete build.LLAMA_BUILD.builds["win32-test"];
       }

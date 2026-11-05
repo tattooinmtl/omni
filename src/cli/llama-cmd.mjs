@@ -115,8 +115,12 @@ export async function llamaCommand(ctx, sub, subArg) {
       const wasRunning = llama.status().running;
       if (wasRunning) {
         llama.stopServer();
-        // Give the process a beat to release the port cleanly.
-        await new Promise((r) => setTimeout(r, 500));
+        // Wait until the old process has released the port: otherwise its
+        // /health can satisfy the new server's readiness check.
+        if (!(await llama.waitForPortFree(ctx.settings))) {
+          errorLine(`the old llama server is still answering on port ${cfg.port}; not starting a new one`);
+          break;
+        }
       }
       // Fall through by re-dispatching to the start handler.
       await llamaCommand(ctx, "start", subArg);
@@ -172,9 +176,22 @@ export async function llamaCommand(ctx, sub, subArg) {
         warnLine(`${SPARK.label} is not in ${cfg.modelsDir} — put Spark-X2.6-4B-Q8_0.gguf there`);
         break;
       }
-      if (llama.status().running) {
+      let parsedSpark;
+      try { parsedSpark = parseStartArgs(subArg); } catch (e) { errorLine(e.message); break; }
+      const running = llama.status();
+      if (running.running) {
+        // Same model, same thinking level, no backend change: nothing to do —
+        // don't kill a live server (and its in-flight requests) for a repeat.
+        const wantThink = parsedSpark.think || cfg.think || SPARK.defaultThink;
+        if (running.model === official && running.think === wantThink && (!parsedSpark.backend || parsedSpark.backend === running.backend)) {
+          infoLine(`${SPARK.label} is already running — ${running.model} @ ${running.url}, thinking ${running.think}`);
+          break;
+        }
         llama.stopServer();
-        await new Promise((r) => setTimeout(r, 500));
+        if (!(await llama.waitForPortFree(ctx.settings))) {
+          errorLine(`the old llama server is still answering on port ${cfg.port}; not starting a new one`);
+          break;
+        }
       }
       await llamaCommand(ctx, "start", `${official} ${subArg || ""}`.trim());
       break;
@@ -274,8 +291,15 @@ export async function llamaCommand(ctx, sub, subArg) {
 export const LLAMA_USAGE =
   "/llama [list|spark [high|low|none]|start [model] [cpu|vulkan] [high|low|none] [--force]|default <number>|stop|restart|status|update|bench [model]]";
 
-function serverExe(cfg) {
-  return path.join(cfg.binDir, process.platform === "win32" ? "llama-server.exe" : "llama-server");
+// The binary /llama start would spawn on CPU — a split llama-server-cpu.exe
+// when present, else the generic llama-server.exe — so the build reported is
+// the build that actually runs. null when neither exists.
+export function serverExe(cfg) {
+  try {
+    return llama.binaryFor(cfg, "cpu").path;
+  } catch {
+    return null;
+  }
 }
 
 function reportBuild(cfg) {
@@ -311,6 +335,9 @@ async function updateCommand(cfg, arg) {
     });
     endProgress();
     infoLine(`llama.cpp is now b${r.to}${r.backup ? ` — previous build kept in ${r.backup}` : ""}`);
+    if (r.leftBehind && r.leftBehind.length) {
+      warnLine(`not carried over (the pinned build is CPU-only, and these need the old DLLs): ${r.leftBehind.join(", ")} — still in ${r.backup}`);
+    }
   } catch (e) {
     endProgress();
     const locked = /EBUSY|EPERM|EACCES/.test(`${e.code || ""} ${e.message}`);
@@ -324,12 +351,16 @@ async function updateCommand(cfg, arg) {
 function benchCommand(ctx, cfg, arg) {
   const exe = path.join(cfg.binDir, process.platform === "win32" ? "llama-bench.exe" : "llama-bench");
   let file;
+  const name = (arg || "").trim();
   try {
-    file = (arg && llama.resolveModelFile(ctx.settings, arg.trim())) || llama.defaultModelFor(ctx.settings);
+    file = name ? llama.resolveModelFile(ctx.settings, name) : llama.defaultModelFor(ctx.settings);
   } catch (e) {
     errorLine(e.message);
     return;
   }
+  // An explicit name that matches nothing is an error, never a silent bench
+  // of some other model.
+  if (name && !file) { errorLine(`model "${name}" not found in ${cfg.modelsDir}`); return; }
   if (!file) { warnLine("which model? /llama bench <model>"); return; }
   if (llama.status().running) warnLine("the llama server is running and shares the CPU — numbers will read low");
   const profile = getHardwareProfileSync();

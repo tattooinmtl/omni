@@ -30,6 +30,26 @@ function gpt2Spell(text) {
   return [...Buffer.from(text, "utf8")].map((b) => map.get(b)).join("");
 }
 
+import fsMod from "node:fs";
+import osMod from "node:os";
+import pathMod from "node:path";
+const await_fs = () => fsMod;
+const await_os = () => osMod;
+const await_path = () => pathMod;
+
+// A minimal GGUF v3 with only tokenizer.ggml.model and tokenizer.ggml.tokens.
+function makeGguf(tokens) {
+  const parts = [];
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); parts.push(b); };
+  const u64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); parts.push(b); };
+  const str = (s) => { const b = Buffer.from(s, "utf8"); u64(b.length); parts.push(b); };
+  parts.push(Buffer.from("GGUF")); u32(3); u64(0); u64(2);
+  str("tokenizer.ggml.model"); u32(8); str("gpt2");
+  str("tokenizer.ggml.tokens"); u32(9); u32(8); u64(tokens.length);
+  for (const t of tokens) str(t);
+  return Buffer.concat(parts);
+}
+
 async function main() {
   const g = await import("../src/local/language-guard.mjs");
   const x = await import("../src/local/request-extras.mjs");
@@ -61,6 +81,38 @@ async function main() {
     assert.equal(g.tokenCanStartCJK("<0xC3>", "llama"), false);
     assert.equal(g.tokenCanStartCJK("▁你好", "llama"), true);
     assert.equal(g.tokenCanStartCJK("▁bonjour", "llama"), false);
+  });
+
+  await ok("supplementary-plane ideographs are banned, emoji are not", () => {
+    assert.equal(g.tokenCanStartCJK(gpt2Spell("𠀀")), true); // U+20000, F0 A0 80 80
+    assert.equal(g.tokenCanStartCJK(gpt2Spell("𪚥")), true); // U+2A6A5
+    assert.equal(g.tokenCanStartCJK("<|𠀀|>"), true);
+    assert.equal(g.tokenCanStartCJK(gpt2Spell("🙂")), false); // F0 9F
+    assert.equal(g.tokenCanStartCJK(gpt2Spell("🚀 go")), false);
+  });
+
+  await ok("cjkBanList throws on an unreadable vocabulary instead of returning an empty ban", () => {
+    const fs = await_fs();
+    const os = await_os();
+    const path = await_path();
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "omni-guard-")), "broken.gguf");
+    fs.writeFileSync(f, "not a gguf");
+    assert.throws(() => g.cjkBanList(f), /gguf|bad magic/i);
+  });
+
+  await ok("the cache is keyed by file contents: two models with the same name never share a ban list", () => {
+    const fs = await_fs();
+    const os = await_os();
+    const path = await_path();
+    const cache = fs.mkdtempSync(path.join(os.tmpdir(), "omni-guard-cache-"));
+    const a = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "omni-a-")), "m.gguf");
+    const b = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "omni-b-")), "m.gguf");
+    fs.writeFileSync(a, makeGguf([gpt2Spell("the"), gpt2Spell("你")]));
+    fs.writeFileSync(b, makeGguf([gpt2Spell("你"), gpt2Spell("the")]));
+    assert.deepEqual(g.cjkBanList(a, { cacheDir: cache }), [1]);
+    assert.deepEqual(g.cjkBanList(b, { cacheDir: cache }), [0]);
+    assert.deepEqual(g.cjkBanList(a, { cacheDir: cache }), [1]); // from cache
+    assert.equal(fs.readdirSync(cache).length, 2);
   });
 
   await ok("cjkTokenIds returns the ids of the banned tokens", () => {

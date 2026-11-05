@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.5.35 — 2026-11-05
 
-- **Shipped:** this PR · — · TattooAI/omni-llama-spark-26-877939 · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** this PR · TattooAI/omni-llama-spark-26-877939 · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **Spark X2.6 4B is the official local model.** A bare `/llama start` loads
   it from `C:\models` when `llama.defaultModel` is unset or names a file that
   is gone. `/llama spark [high|low|none]` starts it directly. Omni prefers the
@@ -39,6 +39,21 @@ entries were rebuilt from git history).
   Chinese without the guard and none with it, at the same ~13 t/s. The list is cached in `agent/cache/`. The local-model prompt also
   says to answer in English, or in French when the user writes in French.
   `llama.languageGuard: false` turns the guard off.
+- **Review hardening.** The guard also bans supplementary-plane ideographs
+  (F0 A0–BF; emoji stay), says "language guard is OFF" when it can't read a
+  vocabulary instead of silently skipping, and keys its cache on a hash of the
+  GGUF header so two models never share a ban list. A late exit from a
+  stopped server no longer wipes its replacement's guard and status; a start
+  that times out stops its server; a build that won't report its version is
+  refused for Spark instead of assumed new enough. `/llama restart` and
+  `/llama spark` wait for the old server to free the port, and `/llama spark`
+  does nothing when the same model and level are already running. Updates
+  take a lock per folder, recover a swap that died halfway, give up on a
+  stalled download after 10 minutes, and name split backend binaries
+  (`llama-server-vulkan.exe` …) left in `server.old/`. `/llama status`
+  reports the build of the binary that actually runs. `/llama bench <name>`
+  errors on an unknown name instead of benchmarking the default. A stale
+  `defaultModel` that matches several files falls back to Spark.
 - Tests: `llama-spark` covers profile matching, quant preference, the Spark
   flags and thinking levels, the default-model fallback, thinking levels in
   `/llama-start`, `--version` parsing for both build formats, and the update
