@@ -41,16 +41,22 @@ export function parseBuildVersion(text) {
 }
 
 // Ask a llama-server binary which build it is. Returns null when the binary
-// is missing or does not answer.
-export function installedBuild(exePath) {
+// is missing or does not answer. The first run of a freshly unpacked exe can
+// stall while antivirus scans it (seen: one /llama update probe got no answer
+// at all, the retry took 2.9 s), so allow a long timeout and try twice.
+export function installedBuild(exePath, { attempts = 2, timeout = 60000, run = spawnSync } = {}) {
   if (!exePath || !fs.existsSync(exePath)) return null;
-  const r = spawnSync(exePath, ["--version"], {
-    cwd: path.dirname(exePath),
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
-  });
-  return parseBuildVersion(`${r.stdout || ""}\n${r.stderr || ""}`);
+  for (let i = 0; i < attempts; i++) {
+    const r = run(exePath, ["--version"], {
+      cwd: path.dirname(exePath),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout,
+    });
+    const build = parseBuildVersion(`${r.stdout || ""}\n${r.stderr || ""}`);
+    if (build !== null) return build;
+  }
+  return null;
 }
 
 const platformKey = () => `${process.platform}-${process.arch}`;

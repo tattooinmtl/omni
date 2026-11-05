@@ -115,6 +115,18 @@ async function main() {
     assert.equal(build.parseBuildVersion("garbage"), null);
   });
 
+  await ok("installedBuild retries a probe that got no answer (antivirus stall on a fresh exe)", () => {
+    const exe = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "omni-probe-")), "llama-server.exe");
+    fs.writeFileSync(exe, "");
+    let calls = 0;
+    const run = () => (++calls === 1
+      ? { stdout: "", stderr: "", signal: "SIGTERM" }
+      : { stdout: "", stderr: "version: 0.9.0-dev (build 12125, commit x)" });
+    assert.equal(build.installedBuild(exe, { run }), 12125);
+    assert.equal(calls, 2);
+    assert.equal(build.installedBuild(exe, { run: () => ({ stdout: "", stderr: "" }) }), null);
+  });
+
   await ok("the pin is an official ggml-org release with a full SHA-256, new enough for Spark", () => {
     const a = build.LLAMA_BUILD.builds["win32-x64"];
     assert.match(a.url, /^https:\/\/github\.com\/ggml-org\/llama\.cpp\/releases\/download\/b\d+\//);

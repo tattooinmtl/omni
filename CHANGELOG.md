@@ -42,7 +42,9 @@ entries were rebuilt from git history).
 - Tests: `llama-spark` covers profile matching, quant preference, the Spark
   flags and thinking levels, the default-model fallback, thinking levels in
   `/llama-start`, `--version` parsing for both build formats, and the update
-  path (swap with backup, wrong-build refusal, checksum mismatch).
+  path (swap with backup, wrong-build refusal, checksum mismatch, and a
+  retried version probe: the first run of a freshly unpacked exe can stall
+  while antivirus scans it, which once made `/llama update` refuse a good build).
   `language-guard` covers the GPT-2 byte decoding, the token classifier on
   CJK, French, emoji and byte-fallback tokens, and that the guard's fields
   reach chat and completion request bodies only for the server that set them.
