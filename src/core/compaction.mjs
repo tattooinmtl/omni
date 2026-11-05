@@ -14,6 +14,7 @@
 //
 // settings.compaction = { model?: "<provider/model>", mode?: "forge"|"mechanical" }
 
+import { syntheticUser } from "./synthetic.mjs";
 import { chatStream } from "./provider.mjs";
 import { resolveModel } from "./config.mjs";
 import { stripThink } from "./toolcalls.mjs";
@@ -201,6 +202,6 @@ export async function forgeCompact(messages, {
     if (summarizer && !error) error = "the summary came back empty";
   }
 
-  messages.splice(plan.first, plan.cut - plan.first, { role: "user", content: digest });
+  messages.splice(plan.first, plan.cut - plan.first, syntheticUser(digest));
   return { done: true, mode, summarizer: mode === "forge" ? summarizer.key : null, dropped: plan.cut - plan.first, error, hookErrors: hook.errors };
 }

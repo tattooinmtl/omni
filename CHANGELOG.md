@@ -58,8 +58,14 @@ entries were rebuilt from git history).
   ones Omni writes: compaction digests ("[CONTEXT COMPACTED] … Continue the
   task from the recent messages below."), the "[system note]" iteration
   warning, Stop-hook nudges, image labels, goal continuations and the
-  malformed-tool-call retry. Those are skipped now. A `/btw` note keeps the
-  user's words without its wrapper.
+  malformed-tool-call retry, skill invocations, the learned-skill request,
+  and context a prompt hook adds. Each user-role message now says where it
+  came from (`core/synthetic.mjs`, kept off the message so strict providers
+  never see it, and in the session log so a resumed session knows too).
+  Memory keeps only the user's own words: a `/btw` note without its wrapper,
+  a skill's arguments, a prompt without the hook's additions. A message you
+  typed is kept whole even if it starts like one of Omni's notes; only logs
+  written before this change are told apart by how a message starts.
 - **The test suite no longer writes into your real memory.** `race-fixes`
   ran without its own `OMNI_HOME`, so every `npm test` added a "cache
   invalidation probe" atom to `~/.omni/agent/memory-atoms.jsonl`. It now uses
@@ -69,9 +75,12 @@ entries were rebuilt from git history).
   (each call still stats the file). `provider-auto-models` and
   `last-model-exit` retry their temp-folder cleanup instead of crashing the
   suite with EPERM when a process the child started still holds it.
-  `agents` checks with git that the built-in agents are not ignored;
-  `memory` (2 new) builds each injected note with the code that writes it and
-  checks none is memorized, and that a `/btw` note keeps its words.
+  `agents` asks git (`check-ignore --no-index`, which also catches a rule
+  matching a tracked file) that the built-in agents are not ignored;
+  `memory` (3 new) builds each note with the code that writes it and checks
+  the exact set of atoms extracted, live, from a resumed log, and from an
+  old unmarked log, including a typed message that starts with
+  "[system note]" and a prompt a hook added a rule to.
 
 ## 3.5.38 — 2026-11-05
 

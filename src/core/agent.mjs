@@ -22,6 +22,7 @@ import {
 import crypto from "node:crypto";
 import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider.mjs";
 import { atomicWriteFileSync } from "./atomic-write.mjs";
+import { syntheticUser, recordFor } from "./synthetic.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
@@ -613,7 +614,7 @@ export function estimateTokens(messages) {
 export function compactMessages(messages, { keepTail = 8, sessionGoal = null } = {}) {
   const plan = planCompaction(messages, keepTail);
   if (!plan) return false;
-  messages.splice(plan.first, plan.cut - plan.first, { role: "user", content: mechanicalDigest(plan.dropped, { sessionGoal }) });
+  messages.splice(plan.first, plan.cut - plan.first, syntheticUser(mechanicalDigest(plan.dropped, { sessionGoal })));
   return true;
 }
 
@@ -901,19 +902,18 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // message is always valid.
     const steering = typeof takeSteering === "function" ? takeSteering() : [];
     for (const note of steering || []) {
-      const content = steeringMessage(note);
-      messages.push({ role: "user", content });
-      session.append({ type: "user", content });
+      const msg = syntheticUser(steeringMessage(note), { userText: note });
+      messages.push(msg);
+      session.append(recordFor(msg));
     }
 
     // Near the iteration budget, tell the model to land the work instead of
     // getting cut off mid-task.
     if (!wrapUpNudged && maxIterations - i === 3) {
       wrapUpNudged = true;
-      messages.push({
-        role: "user",
-        content: "[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains.",
-      });
+      messages.push(syntheticUser(
+        "[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains.",
+      ));
     }
 
     let resp;
@@ -1130,7 +1130,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             ? `response truncated by token limit — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
             : `malformed tool call — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
         );
-        messages.push({ role: "user", content: recoveryMessage() });
+        messages.push(syntheticUser(recoveryMessage()));
         continue;
       }
       if (truncated) warnLine("response was truncated by the max_tokens limit");
@@ -1142,9 +1142,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         if (hook.denied) {
           stopContinuations++;
           warnLine(`hook ${hook.by} asked the agent to keep going (${stopContinuations}/${MAX_STOP_CONTINUATIONS})`);
-          const content = `[hook ${hook.by}] Not done yet: ${hook.reason}`;
-          messages.push({ role: "user", content });
-          session.append({ type: "user", content });
+          const msg = syntheticUser(`[hook ${hook.by}] Not done yet: ${hook.reason}`);
+          messages.push(msg);
+          session.append(recordFor(msg));
           continue;
         }
       }
@@ -1360,10 +1360,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         const label = imageParts.length === 1
           ? `[image attached from ${name} — look at it and answer from what you see]`
           : `[${imageParts.length} frames attached from ${name} — look at them in order and describe what happens]`;
-        const visionMsg = {
-          role: "user",
-          content: [{ type: "text", text: label }, ...imageParts],
-        };
+        const visionMsg = syntheticUser([{ type: "text", text: label }, ...imageParts]);
         visionMessages.push(visionMsg);
       }
       // Roll into the state trail (bounded to 40) so a resumed session has
@@ -1379,7 +1376,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     }
     for (const visionMsg of visionMessages) {
       messages.push(visionMsg);
-      session.append({ type: "user", content: visionMsg.content });
+      session.append(recordFor(visionMsg));
     }
     // Refresh per-turn state — cheap, one small JSON write. Cross-session
     // resume + /compare-personality both read this instead of the jsonl.

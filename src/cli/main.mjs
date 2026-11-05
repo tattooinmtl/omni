@@ -1,6 +1,7 @@
 // CLI entry: startup wiring, non-interactive flags, package subcommands,
 // one-shot mode, and hand-off to the interactive REPL.
 
+import { recordFor, promptMessage } from "../core/synthetic.mjs";
 import { c, infoLine, warnLine, errorLine, costLine, shutdown } from "../ui.mjs";
 import {
   loadSettings, saveSettings, resolveModel, setProviderKey, Session, turnMaxIterations,
@@ -408,8 +409,9 @@ export async function main(args) {
       const hooked = await submitPromptHooks(text);
       for (const err of hooked.errors) warnLine(`hook ${err}`);
       if (hooked.denied) return finish("error", `prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
-      messages.push({ role: "user", content: hooked.content });
-      await session.append({ type: "user", content: hooked.content });
+      const userMsg = promptMessage(text, hooked.content);
+      messages.push(userMsg);
+      await session.append(recordFor(userMsg));
     }
     // --agent <name>: run as a named agent (its role, tools and model). The
     // router's persona would replace the system prompt and drop the role, so

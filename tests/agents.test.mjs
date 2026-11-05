@@ -103,11 +103,13 @@ await ok("the role is added to the system prompt with its limits", () => {
 
 // The built-ins were once only on one developer's disk: .gitignore's "*.md"
 // rule swallowed agents/, so no install ever had them. Ask git directly.
+// --no-index: without it, git reports a tracked file as "not ignored" even
+// when a rule matches it, so a later ignore rule would pass unnoticed.
 await ok("the built-in agents are not ignored by git, so installs get them", () => {
   for (const name of ["explorer", "reviewer", "tester"]) {
     const rel = `agents/${name}.md`;
     assert.ok(fs.existsSync(path.join(root, rel)), `${rel} is missing`);
-    const r = spawnSync("git", ["check-ignore", "-q", rel], { cwd: root });
+    const r = spawnSync("git", ["check-ignore", "-q", "--no-index", rel], { cwd: root });
     if (r.error) return; // no git on this machine: nothing to check
     assert.notEqual(r.status, 0, `${rel} is gitignored and would never ship`);
   }

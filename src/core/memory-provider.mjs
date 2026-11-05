@@ -37,6 +37,7 @@ import { HOME, SETTINGS_PATH } from "./config.mjs";
 import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { projectSlug } from "./context-mode.mjs";
+import { syntheticInfo, isTyped } from "./synthetic.mjs";
 
 // Project scope for atoms. Atoms created after this rollout tag themselves
 // with { project: <slug> }; older atoms have no scope and remain visible
@@ -520,22 +521,29 @@ function messageText(content) {
   return "";
 }
 
-// User-role messages that Omni writes itself, not the user: compaction
-// digests, iteration and hook nudges, image labels, goal continuations, the
-// malformed-tool-call retry, /expand bodies, resumed skill calls, and
-// tool results flattened for text-tool providers. These used to be scanned
+// User-role messages that Omni writes itself (compaction digests, nudges,
+// image labels, goal continuations, skill invocations …) used to be scanned
 // like the user's words, so "[CONTEXT COMPACTED] … Continue the task from
-// the recent messages below." ended up in memory as a fact.
-const SYNTHETIC_USER_RE = /^\s*(?:\[(?:CONTEXT COMPACTED|system note|hook |image attached from |\d+ frames attached from |expanded tool body|resumed\])|SYSTEM: |GOAL CONTINUATION\b|Tool result\b)/;
+// the recent messages below." ended up in memory as a fact. Each message now
+// says where it came from (synthetic.mjs): Omni's keep only the user's words
+// inside them, typed ones are kept whole whatever they start with.
+//
+// A message from a session log written before those marks has none; for it
+// alone, Omni's notes are told apart by how they start.
+const LEGACY_SYNTHETIC_RE = /^\s*(?:\[(?:CONTEXT COMPACTED|system note|hook |image attached from |\d+ frames attached from |expanded tool body|resumed\])|SYSTEM: |GOAL CONTINUATION\b|Tool result\b|The user typed \/\S+ — the "|Save the procedure you just followed as a reusable skill)/;
 // A /btw note (agent.mjs steeringMessage) is the user's own words inside a
 // wrapper: keep the words, drop the wrapper.
 const STEERING_PREFIX_RE = /^\s*\(btw — [^)]*\):\s*/;
 
-// The text of a message worth scanning for memory, or "" for one Omni wrote.
+// The text of a message worth scanning for memory: the user's own words
+// only ("" when there are none).
 export function memorableText(msg) {
   const text = messageText(msg?.content);
   if (msg?.role !== "user") return text;
-  if (SYNTHETIC_USER_RE.test(text)) return "";
+  const omni = syntheticInfo(msg);
+  if (omni) return omni.userText;
+  if (isTyped(msg)) return text;
+  if (LEGACY_SYNTHETIC_RE.test(text)) return "";
   return text.replace(STEERING_PREFIX_RE, "");
 }
 
