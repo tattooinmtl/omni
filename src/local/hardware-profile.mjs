@@ -34,7 +34,31 @@ const VRAM_FLOOR_GB = 6;
 
 // Bump when scanHardware() gains fields, so caches written by an older Omni
 // count as stale and get rescanned instead of silently lacking them.
-export const PROFILE_SCHEMA = 2;
+// 3: recommendedBackend can be "cuda" (NVIDIA cards).
+export const PROFILE_SCHEMA = 3;
+
+// The GPU backend for a card that clears the VRAM floor: CUDA for NVIDIA
+// (faster than Vulkan on the same card), Vulkan for everything else.
+// CUDA only where Omni pins a CUDA build (/llama update cuda): Windows x64
+// today. Elsewhere an NVIDIA card gets Vulkan, which needs no extra download.
+const CUDA_PLATFORMS = ["win32-x64"];
+export function gpuBackendFor(gpuName, platform = `${process.platform}-${process.arch}`) {
+  const nvidia = /nvidia|geforce|quadro|\brtx\b|\bgtx\b|tesla/i.test(String(gpuName || ""));
+  return nvidia && CUDA_PLATFORMS.includes(platform) ? "cuda" : "vulkan";
+}
+
+// Every row of `nvidia-smi --query-gpu=name,memory.total`, best (most VRAM)
+// first, so a second, bigger card isn't hidden behind the first one listed.
+export function parseNvidiaSmi(stdout) {
+  return String(stdout || "")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.split(",").map((s) => s.trim()))
+    .map(([name, mb]) => ({ name: name || "NVIDIA GPU", mb: parseInt(mb, 10) }))
+    .filter((g) => Number.isFinite(g.mb) && g.mb > 0)
+    .sort((a, b) => b.mb - a.mb)
+    .map((g) => ({ name: g.name, vramGB: +(g.mb / 1024).toFixed(1), vramSource: "nvidia-smi" }));
+}
 
 // Below this much RAM the agent is told not to stack heavy processes.
 const LOW_RAM_GB = 8;
@@ -171,8 +195,12 @@ export function dedicatedMBFromDxdiag(txt, name) {
 
 async function detectGpuWindows() {
   const nv = await detectNvidia();
-  if (nv) return nv;
-  return detectGpuWindowsWmi();
+  if (nv && nv.vramGB >= VRAM_FLOOR_GB) return nv;
+  // A small NVIDIA card (or none): another adapter may still clear the floor
+  // (an AMD card next to it, say), so keep whichever has more VRAM.
+  const other = await detectGpuWindowsWmi();
+  if (!nv) return other;
+  return other && other.vramGB > nv.vramGB ? other : nv;
 }
 
 // nvidia-smi is accurate and returns MB directly, on Windows and Linux.
@@ -180,14 +208,7 @@ async function detectNvidia() {
   const nv = await runCapture("nvidia-smi", [
     "--query-gpu=name,memory.total", "--format=csv,noheader,nounits",
   ]);
-  if (nv.ok && nv.stdout.trim()) {
-    const line = nv.stdout.trim().split(/\r?\n/)[0];
-    const parts = line.split(",").map((s) => s.trim());
-    const mb = parseInt(parts[1], 10);
-    if (Number.isFinite(mb) && mb > 0) {
-      return { name: parts[0] || "NVIDIA GPU", vramGB: +(mb / 1024).toFixed(1), vramSource: "nvidia-smi" };
-    }
-  }
+  if (nv.ok && nv.stdout.trim()) return parseNvidiaSmi(nv.stdout)[0] || null;
   return null;
 }
 
@@ -435,7 +456,7 @@ export async function scanHardware() {
   // lspci / system_profiler with no VRAM figure (so local models stay on CPU).
   const gpu = gpuRes || { name: primary ? primary.name : "unknown", vramGB: 0, vramSource: primary ? "none" : "unsupported-platform" };
 
-  const recommendedBackend = gpu.vramGB >= VRAM_FLOOR_GB ? "vulkan" : "cpu";
+  const recommendedBackend = gpu.vramGB >= VRAM_FLOOR_GB ? gpuBackendFor(gpu.name) : "cpu";
   const notes = [];
   if (gpu.vramGB < VRAM_FLOOR_GB) {
     notes.push(`gpuVramGB=${gpu.vramGB}<${VRAM_FLOOR_GB} → recommendedBackend forced to cpu`);
@@ -554,7 +575,7 @@ export function applyMachineEnv(settings, env = process.env) {
 
 export const HARDWARE_SETTINGS = {
   browserGpu:   { values: ["on", "off"],     label: "browser GPU" },
-  localBackend: { values: ["cpu", "vulkan"], label: "local-model backend" },
+  localBackend: { values: ["cpu", "vulkan", "cuda"], label: "local-model backend" },
 };
 
 export function deriveSettings(profile, overrides = {}) {
@@ -574,9 +595,10 @@ export function deriveSettings(profile, overrides = {}) {
     hasGpu ? `${kind} GPU found (${p.gpuName || "GPU"})`
       : kind === "unknown" ? "GPU could not be detected — software rendering is the safe default"
       : "no hardware GPU — software rendering");
-  const vulkan = p.recommendedBackend === "vulkan";
-  const localBackend = pick("localBackend", vulkan ? "vulkan" : "cpu",
-    vulkan ? `${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB`
+  const gpuBackend = p.recommendedBackend === "vulkan" || p.recommendedBackend === "cuda" ? p.recommendedBackend : null;
+  const localBackend = pick("localBackend", gpuBackend || "cpu",
+    gpuBackend === "cuda" ? `NVIDIA GPU, ${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB — CUDA (install it with /llama update cuda)`
+      : gpuBackend ? `${p.gpuVramGB} GB VRAM ≥ ${VRAM_FLOOR_GB} GB`
       : `${p.gpuVramGB ?? 0} GB VRAM < ${VRAM_FLOOR_GB} GB — CPU is faster`);
 
   return {
@@ -633,4 +655,13 @@ export function summarizeForPrompt(profile, eff) {
   }
   if (notes.length) lines.push(`- Notes: ${notes.join("; ")}.`);
   return lines.join("\n");
+}
+
+// The backend and threads an automatic start uses (the local provider waking
+// the server, `/llama default`): the same choice `/llama start` makes with no
+// argument — a valid `/hardware set localBackend`, else the profile's
+// recommendation (cuda on an NVIDIA card that clears the floor), else cpu.
+export function localStartOptions(settings, profile = getHardwareProfileSync()) {
+  const d = deriveSettings(profile, settings && settings.hardware);
+  return { backend: d.localBackend, threads: d.localThreads || undefined };
 }

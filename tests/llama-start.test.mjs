@@ -203,8 +203,8 @@ async function main() {
     assert.ok(args.includes("--flash-attn") && args.includes("--metrics"));
   });
 
-  await ok("SUPPORTED_BACKENDS is exactly [cpu, vulkan] — no gpu/metal", () => {
-    assert.deepEqual(llama.SUPPORTED_BACKENDS, ["cpu", "vulkan"]);
+  await ok("SUPPORTED_BACKENDS is exactly [cpu, vulkan, cuda] — no gpu/metal aliases", () => {
+    assert.deepEqual(llama.SUPPORTED_BACKENDS, ["cpu", "vulkan", "cuda"]);
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

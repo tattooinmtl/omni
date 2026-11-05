@@ -56,7 +56,7 @@ async function main() {
     assert.equal(typeof p.gpuVramSource, "string");
     assert.equal(typeof p.fingerprint, "string");
     assert.ok(p.fingerprint.length >= 8, "fingerprint has content");
-    assert.ok(["cpu", "vulkan"].includes(p.recommendedBackend), "recommendedBackend in {cpu, vulkan}");
+    assert.ok(["cpu", "vulkan", "cuda"].includes(p.recommendedBackend), "recommendedBackend in {cpu, vulkan, cuda}");
     assert.equal(p.recommendedThreads, p.cpuCores);
     assert.ok(Array.isArray(p.notes), "notes is array");
   });
@@ -68,8 +68,49 @@ async function main() {
       assert.ok(p.notes.some((n) => /gpuVramGB.*→ recommendedBackend forced to cpu/i.test(n)),
         `expected VRAM-floor note in ${JSON.stringify(p.notes)}`);
     } else {
-      assert.equal(p.recommendedBackend, "vulkan");
+      assert.equal(p.recommendedBackend, hw.gpuBackendFor(p.gpuName));
     }
+  });
+
+  await ok("gpuBackendFor: NVIDIA cards get cuda, AMD and Intel get vulkan", () => {
+    const win = "win32-x64";
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", win), "cuda");
+    assert.equal(hw.gpuBackendFor("NVIDIA RTX A4000", win), "cuda");
+    assert.equal(hw.gpuBackendFor("AMD Radeon RX 7800 XT", win), "vulkan");
+    assert.equal(hw.gpuBackendFor("Intel(R) Arc(TM) A770 Graphics", win), "vulkan");
+    assert.equal(hw.gpuBackendFor("", win), "vulkan");
+  });
+
+  await ok("gpuBackendFor: no CUDA recommendation where no CUDA build is pinned", () => {
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", "linux-x64"), "vulkan");
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", "win32-arm64"), "vulkan");
+  });
+
+  await ok("parseNvidiaSmi: the card with the most VRAM comes first, not the first row", () => {
+    const gpus = hw.parseNvidiaSmi("NVIDIA GeForce GT 1030, 2048\r\nNVIDIA GeForce RTX 5060 Ti, 8151\r\n");
+    assert.equal(gpus[0].name, "NVIDIA GeForce RTX 5060 Ti");
+    assert.equal(gpus[0].vramGB, 8);
+    assert.equal(gpus.length, 2);
+    assert.deepEqual(hw.parseNvidiaSmi("garbage"), []);
+  });
+
+  await ok("localStartOptions: auto-starts use the saved or recommended backend, not plain CPU", () => {
+    const rig = { gpuName: "NVIDIA GeForce RTX 5060 Ti", gpuKind: "discrete", gpuVramGB: 8, recommendedBackend: "cuda", recommendedThreads: 10, tools: {} };
+    assert.deepEqual(hw.localStartOptions({}, rig), { backend: "cuda", threads: 10 });
+    assert.equal(hw.localStartOptions({ hardware: { localBackend: "cpu" } }, rig).backend, "cpu");
+    assert.equal(hw.localStartOptions({}, null).backend, "cpu");
+  });
+
+  await ok("deriveSettings: an RTX 5060 Ti rig gets cuda and is told how to install it", () => {
+    const rig = {
+      cpuName: "Intel(R) Core(TM) Ultra 5 225", cpuCores: 10, cpuThreads: 10, totalRamGB: 16,
+      gpuName: "NVIDIA GeForce RTX 5060 Ti", gpuKind: "discrete", gpuVramGB: 8, recommendedBackend: "cuda", recommendedThreads: 10,
+      battery: { present: false, onBattery: false }, tools: {},
+    };
+    const e = hw.deriveSettings(rig);
+    assert.equal(e.localBackend, "cuda");
+    assert.match(e.decisions.find((d) => d.key === "localBackend").why, /CUDA.*\/llama update cuda/);
+    assert.equal(hw.deriveSettings(rig, { localBackend: "vulkan" }).localBackend, "vulkan");
   });
 
   await ok("ensureHardwareProfile writes the cache file", async () => {

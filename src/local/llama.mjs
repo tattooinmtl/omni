@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readGgufMetadata, isThinkingModel } from "./gguf.mjs";
 import { profileFor, profileArgs, officialModelFile, normalizeThink } from "./model-profiles.mjs";
-import { installedBuild, recoverInterruptedUpdate } from "./llama-build.mjs";
+import { installedBuild, recoverInterruptedUpdate, variantDir } from "./llama-build.mjs";
 import { cjkBanList, logitBiasBody } from "./language-guard.mjs";
 import { setRequestExtras, clearRequestExtras } from "./request-extras.mjs";
 
@@ -35,18 +35,35 @@ function defaultModelsDir() {
   return standard;
 }
 
-// Backends supported by the recompiled binaries the user ships (see
-// New_version_plan.md — cpu and vulkan only; no gpu/metal aliases).
-export const SUPPORTED_BACKENDS = ["cpu", "vulkan"];
+// cpu, vulkan, and cuda for NVIDIA cards (no gpu/metal aliases). CUDA lives
+// in its own folder, <binDir>-cuda, installed by `/llama update cuda`.
+export const SUPPORTED_BACKENDS = ["cpu", "vulkan", "cuda"];
 
-// Pick the exe for a given backend. Prefers the split binary
-// (`llama-server-<backend>.exe`); falls back to the legacy monolithic
-// `llama-server.exe` treated as CPU. Returns { path, source, backend } —
-// `source` is one of "split", "legacy-cpu", or "missing" (throws only when
-// nothing at all is on disk).
+// Pick the exe for a given backend. CUDA first looks for the pinned CUDA
+// build in <binDir>-cuda. Then the split binary (`llama-server-<backend>.exe`)
+// in binDir; then the legacy monolithic `llama-server.exe` treated as CPU.
+// Returns { path, source, backend } — `source` is one of "cuda-dir", "split"
+// or "legacy-cpu" (throws only when nothing at all is on disk).
+// The CUDA build's folder: llama.cudaBinDir, else <binDir>-cuda. The one
+// place binaryFor, recovery and /llama update all take it from.
+export function cudaDirFor(cfg) {
+  return cfg.cudaBinDir || variantDir(cfg.binDir, "cuda");
+}
+
+// How llama-server is spawned. cwd is the binary's own folder, so a CUDA
+// build in server-cuda/ loads its own ggml-cuda.dll and cudart, not the CPU
+// folder's DLLs.
+export function spawnOptionsFor(binPath) {
+  return { cwd: path.dirname(binPath), windowsHide: true, stdio: ["ignore", "pipe", "pipe"] };
+}
+
 export function binaryFor(cfg, backend) {
   const wanted = backend || "cpu";
   const ext = process.platform === "win32" ? ".exe" : "";
+  if (wanted === "cuda") {
+    const exe = path.join(cudaDirFor(cfg), `llama-server${ext}`);
+    if (fs.existsSync(exe)) return { path: exe, source: "cuda-dir", backend: "cuda" };
+  }
   const split = path.join(cfg.binDir, `llama-server-${wanted}${ext}`);
   if (fs.existsSync(split)) return { path: split, source: "split", backend: wanted };
 
@@ -55,6 +72,13 @@ export function binaryFor(cfg, backend) {
     // Legacy single binary can only honor CPU semantics safely (asking for
     // vulkan against a CPU-only monolith would silently no-op).
     return { path: legacy, source: "legacy-cpu", backend: "cpu" };
+  }
+
+  // A GPU request on an install that only has the split CPU binary still
+  // falls back to CPU instead of failing outright.
+  if (wanted !== "cpu") {
+    const cpuSplit = path.join(cfg.binDir, `llama-server-cpu${ext}`);
+    if (fs.existsSync(cpuSplit)) return { path: cpuSplit, source: "legacy-cpu", backend: "cpu" };
   }
 
   throw new Error(
@@ -93,6 +117,8 @@ export function llamaConfig(settings) {
     path.join(INSTALL_ROOT, "server");
   return {
     binDir,
+    // A CUDA build somewhere other than <binDir>-cuda ("" = the default).
+    cudaBinDir: typeof cfg.cudaBinDir === "string" ? cfg.cudaBinDir : "",
     exe: path.join(binDir, "llama-server.exe"),
     modelsDir: cfg.modelsDir || process.env.OMNI_MODELS_DIR || defaultModelsDir(),
     host: cfg.host || "127.0.0.1",
@@ -210,10 +236,16 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   }
 
   // Resolve backend binary (may downgrade to legacy-cpu with a note in onLog).
-  try { recoverInterruptedUpdate(cfg.binDir); } catch { /* binaryFor reports what is missing */ }
+  for (const d of [cfg.binDir, cudaDirFor(cfg)]) {
+    try { recoverInterruptedUpdate(d); } catch { /* binaryFor reports what is missing */ }
+  }
   const bin = binaryFor(cfg, backend);
   if (bin.source === "legacy-cpu" && backend && backend !== "cpu") {
-    if (onLog) onLog(`only legacy llama-server binary present; falling back to CPU (requested ${backend})`);
+    if (onLog) {
+      onLog(backend === "cuda"
+        ? "no CUDA build installed; falling back to CPU — run /llama update cuda to install it"
+        : `only legacy llama-server binary present; falling back to CPU (requested ${backend})`);
+    }
   }
   const resolvedBackend = bin.backend;
 
@@ -283,11 +315,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     }
   }
 
-  const proc = spawn(bin.path, args, {
-    cwd: cfg.binDir,        // so the bundled ggml-*.dll / llama.dll resolve
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const proc = spawn(bin.path, args, spawnOptionsFor(bin.path));
   child = proc;
   current = {
     model: file,
