@@ -10,9 +10,15 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readGgufMetadata, isThinkingModel } from "./gguf.mjs";
+import { profileFor, profileArgs, officialModelFile, normalizeThink } from "./model-profiles.mjs";
+import { installedBuild, recoverInterruptedUpdate } from "./llama-build.mjs";
+import { cjkBanList, logitBiasBody } from "./language-guard.mjs";
+import { setRequestExtras, clearRequestExtras } from "./request-extras.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_ROOT = path.resolve(__dirname, "..", "..");
+// Same home as core/config.mjs (not imported, to keep this module standalone).
+const CACHE_DIR = path.join(process.env.OMNI_HOME || path.join(INSTALL_ROOT, "agent"), "cache");
 
 let child = null;    // current llama-server child process (or null)
 let current = null;  // { model, host, port, pid, url } while running
@@ -58,8 +64,9 @@ export function binaryFor(cfg, backend) {
 
 // Build the spawn args for llama-server. Pure function so tests can assert
 // the flag layout without spawning. Threads are always passed explicitly so
-// logs show what we picked.
-export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx }) {
+// logs show what we picked. A profiled model (model-profiles.mjs) adds its own
+// flags; the user's llama.extraArgs come last so they win over the profile.
+export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx, think, threadsBatch }) {
   const ngl = backend === "cpu" ? 0 : (Number.isFinite(cfg.ngl) && cfg.ngl > 0 ? cfg.ngl : 999);
   const args = [
     "-m", modelPath,
@@ -69,6 +76,7 @@ export function buildStartArgs(cfg, modelPath, { backend, threads, nCtx }) {
     "-ngl", String(ngl),
     "-t", String(threads),
     "--jinja",
+    ...profileArgs(profileFor(modelPath), { think: think ?? cfg.think, threadsBatch }),
     ...cfg.extraArgs,
   ];
   return args;
@@ -97,6 +105,12 @@ export function llamaConfig(settings) {
     // the whole system.
     ngl: cfg.ngl ?? 0,
     defaultModel: cfg.defaultModel || "",
+    // Thinking budget for models with a profile that supports it
+    // (high | low | none). Unset = the profile's default.
+    think: cfg.think || "",
+    // Ban every token that can start a Chinese/Japanese/Korean character
+    // (language-guard.mjs). On unless set to false.
+    languageGuard: cfg.languageGuard !== false,
     extraArgs: Array.isArray(cfg.extraArgs) ? cfg.extraArgs : [],
     // Explicit -t <n>. If unset here, startServer falls back to
     // hardware-profile physical cores (Phase C) or os.cpus() at the tail.
@@ -164,6 +178,20 @@ export function resolveModelFile(settings, name) {
   return null;
 }
 
+// The model a bare `/llama start` loads: llama.defaultModel when that file is
+// still in the models folder, otherwise the official model (Spark X2.6) when
+// present. Returns "" when neither is available.
+export function defaultModelFor(settings) {
+  const cfg = llamaConfig(settings);
+  const models = listModels(settings);
+  // Only an exact file counts: a stale name that now substring-matches several
+  // other models must fall back to Spark, not fail as "ambiguous".
+  if (cfg.defaultModel && (models.includes(cfg.defaultModel) || models.includes(`${cfg.defaultModel}.gguf`))) {
+    return cfg.defaultModel;
+  }
+  return officialModelFile(models) || "";
+}
+
 export function status() {
   if (child && current) return { running: true, ...current };
   return { running: false };
@@ -173,7 +201,7 @@ export function status() {
 // Resolves once the /health endpoint reports ready, or throws on failure.
 // opts.backend: "cpu" | "vulkan" — picks which binary to spawn.
 // opts.threads: physical-core count to pass with -t.
-export async function startServer(settings, modelName, { onLog, backend, threads } = {}) {
+export async function startServer(settings, modelName, { onLog, backend, threads, think } = {}) {
   const cfg = llamaConfig(settings);
   if (child) {
     throw new Error(
@@ -182,13 +210,14 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   }
 
   // Resolve backend binary (may downgrade to legacy-cpu with a note in onLog).
+  try { recoverInterruptedUpdate(cfg.binDir); } catch { /* binaryFor reports what is missing */ }
   const bin = binaryFor(cfg, backend);
   if (bin.source === "legacy-cpu" && backend && backend !== "cpu") {
     if (onLog) onLog(`only legacy llama-server binary present; falling back to CPU (requested ${backend})`);
   }
   const resolvedBackend = bin.backend;
 
-  const wanted = modelName || cfg.defaultModel;
+  const wanted = modelName || defaultModelFor(settings);
   const file = resolveModelFile(settings, wanted);
   if (!file) {
     throw new Error(
@@ -198,6 +227,25 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     );
   }
   const modelPath = path.join(cfg.modelsDir, file);
+  const profile = profileFor(file);
+
+  // A profiled model can need a newer llama.cpp than the one installed (Spark
+  // X2.6 needs b10828+; older builds fail with a bare "failed to load model").
+  // Fail closed: a build that can't be identified is not assumed to be new enough.
+  let build = null;
+  if (profile && profile.minBuild) {
+    build = installedBuild(bin.path);
+    if (build === null) {
+      throw new Error(
+        `${profile.label} needs llama.cpp build ${profile.minBuild} or later, and ${path.basename(bin.path)} did not report its build. Run /llama update.`
+      );
+    }
+    if (build < profile.minBuild) {
+      throw new Error(
+        `${profile.label} needs llama.cpp build ${profile.minBuild} or later; ${path.basename(bin.path)} is build ${build}. Run /llama update.`
+      );
+    }
+  }
 
   // Decide context size: explicit setting, or auto-detect from the GGUF header
   // (capped at maxAutoContext to keep memory in check).
@@ -207,6 +255,7 @@ export async function startServer(settings, modelName, { onLog, backend, threads
   if (auto) {
     const trained = insp && insp.contextLength ? insp.contextLength : 0;
     nCtx = trained ? Math.min(trained, cfg.maxAutoContext) : 4096;
+    if (profile && profile.contextSize) nCtx = Math.min(nCtx, profile.contextSize);
   }
 
   // Threads: explicit opt → settings → default to logical count. Physical
@@ -215,11 +264,24 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     ? threads
     : (Number.isFinite(cfg.threads) && cfg.threads > 0 ? cfg.threads : os.cpus().length);
 
+  const thinkLevel = profile ? normalizeThink(think ?? cfg.think, profile) : null;
   const args = buildStartArgs(cfg, modelPath, {
     backend: resolvedBackend,
     threads: resolvedThreads,
     nCtx,
+    think: thinkLevel,
   });
+
+  // Built from the GGUF vocabulary (cached after the first time), applied to
+  // every request once the server is up.
+  let banned = [];
+  if (cfg.languageGuard) {
+    try {
+      banned = cjkBanList(modelPath, { cacheDir: CACHE_DIR });
+    } catch (e) {
+      if (onLog) onLog(`language guard is OFF for ${file}: could not read its vocabulary (${e.message})`);
+    }
+  }
 
   const proc = spawn(bin.path, args, {
     cwd: cfg.binDir,        // so the bundled ggml-*.dll / llama.dll resolve
@@ -240,22 +302,33 @@ export async function startServer(settings, modelName, { onLog, backend, threads
     threads: resolvedThreads,
     binary: path.basename(bin.path),
     binarySource: bin.source,
+    build,
+    profile: profile ? profile.label : null,
+    think: thinkLevel,
+    languageGuard: banned.length,
   };
+  const url = current.url;
 
   // Surface fatal startup errors (e.g. failed model load) to the caller's log.
   let stderrTail = "";
   proc.stderr.on("data", (d) => {
     stderrTail = (stderrTail + d.toString()).slice(-2000);
   });
-  proc.on("exit", (code) => {
-    if (onLog && code) onLog(`llama server exited (code ${code})`);
+  // Only the active process may clear the shared state: a stopped server that
+  // exits late must not wipe the guard or status of its replacement.
+  const settle = () => {
+    if (child !== proc) return;
+    clearRequestExtras(url);
     child = null;
     current = null;
+  };
+  proc.on("exit", (code) => {
+    if (onLog && code && child === proc) onLog(`llama server exited (code ${code})`);
+    settle();
   });
   proc.on("error", (err) => {
-    if (onLog) onLog(`llama server error: ${err.message}`);
-    child = null;
-    current = null;
+    if (onLog && child === proc) onLog(`llama server error: ${err.message}`);
+    settle();
   });
 
   const ready = await waitForReady(cfg.host, cfg.port, 180000, () => child === proc);
@@ -265,8 +338,11 @@ export async function startServer(settings, modelName, { onLog, backend, threads
       const tail = stderrTail.trim().split("\n").slice(-3).join(" | ");
       throw new Error(`llama server failed to start${tail ? `: ${tail}` : ""}`);
     }
-    throw new Error("llama server did not become ready within 180s (large model still loading?)");
+    // Don't leave a half-started server running unguarded behind a failed start.
+    stopServer();
+    throw new Error("llama server did not become ready within 180s (large model still loading?) — stopped it");
   }
+  if (banned.length) setRequestExtras(url, { logit_bias: logitBiasBody(banned) });
   return { ...current };
 }
 
@@ -287,11 +363,30 @@ async function waitForReady(host, port, timeoutMs, alive) {
   return false;
 }
 
+// After stopServer: wait until nothing answers on the port any more, so a
+// replacement's readiness check can't be satisfied by the old process.
+// Resolves true once the port is free, false after timeoutMs.
+export async function waitForPortFree(settings, { timeoutMs = 15000, fetchImpl = fetch } = {}) {
+  const cfg = llamaConfig(settings);
+  const url = `http://${cfg.host}:${cfg.port}/health`;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fetchImpl(url, { method: "GET", signal: AbortSignal.timeout(1000) });
+    } catch {
+      return true; // connection refused: the port is free
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
 // Stop the running server (kills the process tree on Windows). Returns whether
 // a server was running.
 export function stopServer() {
   if (!child) return false;
   const pid = child.pid;
+  if (current) clearRequestExtras(current.url);
   try {
     if (process.platform === "win32") {
       spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });

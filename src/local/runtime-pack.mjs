@@ -235,7 +235,7 @@ export function tarCommand() {
   return "tar";
 }
 
-function extractZip(zip, destDir) {
+export function extractZip(zip, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   let r = spawnSync(tarCommand(), ["-xf", zip, "-C", destDir], { encoding: "utf8", windowsHide: true });
   if (!r.error && r.status === 0) return;

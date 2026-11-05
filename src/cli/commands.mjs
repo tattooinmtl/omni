@@ -1247,12 +1247,12 @@ export const COMMANDS = [
     handler: async (ctx, arg) => addProviderInteractive(ctx, arg),
   },
   {
-    name: "llama", aliases: [], usage: "/llama [list|start <model> [cpu|vulkan] [--force]|default <n>|stop|restart|status]", category: "Models & Providers",
-    summary: "manage the bundled local llama.cpp server",
+    name: "llama", aliases: [], usage: "/llama [list|spark [high|low|none]|start [model] [cpu|vulkan] [high|low|none] [--force]|default <n>|stop|restart|status|update|bench [model]]", category: "Models & Providers",
+    summary: "manage the bundled local llama.cpp server (Spark X2.6 is the official local model)",
     handler: (ctx, arg, parts) => llamaCommand(ctx, parts[1] || "", parts.slice(2).join(" ").trim()),
   },
   {
-    name: "llama-start", aliases: [], usage: "/llama-start [model] [cpu|vulkan] [--force]", category: "Models & Providers",
+    name: "llama-start", aliases: [], usage: "/llama-start [model] [cpu|vulkan] [high|low|none] [--force]", category: "Models & Providers",
     summary: "start the local llama server (backend defaults to hardware-profile recommendation)",
     handler: (ctx, arg) => llamaCommand(ctx, "start", (arg || "").trim()),
   },

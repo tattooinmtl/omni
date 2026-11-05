@@ -1,13 +1,14 @@
 // OpenAI-compatible streaming chat client (uses Node's global fetch / undici).
 //
-// Imports only from core/env-keys.mjs, a leaf — core/context.mjs imports
-// authHeaders from here, so anything with its own dependencies would close a
-// cycle back through core/config.mjs.
+// Imports only leaves (core/env-keys.mjs, local/request-extras.mjs) —
+// core/context.mjs imports authHeaders from here, so anything with its own
+// dependencies would close a cycle back through core/config.mjs.
 // Works with NVIDIA NIM, local llama.cpp, Ollama, OpenRouter, etc.
 //
 // Sends stream:true, parses the SSE response, calls onToken for each text delta,
 // and returns { message, finishReason, usage } once the stream ends.
 import { providerKeyEnvVar } from "./env-keys.mjs";
+import { applyRequestExtras } from "../local/request-extras.mjs";
 
 export function authHeaders(provider) {
   const headers = { "Content-Type": "application/json" };
@@ -146,6 +147,7 @@ export function buildChatBody({ model, messages, tools }) {
     stream_options: { include_usage: true },
   };
   applyReasoning(body, model);
+  applyRequestExtras(body, model.provider?.baseUrl);
   if (nativeTools && tools && tools.length) {
     body.tools = tools;
     body.tool_choice = "auto";
@@ -194,6 +196,7 @@ export async function completionStream({ model, prompt, signal, onToken }) {
     stream_options: { include_usage: true },
   };
   applyReasoning(body, model);
+  applyRequestExtras(body, model.provider?.baseUrl);
 
   const res = await fetch(url, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body), signal });
   if (!res.ok) {
