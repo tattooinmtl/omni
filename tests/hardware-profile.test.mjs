@@ -73,11 +73,32 @@ async function main() {
   });
 
   await ok("gpuBackendFor: NVIDIA cards get cuda, AMD and Intel get vulkan", () => {
-    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti"), "cuda");
-    assert.equal(hw.gpuBackendFor("NVIDIA RTX A4000"), "cuda");
-    assert.equal(hw.gpuBackendFor("AMD Radeon RX 7800 XT"), "vulkan");
-    assert.equal(hw.gpuBackendFor("Intel(R) Arc(TM) A770 Graphics"), "vulkan");
-    assert.equal(hw.gpuBackendFor(""), "vulkan");
+    const win = "win32-x64";
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", win), "cuda");
+    assert.equal(hw.gpuBackendFor("NVIDIA RTX A4000", win), "cuda");
+    assert.equal(hw.gpuBackendFor("AMD Radeon RX 7800 XT", win), "vulkan");
+    assert.equal(hw.gpuBackendFor("Intel(R) Arc(TM) A770 Graphics", win), "vulkan");
+    assert.equal(hw.gpuBackendFor("", win), "vulkan");
+  });
+
+  await ok("gpuBackendFor: no CUDA recommendation where no CUDA build is pinned", () => {
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", "linux-x64"), "vulkan");
+    assert.equal(hw.gpuBackendFor("NVIDIA GeForce RTX 5060 Ti", "win32-arm64"), "vulkan");
+  });
+
+  await ok("parseNvidiaSmi: the card with the most VRAM comes first, not the first row", () => {
+    const gpus = hw.parseNvidiaSmi("NVIDIA GeForce GT 1030, 2048\r\nNVIDIA GeForce RTX 5060 Ti, 8151\r\n");
+    assert.equal(gpus[0].name, "NVIDIA GeForce RTX 5060 Ti");
+    assert.equal(gpus[0].vramGB, 8);
+    assert.equal(gpus.length, 2);
+    assert.deepEqual(hw.parseNvidiaSmi("garbage"), []);
+  });
+
+  await ok("localStartOptions: auto-starts use the saved or recommended backend, not plain CPU", () => {
+    const rig = { gpuName: "NVIDIA GeForce RTX 5060 Ti", gpuKind: "discrete", gpuVramGB: 8, recommendedBackend: "cuda", recommendedThreads: 10, tools: {} };
+    assert.deepEqual(hw.localStartOptions({}, rig), { backend: "cuda", threads: 10 });
+    assert.equal(hw.localStartOptions({ hardware: { localBackend: "cpu" } }, rig).backend, "cpu");
+    assert.equal(hw.localStartOptions({}, null).backend, "cpu");
   });
 
   await ok("deriveSettings: an RTX 5060 Ti rig gets cuda and is told how to install it", () => {

@@ -85,6 +85,7 @@ export function pinnedAsset(key = platformKey()) {
 
 // Every archive a variant needs, in unpack order; null when none is pinned.
 export function pinnedAssets(variant = "cpu", key = platformKey()) {
+  if (!BUILD_VARIANTS.includes(variant)) return null;
   if (variant === "cuda") return LLAMA_BUILD.cudaBuilds[key] || null;
   const a = pinnedAsset(key);
   return a ? [a] : null;
@@ -109,8 +110,12 @@ export function listDevices(exePath, { run = spawnSync } = {}) {
 // The swap renames binDir → binDir.old, then binDir.new → binDir. If the
 // process dies between the two, binDir is missing and .old holds the last
 // good build: put it back. Called before every update and every server start.
-export function recoverInterruptedUpdate(binDir) {
+// While an update holds the folder's lock, the missing folder is that
+// update mid-swap, not a crash: leave it alone (the installer itself passes
+// heldLock, since it owns the lock).
+export function recoverInterruptedUpdate(binDir, { heldLock = false } = {}) {
   const backup = `${binDir}.old`;
+  if (!heldLock && lockIsLive(`${binDir}.update.lock`)) return false;
   if (!fs.existsSync(binDir) && fs.existsSync(backup)) {
     fs.renameSync(backup, binDir);
     return true;
@@ -120,18 +125,34 @@ export function recoverInterruptedUpdate(binDir) {
 
 // One update per server folder at a time: both would share .new and .old.
 // A lock older than 30 minutes is a leftover from a crashed update.
-function takeLock(binDir) {
-  const lock = `${binDir}.update.lock`;
+// The owner touches its lock every LOCK_HEARTBEAT_MS, so a lock is stale only
+// when nothing has touched it for LOCK_STALE_MS — a crashed update — however
+// long a slow CUDA download takes.
+export const LOCK_HEARTBEAT_MS = 30 * 1000;
+export const LOCK_STALE_MS = 5 * 60 * 1000;
+
+function lockIsLive(lock, now = Date.now()) {
   try {
-    if (Date.now() - fs.statSync(lock).mtimeMs > 30 * 60 * 1000) fs.rmSync(lock, { force: true });
-  } catch { /* no lock */ }
+    return now - fs.statSync(lock).mtimeMs <= LOCK_STALE_MS;
+  } catch {
+    return false; // no lock
+  }
+}
+
+function takeLock(binDir, { heartbeatMs = LOCK_HEARTBEAT_MS } = {}) {
+  const lock = `${binDir}.update.lock`;
+  if (fs.existsSync(lock) && !lockIsLive(lock)) fs.rmSync(lock, { force: true });
   try {
     fs.closeSync(fs.openSync(lock, "wx"));
   } catch (e) {
     if (e.code === "EEXIST") throw new Error(`another llama.cpp update is already running for ${binDir} (lock: ${lock})`);
     throw e;
   }
-  return () => fs.rmSync(lock, { force: true });
+  const beat = setInterval(() => {
+    try { const t = new Date(); fs.utimesSync(lock, t, t); } catch { /* lock gone */ }
+  }, heartbeatMs);
+  beat.unref();
+  return () => { clearInterval(beat); fs.rmSync(lock, { force: true }); };
 }
 
 // A stalled connection must not leave /llama update hanging forever; the
@@ -145,6 +166,9 @@ export const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 // old build's DLLs and would break next to the new ones.
 // `binDir` is the variant's own folder (see variantDir).
 export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl = fetch, key, probe = installedBuild, timeoutMs = DOWNLOAD_TIMEOUT_MS, variant = "cpu" } = {}) {
+  if (!BUILD_VARIANTS.includes(variant)) {
+    throw new Error(`unknown llama.cpp build variant "${variant}" — expected one of: ${BUILD_VARIANTS.join(", ")}`);
+  }
   const assets = pinnedAssets(variant, key);
   if (!assets) {
     throw new Error(
@@ -153,7 +177,7 @@ export async function installPinnedBuild(binDir, { onProgress, onStep, fetchImpl
   }
   const release = takeLock(binDir);
   try {
-    recoverInterruptedUpdate(binDir);
+    recoverInterruptedUpdate(binDir, { heldLock: true });
     return await installLocked(binDir, assets, { onProgress, onStep, fetchImpl, key, probe, timeoutMs, variant });
   } finally {
     release();

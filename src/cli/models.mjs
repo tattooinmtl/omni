@@ -7,6 +7,7 @@ import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
 import { listProviderModels, probeModel } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
+import { localStartOptions } from "../local/hardware-profile.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
 import { restoreLineEditing } from "./term.mjs";
 
@@ -305,7 +306,7 @@ export async function ensureLocalModelStarted(ctx, selectedModel = ctx.model) {
     return;
   }
   infoLine(`auto-starting local llama server (${target}) ...`);
-  const info = await llama.startServer(ctx.settings, target, { onLog: (m) => warnLine(m) });
+  const info = await llama.startServer(ctx.settings, target, { onLog: (m) => warnLine(m), ...localStartOptions(ctx.settings) });
   ctx.settings.providers.local.baseUrl = info.url;
   ctx.settings.models["local/coder"] = {
     ...(ctx.settings.models["local/coder"] || {}),

@@ -28,6 +28,18 @@ entries were rebuilt from git history).
   The profile schema moves to 3, so every install rescans once.
 - llama-server now starts from its binary's own folder, so each build loads
   its own ggml DLLs.
+- **Review hardening.** Automatic starts (the `local` provider waking the
+  server, `/llama default`) now use the saved or recommended backend instead
+  of always CPU. CUDA is recommended only where a CUDA build is pinned
+  (Windows x64); elsewhere an NVIDIA card gets Vulkan. With several GPUs the
+  one with the most VRAM decides. `llama.cudaBinDir` is honoured everywhere,
+  recovery included. A `cuda` start on a split-CPU-only install falls back
+  to `llama-server-cpu`. Startup no longer "recovers" a folder that a live
+  update is swapping; the update lock gets a heartbeat, so a long CUDA
+  download keeps it, and only a lock untouched for 5 minutes counts as
+  stale. An unknown build variant is refused instead of installing CPU.
+  `/llama status` probes each binary once for 10 s instead of twice for
+  60 s. The extension guide lists `cuda`.
 - Tests: the CUDA pin (two archives, one tag, full hashes), `listDevices`
   with and without a GPU, `binaryFor` picking `server-cuda/` and falling
   back to CPU, full offload on cuda, `cuda` in `/llama-start`, a two-archive

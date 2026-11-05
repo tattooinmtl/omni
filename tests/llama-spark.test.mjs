@@ -183,6 +183,55 @@ async function main() {
     assert.equal(llama.binaryFor({ binDir }, "cpu").path, path.join(binDir, "llama-server.exe"));
   });
 
+  await ok("llama.cudaBinDir is honoured by the config and by binaryFor", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cudadir-"));
+    const binDir = path.join(root, "server");
+    const custom = path.join(root, "elsewhere", "cuda-build");
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(custom, { recursive: true });
+    fs.writeFileSync(path.join(custom, "llama-server.exe"), "");
+    const cfg = llama.llamaConfig({ llama: { binDir, cudaBinDir: custom } });
+    assert.equal(cfg.cudaBinDir, custom);
+    assert.equal(llama.cudaDirFor(cfg), custom);
+    assert.equal(llama.binaryFor(cfg, "cuda").path, path.join(custom, "llama-server.exe"));
+    assert.equal(llama.cudaDirFor(llama.llamaConfig({ llama: { binDir } })), `${binDir}-cuda`);
+  });
+
+  await ok("a cuda request on a split-CPU-only install falls back to llama-server-cpu", () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-split-"));
+    fs.writeFileSync(path.join(binDir, "llama-server-cpu.exe"), "");
+    const b = llama.binaryFor({ binDir }, "cuda");
+    assert.equal(b.path, path.join(binDir, "llama-server-cpu.exe"));
+    assert.equal(b.backend, "cpu");
+    assert.equal(b.source, "legacy-cpu");
+  });
+
+  await ok("llama-server is spawned from its binary's own folder (CUDA DLLs resolve)", () => {
+    const exe = path.join("C:", "o", "server-cuda", "llama-server.exe");
+    assert.equal(llama.spawnOptionsFor(exe).cwd, path.dirname(exe));
+    assert.equal(llama.spawnOptionsFor(exe).windowsHide, true);
+  });
+
+  await ok("recovery leaves a folder alone while a live update holds its lock", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-rec2-"));
+    const binDir = path.join(root, "server-cuda");
+    fs.mkdirSync(`${binDir}.old`);
+    fs.writeFileSync(`${binDir}.update.lock`, "");
+    assert.equal(build.recoverInterruptedUpdate(binDir), false);
+    assert.ok(!fs.existsSync(binDir), "mid-swap folder untouched");
+    assert.equal(build.recoverInterruptedUpdate(binDir, { heldLock: true }), true);
+    // A lock nobody has touched for longer than LOCK_STALE_MS is a crash.
+    fs.renameSync(binDir, `${binDir}.old`);
+    const old = new Date(Date.now() - build.LOCK_STALE_MS - 60000);
+    fs.utimesSync(`${binDir}.update.lock`, old, old);
+    assert.equal(build.recoverInterruptedUpdate(binDir), true);
+  });
+
+  await ok("an unknown build variant is refused, never installed as CPU", async () => {
+    assert.equal(build.pinnedAssets("rocm", "win32-x64"), null);
+    await assert.rejects(build.installPinnedBuild(os.tmpdir(), { variant: "rocm" }), /unknown llama\.cpp build variant "rocm"/);
+  });
+
   await ok("cuda offloads every layer; parseStartArgs takes cuda as a backend", () => {
     const cfg = llama.llamaConfig({ llama: { binDir: os.tmpdir(), modelsDir: os.tmpdir() } });
     const args = llama.buildStartArgs(cfg, "Spark-X2.6-4B-Q4_K_M.gguf", { backend: "cuda", threads: 6, nCtx: 32768 });
@@ -263,6 +312,25 @@ async function main() {
       try {
         await assert.rejects(build.installPinnedBuild(binDir, { fetchImpl, key: "win32-test", probe: () => 1 }), /already running/);
         assert.ok(fs.existsSync(`${binDir}.update.lock`), "the other update's lock is left alone");
+      } finally {
+        delete build.LLAMA_BUILD.builds["win32-test"];
+      }
+    });
+
+    await ok("a stale lock (no heartbeat for LOCK_STALE_MS) does not block a new update", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "omni-bin-"));
+      const binDir = path.join(root, "server");
+      fs.mkdirSync(binDir);
+      fs.writeFileSync(path.join(binDir, "llama-server.exe"), "old");
+      fs.writeFileSync(`${binDir}.update.lock`, "");
+      const old = new Date(Date.now() - build.LOCK_STALE_MS - 60000);
+      fs.utimesSync(`${binDir}.update.lock`, old, old);
+      build.LLAMA_BUILD.builds["win32-test"] = asset();
+      try {
+        const probe = (p) => (fs.readFileSync(p, "utf8") === "new" ? build.LLAMA_BUILD.build : 8996);
+        const r = await build.installPinnedBuild(binDir, { fetchImpl, key: "win32-test", probe });
+        assert.equal(r.to, build.LLAMA_BUILD.build);
+        assert.ok(!fs.existsSync(`${binDir}.update.lock`));
       } finally {
         delete build.LLAMA_BUILD.builds["win32-test"];
       }

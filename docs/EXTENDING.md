@@ -353,7 +353,7 @@ scan (a few seconds, capped at 20 s) before the first turn.
   "freeDiskGB": 73.3,
   "tools": { "python": true, "git": true, "ffmpeg": true, "ollama": false, "docker": false, "nvidia-smi": false, "browser": "msedge" },
   "fingerprint": "…",
-  "recommendedBackend": "cpu", // "cpu" or "vulkan"
+  "recommendedBackend": "cpu", // "cpu", "vulkan", or "cuda" (NVIDIA card on Windows x64)
   "recommendedThreads": 8,
   "notes": ["gpuVramGB=3<6 → recommendedBackend forced to cpu"]
 }
@@ -366,22 +366,32 @@ scan (a few seconds, capped at 20 s) before the first turn.
   "llama": {
     "modelsDir": "D:\\my-ggufs",  // else OMNI_MODELS_DIR env, else C:\models
     "gpuMinVramGB": 6,            // recommendedBackend floor — default 6
-    "allowLowVram": false,        // set true to always allow Vulkan below the floor
+    "allowLowVram": false,        // set true to always allow a GPU backend below the floor
+    "cudaBinDir": "",             // CUDA build folder; "" = <binDir>-cuda (/llama update cuda)
     "threads": 12,                // else profile.recommendedThreads → os.cpus().length
     "extraArgs": ["--flash-attn"] // appended verbatim to llama-server
   },
   "hardware": {                   // written by /hardware set; omit a key for auto
     "browserGpu": "off",          // "on" | "off"
-    "localBackend": "cpu"         // "cpu" | "vulkan" (VRAM floor still applies)
+    "localBackend": "cpu"         // "cpu" | "vulkan" | "cuda" (VRAM floor still applies)
   }
 }
 ```
 
 Order of precedence at `/llama-start` time:
-1. Explicit arg (`/llama-start <model> vulkan`) with `--force`
+1. Explicit arg (`/llama-start <model> vulkan` or `… cuda`) with `--force`
 2. Explicit arg without `--force` — subject to the VRAM floor
 3. `profile.recommendedBackend`
 4. Fallback to `cpu`
+
+Automatic starts (the `local` provider waking the server, `/llama default`)
+use steps 3–4 plus `hardware.localBackend`, through `localStartOptions()`.
+
+The recommendation is `cuda` for an NVIDIA card with at least `gpuMinVramGB`
+of VRAM on Windows x64, where Omni pins a CUDA build, and `vulkan` for any
+other GPU that clears the floor. With several GPUs, the one with the most
+VRAM decides. A `cuda` start with no CUDA build installed falls back to CPU
+and says to run `/llama update cuda`.
 
 ### Adding a new backend binary
 

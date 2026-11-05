@@ -4,10 +4,10 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel } from "../core/config.mjs";
 import * as llama from "../local/llama.mjs";
 import { installProviderPreset } from "./models.mjs";
-import { getHardwareProfileSync, ensureHardwareProfile } from "../local/hardware-profile.mjs";
+import { getHardwareProfileSync, ensureHardwareProfile, localStartOptions } from "../local/hardware-profile.mjs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { LLAMA_BUILD, installedBuild, installPinnedBuild, listDevices, variantDir } from "../local/llama-build.mjs";
+import { LLAMA_BUILD, installedBuild, installPinnedBuild, listDevices } from "../local/llama-build.mjs";
 import { THINK_LEVELS, SPARK, officialModelFile, profileFor } from "../local/model-profiles.mjs";
 
 // Parse "[model] [backend] [high|low|none] [--force]" from a /llama-start
@@ -153,7 +153,7 @@ export async function llamaCommand(ctx, sub, subArg) {
       if (!llama.status().running) {
         infoLine("starting local llama server ...");
         try {
-          const info = await llama.startServer(ctx.settings, target, { onLog: (m) => warnLine(m) });
+          const info = await llama.startServer(ctx.settings, target, { onLog: (m) => warnLine(m), ...localStartOptions(ctx.settings) });
           ctx.settings.providers.local.baseUrl = info.url;
           ctx.settings.models["local/coder"].id = info.model;
           ctx.settings.models["local/coder"].contextWindowDetected = info.contextSize || undefined;
@@ -302,14 +302,18 @@ export function serverExe(cfg) {
   }
 }
 
+// /llama status must stay quick: one 10 s try per binary, not the update
+// path's two 60 s tries that ride out an antivirus scan of a fresh exe.
+const STATUS_PROBE = { attempts: 1, timeout: 10000 };
+
 function reportBuild(cfg) {
-  const build = installedBuild(serverExe(cfg));
+  const build = installedBuild(serverExe(cfg), STATUS_PROBE);
   if (build !== null) {
     const behind = build < LLAMA_BUILD.build;
     console.log(`    llama.cpp: b${build}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update)`) : c.dim("  (current)")}`);
   }
   const cudaExe = cudaServerExe(cfg);
-  const cuda = installedBuild(cudaExe);
+  const cuda = installedBuild(cudaExe, STATUS_PROBE);
   if (cuda !== null) {
     const behind = cuda < LLAMA_BUILD.build;
     console.log(`    llama.cpp CUDA: b${cuda}${behind ? c.yellow(`  (b${LLAMA_BUILD.build} available — /llama update cuda)`) : c.dim("  (current)")}  ${path.dirname(cudaExe)}`);
@@ -318,7 +322,7 @@ function reportBuild(cfg) {
 
 function cudaServerExe(cfg) {
   const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(cfg.cudaBinDir || variantDir(cfg.binDir, "cuda"), `llama-server${ext}`);
+  return path.join(llama.cudaDirFor(cfg), `llama-server${ext}`);
 }
 
 // /llama update [cuda] [--force] — install the pinned llama.cpp build: CPU
