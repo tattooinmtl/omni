@@ -119,27 +119,73 @@ assert("questions are never captured by the catch-all tier",
 assert("assistant text is scanned for cue phrases but not the catch-all tier (avoids restating the same fact twice)",
   catchAll, (list) => list.filter((a) => /staging database/.test(a.text)).length === 1);
 
-// ---- Omni's own injected user messages are never memorized -----------------
-// These are built by the real code paths that inject them, so a reworded
-// note can't slip past the filter unnoticed.
+// ---- Only the user's own words reach memory -------------------------------
+// Omni writes user-role messages of its own. Each says where it came from
+// (core/synthetic.mjs): the notes are built here by the code that writes
+// them, and every assertion checks the exact set of atoms extracted, so any
+// leaked sentence fails, not only ones matching a phrase.
 
 const { mechanicalDigest } = await import(u("core/compaction.mjs"));
 const { steeringMessage } = await import(u("core/agent.mjs"));
 const { recoveryMessage } = await import(u("core/toolcalls.mjs"));
-const syntheticMessages = [
-  { role: "user", content: mechanicalDigest([{ role: "user", content: "Refactor the billing module into smaller services." }]) },
-  { role: "user", content: "[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains." },
-  { role: "user", content: "[hook lint] Not done yet: the linter still reports twelve warnings in the parser module." },
-  { role: "user", content: [{ type: "text", text: "[image attached from read_media_file — look at it and answer from what you see]" }] },
-  { role: "user", content: "GOAL CONTINUATION (iteration 2): the goal is not yet complete.\nObjective: Ship the release candidate for the payments service.\nContinue working." },
-  { role: "user", content: recoveryMessage() },
-  { role: "user", content: steeringMessage("The production cluster lives in the Montreal region now.") },
+const { learnPrompt } = await import(u("core/skill-learn.mjs"));
+const { skillInvocationPrompt, restoreSessionMessages } = await import(u("cli/helpers.mjs"));
+const { syntheticUser, promptMessage, recordFor, markTyped } = await import(u("core/synthetic.mjs"));
+const texts = (list) => list.map((a) => a.text).sort();
+const sameTexts = (expected) => (list) => JSON.stringify(texts(list)) === JSON.stringify([...expected].sort());
+
+const BTW = "The production cluster lives in the Montreal region now.";
+const SKILL_ARG = "Draft the quarterly report for the logistics team.";
+const TYPED = "The billing service listens on port 8443 in staging.";
+const BRACKET = "[system note] The staging VPN certificate expires at the end of March.";
+const liveMessages = [
+  syntheticUser(mechanicalDigest([{ role: "user", content: "Refactor the billing module into smaller services." }])),
+  syntheticUser("[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains."),
+  syntheticUser("[hook lint] Not done yet: the linter still reports twelve warnings in the parser module."),
+  syntheticUser([{ type: "text", text: "[image attached from read_media_file — look at it and answer from what you see]" }]),
+  syntheticUser("GOAL CONTINUATION (iteration 2): the goal is not yet complete.\nObjective: Ship the release candidate for the payments service.\nContinue working."),
+  syntheticUser(recoveryMessage()),
+  syntheticUser(learnPrompt()),
+  syntheticUser(skillInvocationPrompt({ command: "/report", name: "report" }, SKILL_ARG), { userText: SKILL_ARG }),
+  syntheticUser(steeringMessage(BTW), { userText: BTW }),
+  // A prompt a UserPromptSubmit hook added context to: only the typed part.
+  promptMessage(TYPED, `${TYPED}\n\nProject rules from the hook: always run the formatter before committing code.`),
+  // Typed by the user, even though it starts like one of Omni's notes.
+  markTyped({ role: "user", content: BRACKET }),
 ];
-const synthetic = extractAtomsFromMessages(syntheticMessages, { source: "test" });
-assert("compaction digests, system notes, hook nudges, image labels, goal continuations and retries are not memorized",
-  synthetic, (list) => !list.some((a) => /CONTEXT COMPACTED|Continue the task|iterations remain|Not done yet|image attached|GOAL CONTINUATION|Objective:|malformed|Re-emit|billing module/i.test(a.text)));
-assert("a /btw note keeps the user's words and drops the wrapper",
-  synthetic, (list) => list.some((a) => a.text === "The production cluster lives in the Montreal region now.") && !list.some((a) => /btw —|not a new task/.test(a.text)));
+const live = extractAtomsFromMessages(liveMessages, { source: "test" });
+assert("only the user's words are memorized: the /btw note, the skill's arguments, the typed prompt — nothing Omni wrote",
+  live, sameTexts([BTW, SKILL_ARG, TYPED, BRACKET]));
+
+// Resumed: the session log carries each message's mark, and the restored
+// conversation gets it back.
+const BTW2 = "The payroll exports go to the finance share every Friday.";
+const TYPED2 = "[hook lint] is the name of our lint channel on the team chat.";
+const toLog = [
+  syntheticUser("[hook lint] Not done yet: the release checklist still has four open items left."),
+  syntheticUser(learnPrompt()),
+  syntheticUser(steeringMessage(BTW2), { userText: BTW2 }),
+  markTyped({ role: "user", content: TYPED2 }),
+];
+const restored = [];
+restoreSessionMessages(toLog.map((m) => recordFor(m)), restored);
+assert("a resumed session keeps the marks from its log",
+  extractAtomsFromMessages(restored, { source: "test" }), sameTexts([BTW2, TYPED2]));
+
+// An old log, written before messages were marked: Omni's notes are told
+// apart by how they start.
+const oldLog = [
+  { type: "user", content: "[system note] Only 3 tool iterations remain this turn. Wrap up the remaining migration work soon." },
+  { type: "user", content: `The user typed /deploy — the "deploy" skill's instructions are already loaded above; do not call invoke_skill for it. Follow them for this task: ship it.` },
+  { type: "user", content: learnPrompt() },
+  { type: "user", content: steeringMessage("The nightly backups run from the Halifax datacenter.") },
+  { type: "user", content: "Our design system uses eight pixel spacing everywhere." },
+];
+const legacy = [];
+restoreSessionMessages(oldLog, legacy);
+assert("an old, unmarked log: Omni's notes are dropped by their prefix, the user's words kept",
+  extractAtomsFromMessages(legacy, { source: "test" }),
+  sameTexts(["The nightly backups run from the Halifax datacenter.", "Our design system uses eight pixel spacing everywhere."]));
 
 // ---- Zero-effort capture: tool outcomes (bypasses OKF entirely) ------------
 

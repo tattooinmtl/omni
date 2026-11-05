@@ -23,6 +23,7 @@
 // ({ requestId, tool, summary }); "question" when the agent asks you
 // ({ requestId, question, options }).
 
+import { recordFor, promptMessage } from "../core/synthetic.mjs";
 import readline from "node:readline";
 import { runTurn, steeringMessage } from "../core/agent.mjs";
 import { turnMaxIterations, resolveModel } from "../core/config.mjs";
@@ -70,8 +71,9 @@ export async function startRpc(ctx, { emit, input = process.stdin, onExit = () =
       const body = kind === "template" ? expandTemplate(ctx.templates.get(head.toLowerCase()), line.slice(head.length)) : line;
       const hooked = await submitPromptHooks(body);
       if (hooked.denied) throw new Error(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`);
-      ctx.messages.push({ role: "user", content: hooked.content });
-      await ctx.session.append({ type: "user", content: hooked.content });
+      const userMsg = promptMessage(body, hooked.content);
+      ctx.messages.push(userMsg);
+      await ctx.session.append(recordFor(userMsg));
     }
     running = true;
     ctx.currentAbort = new AbortController();
