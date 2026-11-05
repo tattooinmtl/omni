@@ -35,7 +35,12 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ object: "list", data: [{ id: "lab-small" }, { id: "lab-big" }] }));
+  // TokenLab's shape: capabilities, limits and a category per model.
+  res.end(JSON.stringify({ object: "list", data: [
+    { id: "lab-small" },
+    { id: "lab-big", tokenlab: { capabilities: ["tool-use", "vision"], max_input_tokens: 200000, category: "chat" } },
+    { id: "lab-paint", tokenlab: { capabilities: ["image-generation"], category: "image" } },
+  ] }));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
@@ -94,6 +99,25 @@ try {
   await ok("/addprovider <name> <url> <key> loads the models right away", () => {
     const ids = Object.values(added.settings?.models || {}).filter((m) => m.provider === "lab2").map((m) => m.id).sort();
     assert.deepEqual(ids, ["lab-big", "lab-small"]);
+  });
+
+  await ok("reported capabilities are kept: vision and context window; non-chat models skipped", () => {
+    const m = sw.settings.models;
+    const big = Object.values(m).find((x) => x.provider === "lab" && x.id === "lab-big");
+    const small = Object.values(m).find((x) => x.provider === "lab" && x.id === "lab-small");
+    assert.equal(big.vision, true);
+    assert.equal(big.contextWindow, 200000);
+    assert.equal(small.vision, undefined, "nothing reported, nothing claimed");
+    assert.ok(!Object.values(m).some((x) => x.id === "lab-paint"), "image model left out");
+  });
+
+  await ok("modelMetaFrom reads TokenLab, OpenRouter and plain shapes", async () => {
+    const { modelMetaFrom } = await import("../src/core/provider.mjs");
+    assert.deepEqual(modelMetaFrom({ id: "a", tokenlab: { capabilities: ["vision"], max_input_tokens: 1000, category: "chat" } }), { vision: true, contextWindow: 1000, chat: true });
+    assert.deepEqual(modelMetaFrom({ id: "b", architecture: { input_modalities: ["text", "image"] }, context_length: 32768 }), { vision: true, contextWindow: 32768 });
+    assert.deepEqual(modelMetaFrom({ id: "c", architecture: { input_modalities: ["text"] } }), { vision: false });
+    assert.deepEqual(modelMetaFrom({ id: "d", capabilities: { vision: true, tools: true } }), { vision: true });
+    assert.deepEqual(modelMetaFrom({ id: "e" }), {});
   });
 
   await ok("tokenlab is a built-in OpenAI-compatible preset", async () => {

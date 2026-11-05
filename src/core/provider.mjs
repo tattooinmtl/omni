@@ -293,7 +293,34 @@ function formatProviderError(res, text, model) {
   return `Provider ${res.status} ${res.statusText}: ${msg}`;
 }
 
-export async function listProviderModels(provider, { signal } = {}) {
+export async function listProviderModels(provider, opts = {}) {
+  return (await listProviderModelDetails(provider, opts)).map((m) => m.id);
+}
+
+// What a /models entry says about a model, where the provider reports it:
+// vision input, context window, and whether it is a chat model at all.
+// Shapes seen: TokenLab (`tokenlab.capabilities`, `max_input_tokens`,
+// `category`), OpenRouter (`architecture.input_modalities`, `context_length`),
+// and a plain `capabilities` list or object. Absent fields stay undefined.
+export function modelMetaFrom(m) {
+  if (!m || typeof m !== "object") return {};
+  const ext = m.tokenlab && typeof m.tokenlab === "object" ? m.tokenlab : m;
+  const caps = ext.capabilities ?? m.capabilities;
+  const capList = Array.isArray(caps) ? caps.map((x) => String(x).toLowerCase())
+    : caps && typeof caps === "object" ? Object.keys(caps).filter((k) => caps[k]).map((k) => k.toLowerCase())
+    : null;
+  const inputs = m.architecture?.input_modalities;
+  const meta = {};
+  if (capList) meta.vision = capList.includes("vision") || capList.includes("image");
+  else if (Array.isArray(inputs)) meta.vision = inputs.includes("image");
+  const ctx = Number(ext.max_input_tokens ?? m.context_length ?? m.context_window);
+  if (Number.isFinite(ctx) && ctx > 0) meta.contextWindow = ctx;
+  const category = ext.category ?? m.category;
+  if (typeof category === "string") meta.chat = category.toLowerCase() === "chat";
+  return meta;
+}
+
+export async function listProviderModelDetails(provider, { signal } = {}) {
   const url = ensureValidBaseUrl(provider) + "/models";
   const res = await fetch(url, {
     method: "GET",
@@ -307,9 +334,9 @@ export async function listProviderModels(provider, { signal } = {}) {
   const data = await res.json();
   const raw = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
   return raw
-    .map((m) => (typeof m === "string" ? m : m.id || m.name || m.model))
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+    .map((m) => (typeof m === "string" ? { id: m, meta: {} } : { id: m.id || m.name || m.model, meta: modelMetaFrom(m) }))
+    .filter((m) => m.id)
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export async function probeModel(model, { signal, timeoutMs = 12000 } = {}) {

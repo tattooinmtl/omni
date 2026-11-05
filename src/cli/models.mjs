@@ -5,7 +5,7 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey, isRetiredMiniMaxId, MINIMAX_PROVIDER } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
-import { listProviderModels, probeModel } from "../core/provider.mjs";
+import { listProviderModelDetails, probeModel } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
 import { localStartOptions } from "../local/hardware-profile.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
@@ -215,7 +215,12 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
   if (providerKeyMissing({ provider }) && provider.apiKey !== "not-needed") {
     throw new Error(`provider "${provKey}" needs an API key (/provider login ${provKey} <key>)`);
   }
-  let ids = await listProviderModels(provider);
+  // What the provider says about each model (vision, context window, chat
+  // or not) where it reports it. Image/audio/embedding models are dropped
+  // from the list when the provider labels them; unlabeled ones are kept.
+  const details = (await listProviderModelDetails(provider)).filter((m) => m.meta.chat !== false);
+  const metaById = new Map(details.map((m) => [m.id, m.meta]));
+  let ids = details.map((m) => m.id);
   if (provKey === "nvidia") {
     ids = ids.filter((id) => id !== "z-ai/glm-5.1" && id !== "z-ai/glm-5.2");
     if (!ids.includes("nvidia/nemotron-3-ultra-550b-a55b")) ids.push("nvidia/nemotron-3-ultra-550b-a55b");
@@ -236,11 +241,15 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
   if (save) {
     for (const row of ctx.lastFetchedModels) {
       const existing = ctx.settings.models[row.key] || {};
+      const meta = metaById.get(row.id) || {};
       ctx.settings.models[row.key] = {
         ...existing,
         provider: row.provider,
         id: row.id,
         maxTokens: maxTokensForFetched(row.provider, existing.maxTokens),
+        // Reported capabilities fill gaps only: a value the user set wins.
+        ...(existing.vision === undefined && meta.vision !== undefined ? { vision: meta.vision } : {}),
+        ...(existing.contextWindow === undefined && meta.contextWindow ? { contextWindow: meta.contextWindow } : {}),
       };
     }
     await saveSettings(ctx.settings);

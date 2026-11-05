@@ -38,9 +38,15 @@ entries were rebuilt from git history).
   (`/addprovider`, typed or picked) loads the list too, when the provider has
   none yet. With no key, `/provider` says to set one.
 - **New preset: TokenLab** (`https://api.tokenlab.sh/v1`, OpenAI-compatible).
-- **Tests:** `provider-auto-models` (5) runs the real CLI against a fake
+- **Fetched models keep what the provider reports.** Where `/models` says so
+  (TokenLab's capabilities, OpenRouter's input modalities), a fetched model
+  is marked `vision` and gets its context window, so the vision fallback can
+  use it. Models labeled image, audio or embedding are left out. A value you
+  set yourself is never overwritten.
+- **Tests:** `provider-auto-models` (7) runs the real CLI against a fake
   `/v1/models` server: `/provider`, `/apikey` and `/addprovider` each load
-  the list, and a provider with no key gets the hint.
+  the list, a provider with no key gets the hint, and reported vision and
+  context windows are kept.
 - **Tests:** `last-model-exit` (2) runs the real CLI with a temp home:
   `/model` then `/exit` keeps the new model; no switch keeps the startup one.
 - **Review fixes (vision fallback).** A model qualifies only when the key the
