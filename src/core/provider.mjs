@@ -65,6 +65,63 @@ function sanitizeForNativeTools(messages) {
   });
 }
 
+// The OpenAI spec wants every assistant message with tool_calls followed at
+// once by one role:"tool" message per call. Strict providers enforce it —
+// Reflection's Beam answers "messages[7] has tool calls with no result before
+// messages[9]". History can break the rule: an image from a tool used to be
+// inserted as a user message between a batch's results, and a turn stopped
+// mid-batch leaves calls with no result at all. On the wire, each call's
+// result is moved right after its call, anything else that landed between
+// them follows the results, a call with no result gets a short error result,
+// and a result with no call is dropped. History itself is left as it is.
+export const MISSING_TOOL_RESULT = "ERROR: this tool call has no recorded result (the turn ended before it finished).";
+
+export function repairToolPairing(messages = []) {
+  const out = [];
+  let changed = false;
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+    const ids = m && m.role === "assistant" && Array.isArray(m.tool_calls)
+      ? m.tool_calls.map((c) => c?.id).filter(Boolean)
+      : [];
+    if (!ids.length) {
+      if (m && m.role === "tool") { changed = true; i++; continue; } // result with no call
+      out.push(m);
+      i++;
+      continue;
+    }
+    out.push(m);
+    const results = new Map();
+    const others = [];
+    let j = i + 1;
+    let sawOther = false;
+    for (; j < messages.length && messages[j]?.role !== "assistant"; j++) {
+      const t = messages[j];
+      if (t?.role === "tool" && ids.includes(t.tool_call_id) && !results.has(t.tool_call_id)) {
+        if (sawOther) changed = true;
+        results.set(t.tool_call_id, t);
+      } else if (t?.role === "tool") {
+        changed = true; // duplicate or stray result
+      } else {
+        sawOther = true;
+        others.push(t);
+      }
+    }
+    for (const id of ids) {
+      const r = results.get(id);
+      if (!r) changed = true;
+      out.push(r || { role: "tool", tool_call_id: id, content: MISSING_TOOL_RESULT });
+    }
+    // Results came back out of call order: also a change.
+    const seen = [...results.keys()];
+    if (seen.join("\u0000") !== ids.filter((id) => results.has(id)).join("\u0000")) changed = true;
+    out.push(...others);
+    i = j;
+  }
+  return changed ? out : messages;
+}
+
 // Some providers require every earlier assistant message to carry back the
 // reasoning that produced it. Reflection's Beam rejects the request
 // otherwise: "Missing required parameter: 'messages[2].reasoning_content'.
@@ -135,7 +192,7 @@ export function buildChatBody({ model, messages, tools }) {
   const body = {
     model: model.id,
     messages: applyReasoningEcho(
-      nativeTools ? sanitizeForNativeTools(wire) : flattenToolMessages(wire),
+      nativeTools ? sanitizeForNativeTools(repairToolPairing(wire)) : flattenToolMessages(wire),
       model.provider,
     ),
     max_tokens: model.maxTokens,

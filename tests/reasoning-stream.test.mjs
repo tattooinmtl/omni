@@ -151,11 +151,15 @@ await test("the strip never touches a user or tool message", () => {
     model: { id: "gpt-4.1", maxTokens: 64, provider: { baseUrl: "https://x.test/v1", apiKey: "k" } },
     messages: [
       { role: "user", content: "hi" },
+      // A real call for the result: a result with no call is dropped on the
+      // wire (repairToolPairing), which is not what this test is about.
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "calc", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "c1", content: "42" },
     ],
   });
-  assert.equal(body.messages.length, 2);
-  assert.equal(body.messages[1].content, "42");
+  assert.equal(body.messages.length, 3);
+  assert.equal(body.messages[0].content, "hi");
+  assert.equal(body.messages[2].content, "42");
 });
 
 // A reply with no reasoning at all is a dead end for a provider that needs

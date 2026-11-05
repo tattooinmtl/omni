@@ -888,7 +888,17 @@ at pixels:
   capped at 16 frames and 20 MB. Needs `ffmpeg`: `/runtime install ffmpeg`
   (or any `ffmpeg` on PATH).
 
-Text-only models get a one-line "image omitted" note instead of an error.
+**Vision fallback.** When new images reach a model that can't see them, the
+step that brings them in goes to a vision-capable model from your providers
+instead, and the next step is back on your model. A model qualifies when it
+is marked `"vision": true` (on the model or its provider), uses native tool
+calls, and its provider has a key. A model on the active provider is tried
+first, then the order of `models` in `settings.json`. Set
+`"visionFallback": "<model key>"` to pick one, or `false` to turn it off.
+
+With no vision model available, text-only models get a one-line "image
+omitted" note instead of an error, and Omni says that nothing could take
+the images.
 
 ## Extending
 

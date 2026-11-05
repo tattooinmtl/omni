@@ -8,9 +8,31 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.38 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/vision-fallback · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Fix: 400 "tool calls with no result" after an image.** When a batch of
+  two or more tool calls returned an image, the image went in as a user
+  message right after that call's result, splitting the batch's results.
+  Strict providers (Reflection's Beam) rejected every later request in the
+  conversation. Image messages now follow the whole batch. On the wire, a
+  history that is already broken is repaired: each result moves right after
+  its call, a call with no result (a turn stopped mid-batch) gets a short
+  error result, and a result with no call is dropped. A stuck session works
+  again without /clear.
+- **Vision fallback.** New images on a model that can't see them go, for that
+  one step, to a vision-capable model from your providers (one with a key
+  and native tool calls; the active provider's own models first). The next
+  step is back on your model. `visionFallback` in settings.json picks the
+  model, or `false` turns it off. With no such model, Omni says so once,
+  and the "image(s) not sent" warning no longer repeats every step.
+- **Tests:** `vision-fallback` (14): the pairing repair, the pick order, and
+  a real `runTurn` against the mock provider with a two-call image batch,
+  with and without a fallback model.
+
 ## 3.5.37 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** [#50](https://github.com/tattooinmtl/omni/pull/50) · `d0322d5` · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **Local AI is an install-time choice.** The installer takes `-Llama`, or
   `OMNI_LLAMA` from the one-liner: `none` (the default: nothing), `cpu`
   (the CPU llama.cpp build), `cuda` (CPU plus the CUDA 13.4 build) or `auto`
