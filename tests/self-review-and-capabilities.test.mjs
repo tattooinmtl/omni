@@ -195,7 +195,8 @@ await ok("vision is independent of nativeTools", () => {
 await ok("the agent gates image parts on vision, not on tool mode", () => {
   const agentSrc = fs.readFileSync(path.join(root, "src", "core", "agent.mjs"), "utf8");
   assert.match(agentSrc, /const canSeeImages = model\.vision === true/);
-  assert.match(agentSrc, /canSeeImages \? shaped : stripImageParts/);
+  // Per step: the model this step goes to (the user's, or a vision fallback).
+  assert.match(agentSrc, /hopModel\.vision === true \? shaped : stripImageParts/);
 });
 
 await ok("the dropped-image warning tells the user how to enable vision", () => {

@@ -5,7 +5,7 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey, isRetiredMiniMaxId, MINIMAX_PROVIDER } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
-import { listProviderModels, probeModel } from "../core/provider.mjs";
+import { listProviderModelDetails, probeModel } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
 import { localStartOptions } from "../local/hardware-profile.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
@@ -34,6 +34,9 @@ export const PROVIDER_PRESETS = {
   // echoReasoning: Beam requires every earlier assistant message to carry
   // back the reasoning that produced it.
   reflection: { baseUrl: "https://api.reflection.ai/openai/v1", label: "Reflection AI", reasoningParam: "reasoning_effort", echoReasoning: true },
+  // TokenLab — OpenAI-compatible gateway to many vendors' models; its
+  // /v1/models list is public, so models load as soon as the provider is added.
+  tokenlab: { baseUrl: "https://api.tokenlab.sh/v1", label: "TokenLab", reasoningParam: "none" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",
@@ -205,14 +208,19 @@ export function providerModelRows(settings, provKey, liveIds) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "" } = {}) {
+export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "", quiet = false } = {}) {
   const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
   const provider = ctx.settings.providers[provKey];
   if (!provider) throw new Error(`unknown provider "${provKey}"`);
   if (providerKeyMissing({ provider }) && provider.apiKey !== "not-needed") {
     throw new Error(`provider "${provKey}" needs an API key (/provider login ${provKey} <key>)`);
   }
-  let ids = await listProviderModels(provider);
+  // What the provider says about each model (vision, context window, chat
+  // or not) where it reports it. Image/audio/embedding models are dropped
+  // from the list when the provider labels them; unlabeled ones are kept.
+  const details = (await listProviderModelDetails(provider)).filter((m) => m.meta.chat !== false);
+  const metaById = new Map(details.map((m) => [m.id, m.meta]));
+  let ids = details.map((m) => m.id);
   if (provKey === "nvidia") {
     ids = ids.filter((id) => id !== "z-ai/glm-5.1" && id !== "z-ai/glm-5.2");
     if (!ids.includes("nvidia/nemotron-3-ultra-550b-a55b")) ids.push("nvidia/nemotron-3-ultra-550b-a55b");
@@ -233,11 +241,15 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
   if (save) {
     for (const row of ctx.lastFetchedModels) {
       const existing = ctx.settings.models[row.key] || {};
+      const meta = metaById.get(row.id) || {};
       ctx.settings.models[row.key] = {
         ...existing,
         provider: row.provider,
         id: row.id,
         maxTokens: maxTokensForFetched(row.provider, existing.maxTokens),
+        // Reported capabilities fill gaps only: a value the user set wins.
+        ...(existing.vision === undefined && meta.vision !== undefined ? { vision: meta.vision } : {}),
+        ...(existing.contextWindow === undefined && meta.contextWindow ? { contextWindow: meta.contextWindow } : {}),
       };
     }
     await saveSettings(ctx.settings);
@@ -247,6 +259,7 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     return;
   }
   infoLine(`${provKey}: ${ctx.lastFetchedModels.length} model(s)${save ? " saved" : ""}`);
+  if (quiet) return ctx.lastFetchedModels;
   for (const row of ctx.lastFetchedModels.slice(0, 80)) {
     const active = row.key === ctx.model.key ? c.green("● ") : "  ";
     console.log(`    ${active}${String(row.index).padStart(2)}. ${row.key}${modelHealthLabel(ctx, row.key)}`);
@@ -254,6 +267,68 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
   if (ctx.lastFetchedModels.length > 80) console.log(c.dim(`    ... ${ctx.lastFetchedModels.length - 80} more`));
   console.log(c.dim("    choose with /model for arrows, /model <number>, or /model <provider/model>"));
   return ctx.lastFetchedModels;
+}
+
+// The first configured model on a provider, or null.
+export function firstModelOf(settings, provKey) {
+  return Object.keys(settings.models || {}).find((k) => settings.models[k]?.provider === provKey) || null;
+}
+
+// A provider that was just added, or whose key was just set, and has no
+// models yet: load its /models list so it can be used at once, instead of
+// dead-ending on "has no models configured". Best effort — a failure (bad
+// key, endpoint down) is reported and the caller carries on.
+export async function autoFetchModels(ctx, provKey) {
+  if (firstModelOf(ctx.settings, provKey)) return 0;
+  const p = ctx.settings.providers[provKey];
+  if (!p || (!String(p.apiKey || "").trim() && !providerListsWithoutKey(p))) return 0;
+  try {
+    const rows = await fetchModelsForProvider(ctx, provKey, { save: true, quiet: true });
+    if (rows?.length) infoLine(`pick one with /model ${provKey}/<model>, or /provider ${provKey}`);
+    return rows?.length || 0;
+  } catch (e) {
+    warnLine(`could not load models for ${provKey}: ${e.message}`);
+    return 0;
+  }
+}
+
+// Providers whose model list needs no key (a local server).
+function providerListsWithoutKey(p) {
+  return p?.apiKey === "not-needed";
+}
+
+// /provider <name>: switch to that provider. With no models configured yet,
+// load them first — in a terminal the user then picks one with the arrows,
+// otherwise the first is used and /model names the others.
+export async function switchToProvider(ctx, provKey) {
+  let modelKey = firstModelOf(ctx.settings, provKey);
+  if (!modelKey) {
+    const p = ctx.settings.providers[provKey];
+    if (!String(p?.apiKey || "").trim()) {
+      errorLine(`provider "${provKey}" has no models and no API key — set one with /apikey ${provKey} <key>`);
+      return false;
+    }
+    infoLine(`${provKey} has no models yet — loading its model list…`);
+    if (ctx.canRaw) {
+      try { await pickModelWithArrows(ctx, provKey); }
+      catch (e) { errorLine(`could not load models for ${provKey}: ${e.message}`); return false; }
+      if (ctx.model?.providerName === provKey) return true;
+      modelKey = firstModelOf(ctx.settings, provKey);
+      if (!modelKey) return false;
+    } else {
+      await autoFetchModels(ctx, provKey);
+      modelKey = firstModelOf(ctx.settings, provKey);
+      if (!modelKey) {
+        errorLine(`provider "${provKey}" returned no models — add one with /addmodel`);
+        return false;
+      }
+    }
+  }
+  ctx.model = resolveModel(ctx.settings, modelKey);
+  setLastProvider(ctx.model.key, "/provider switch");
+  const label = ctx.settings.providers[provKey].label || provKey;
+  infoLine(`switched to ${label} — model: ${modelKey}`);
+  return true;
 }
 
 export async function doctorModel(ctx, keyOrProvider = "") {
@@ -520,6 +595,7 @@ export async function pickProviderWithArrows(ctx) {
   process.stdin.resume();
   process.stdout.write("\x1b[?25l\x1b[?1000h\x1b[?1006h");
 
+  let pickedProvider = null;
   try {
     const chosen = await new Promise((resolve) => {
       const confirm = () => { cleanup(); resolve(rows[selected]); };
@@ -577,17 +653,15 @@ export async function pickProviderWithArrows(ctx) {
     });
 
     if (!chosen) { infoLine("provider selection canceled"); return; }
-    const provKey = chosen.name;
-    const modelKey = Object.keys(ctx.settings.models).find((k) => ctx.settings.models[k].provider === provKey);
-    if (!modelKey) { errorLine(`provider "${provKey}" has no models configured — add one with /addmodel`); return; }
-    ctx.model = resolveModel(ctx.settings, modelKey);
-    const label = ctx.settings.providers[provKey].label || provKey;
-    infoLine(`switched to ${label} — model: ${modelKey}`);
+    pickedProvider = chosen.name;
   } finally {
     process.stdout.write("\x1b[?25h\x1b[?1000l\x1b[?1006l");
     if (ctx.canRaw) restoreLineEditing(ctx.rl);
     ctx.rl.resume();
   }
+  // After the picker has given the terminal back: switchToProvider may open
+  // the model picker of its own.
+  if (pickedProvider) await switchToProvider(ctx, pickedProvider);
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +822,7 @@ export async function addProviderInteractive(ctx, arg = "") {
       const prov = installProviderPreset(ctx, name, baseUrl);
       await saveSettings(ctx.settings);
       infoLine(`installed preset ${prov} -> ${ctx.settings.providers[prov].baseUrl} with API key (saved)`);
+      await autoFetchModels(ctx, prov);
       return;
     }
     if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
@@ -757,6 +832,7 @@ export async function addProviderInteractive(ctx, arg = "") {
     ctx.settings.providers[name] = { baseUrl, apiKey: keyParts.join(" ").trim() || "not-needed", label: name };
     await saveSettings(ctx.settings);
     infoLine(`added provider ${name} -> ${baseUrl} (saved)`);
+    await autoFetchModels(ctx, name);
     return;
   }
 
@@ -808,6 +884,7 @@ export async function addProviderInteractive(ctx, arg = "") {
     }
   }
   infoLine(`provider ${installed} ready → ${ctx.settings.providers[installed].baseUrl}`);
+  await autoFetchModels(ctx, installed);
 }
 
 async function addCustomProviderInteractive(ctx) {
@@ -826,6 +903,7 @@ async function addCustomProviderInteractive(ctx) {
   };
   await saveSettings(ctx.settings);
   infoLine(`added provider ${name} -> ${baseUrl} (saved)`);
+  await autoFetchModels(ctx, name);
 }
 
 // ---------------------------------------------------------------------------

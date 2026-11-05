@@ -35,7 +35,7 @@ import {
   setEffortTier, fetchModelsForProvider, doctorModel, switchModel,
   pickModelWithArrows, pickProviderWithArrows, modelHealthLabel, printProviderPresets, installProviderPreset,
   addProviderInteractive, connectInteractive, disconnectInteractive,
-  resolveProviderAlias, PROVIDER_PRESETS,
+  resolveProviderAlias, PROVIDER_PRESETS, switchToProvider, autoFetchModels,
 } from "./models.mjs";
 import {
   getWorkspaceScope, setAndSaveScope, isFolderTrusted, trustFolder, untrustFolder,
@@ -1229,6 +1229,7 @@ export const COMMANDS = [
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`updated API key for ${prov}: ${maskKey(key)} (saved)`);
+      await autoFetchModels(ctx, prov);
     },
   },
   {
@@ -1354,12 +1355,7 @@ async function providerCommand(ctx, arg) {
 
   // "/provider <name>" — switch directly to a provider's first model.
   if (sub && !knownSubcmds.has(sub) && ctx.settings.providers[resolveProviderAlias(ctx.settings, sub)]) {
-    const provKey = resolveProviderAlias(ctx.settings, sub);
-    const modelKey = Object.keys(ctx.settings.models).find((k) => ctx.settings.models[k].provider === provKey);
-    if (!modelKey) { errorLine(`provider "${provKey}" has no models configured — add one with /addmodel`); return; }
-    ctx.model = resolveModel(ctx.settings, modelKey);
-    const label = ctx.settings.providers[provKey].label || provKey;
-    infoLine(`switched to ${label} — model: ${modelKey}`);
+    await switchToProvider(ctx, resolveProviderAlias(ctx.settings, sub));
     return;
   }
 
@@ -1431,6 +1427,7 @@ async function providerCommand(ctx, arg) {
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`logged into provider ${prov} (saved)`);
+      await autoFetchModels(ctx, prov);
       break;
     }
     case "logout": {
@@ -1456,6 +1453,7 @@ async function providerCommand(ctx, arg) {
       await saveSettings(ctx.settings);
       try { ctx.model = resolveModel(ctx.settings, ctx.model.key); } catch { /* keep current */ }
       infoLine(`updated API key for ${prov}: ${maskKey(key)} (saved)`);
+      await autoFetchModels(ctx, prov);
       break;
     }
     case "llama": {

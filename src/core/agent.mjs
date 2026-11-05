@@ -12,6 +12,7 @@ import {
 } from "./toolcalls.mjs";
 import { syncOkfNavGuidance } from "./okfnav.mjs";
 import { syncLocalPromptGuidance } from "./local-prompt.mjs";
+import { hasNewImages, pickVisionModel } from "./vision-fallback.mjs";
 import { extractSessionContext } from "./session-context.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import {
@@ -236,7 +237,9 @@ function messagesWithTextTools(messages, toolList = tools) {
 // "[object Object]". Swap each image part for a one-line text note so calling
 // read_media_file on a non-vision model degrades gracefully instead of
 // breaking the request. Vision-capable native-tool providers keep the pixels.
-function stripImageParts(messages, modelKey = null) {
+// `quiet`: images the model already answered (or a vision fallback already
+// looked at) are swapped for the note without warning again every step.
+function stripImageParts(messages, modelKey = null, { quiet = false } = {}) {
   let touched = false;
   const out = messages.map((m) => {
     if (!Array.isArray(m.content)) return m;
@@ -254,7 +257,7 @@ function stripImageParts(messages, modelKey = null) {
         .filter((p) => typeof p === "string" ? p.trim().length > 0 : (p?.text || "").length > 0),
     };
   });
-  if (touched) {
+  if (touched && !quiet) {
     warnLine(
       `image(s) not sent — ${modelKey || "the active model"} is not marked vision-capable. ` +
       `If it can see images, add "vision": true to that model's entry in settings.json (or to its provider) and retry.`,
@@ -388,10 +391,13 @@ function abortableSleep(ms, signal) {
 // accounts (settings.providers.<name>.accounts), a rate-limit error first
 // rotates to the next account and retries almost immediately — backoff only
 // kicks in once every account has been tried.
-async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt }) {
+// `allowFailover: false` keeps the request on this model (account rotation
+// and backoff still apply): a vision-fallback step carries image parts that a
+// failover model may not be able to see.
+async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt, allowFailover = true }) {
   let attempt = 0;
   let rotations = 0;
-  const failoverChain = buildRateLimitChain(settings);
+  const failoverChain = allowFailover ? buildRateLimitChain(settings) : [];
   let failoverIndex = failoverChain.findIndex((hop) => hopMatchesModel(hop, model));
   const failoverActive = failoverIndex >= 0;
   let checkpointOpened = false;
@@ -841,6 +847,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   // description of an image it never received. Pixels now go only to a model
   // declared vision-capable (`vision: true` on the model or its provider).
   const canSeeImages = model.vision === true;
+  // Whether this model's own request path can carry the pixels: the template
+  // and text-tool paths strip them even for a vision-capable model.
+  const sendsImages = canSeeImages && !useTemplate && !useTextTools;
 
   // Schema registry for the tolerant text-tool parser, and a budget of
   // corrective retries when the model emits a malformed/truncated tool call.
@@ -850,6 +859,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   let wrapUpNudged = false;
   const MAX_STOP_CONTINUATIONS = 3;
   let stopContinuations = 0;
+  // Vision models already announced this turn (one note per model).
+  const visionNoted = new Set();
+  // Set when a vision-fallback request fails: the rest of the turn stays on
+  // the user's model (images omitted) instead of stopping.
+  let visionFallbackFailed = false;
 
   for (let i = 0; i < maxIterations; i++) {
     // Keep the conversation inside the model's context window. Classic mode
@@ -900,6 +914,31 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // Fresh per attempt: splits live tokens into think/answer streams and
     // renders each (collapsed reasoning by default; see showThinking above).
     const router = createTurnStreamRouter(showThinking);
+    // New images and a model that can't see them: this one step goes to a
+    // vision-capable model from the configured providers (see
+    // vision-fallback.mjs). It is always a native-tools model, so the step
+    // uses the native path whatever the active model's own path is.
+    let hopModel = model;
+    if (!sendsImages && !visionFallbackFailed && hasNewImages(messages)) {
+      const visionKey = pickVisionModel(settings, model, { messages, tokens: estimateTokens(messages) });
+      if (visionKey) {
+        try {
+          hopModel = resolveModel(settings, visionKey);
+          if (!visionNoted.has(visionKey)) {
+            visionNoted.add(visionKey);
+            console.log(`  ${c.dim(`▸ ${model.key} can't see images — sending them to ${visionKey} for this step`)}`);
+          }
+        } catch (e) {
+          warnLine(`vision fallback ${visionKey} unavailable: ${e.message}`);
+          hopModel = model;
+        }
+      } else if (settings?.visionFallback !== false && settings?.visionFallback !== "off" && !visionNoted.has("(none)")) {
+        visionNoted.add("(none)");
+        warnLine("no vision model to hand the images to: none of your providers with a key has a model marked \"vision\": true");
+      }
+    }
+    const hopTextTools = hopModel === model ? useTextTools : false;
+    const hopParsesText = hopModel === model ? (useTemplate || useTextTools) : false;
     try {
       // While the model is producing its first token, show the framed token
       // meter (the yellow-bounded bottom panel). As soon as text arrives we
@@ -911,7 +950,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       // generations because no discrete event fired mid-stream).
       publishActivity({ kind: "thinking", phase: "start" });
 
-      if (useTemplate) {
+      if (useTemplate && hopModel === model) {
         // Render the full message history through the provider's Jinja2 template,
         // then send as a raw prompt to /v1/completions. Image parts are swapped
         // for text notes first — the qwythos template emits bare <|image_pad|>
@@ -942,16 +981,18 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // provider sees them (in-memory `messages` is untouched — the full
         // body is still on disk for /expand). Classic mode is a no-op.
         const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
-        const visible = canSeeImages ? shaped : stripImageParts(shaped, model.key);
-        const providerMessages = useTextTools
-          ? messagesWithTextTools(stripImageParts(visible, model.key), turnTools)
+        const quiet = !hasNewImages(messages);
+        const visible = hopModel.vision === true ? shaped : stripImageParts(shaped, hopModel.key, { quiet });
+        const providerMessages = hopTextTools
+          ? messagesWithTextTools(stripImageParts(visible, hopModel.key, { quiet: true }), turnTools)
           : visible;
         resp = await chatStreamWithRetry({
-          model,
+          model: hopModel,
           settings,
           session,
           messages: providerMessages,
-          tools: useNativeTools ? turnTools : null,
+          tools: hopTextTools ? null : turnTools,
+          allowFailover: hopModel === model,
           signal,
           // Always count real deltas so the generation panel's token/TPS
           // readout is accurate. In text-tools mode we still skip routing
@@ -959,7 +1000,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           // unparsed tool-call syntax the user shouldn't see streamed inline.
           onToken(token) {
             tokenCount++;
-            if (!useTextTools) router.onToken(token);
+            if (!hopTextTools) router.onToken(token);
           },
         });
       }
@@ -978,6 +1019,15 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       if (e.name === "AbortError" || signal?.aborted) {
         warnLine("interrupted");
         return { stop: "aborted" };
+      }
+      // The vision fallback failed, not the user's model: redo this step on
+      // the user's model, with the images omitted, rather than end the turn.
+      if (hopModel !== model) {
+        visionFallbackFailed = true;
+        const why = (e.message || String(e)).split(/\r?\n/)[0].slice(0, 160);
+        warnLine(`vision fallback ${hopModel.key} failed (${why}) — continuing on ${model.key} without the images`);
+        i--;
+        continue;
       }
       errorLine(e.message || String(e));
       session.append({ type: "error", message: e.message || String(e) });
@@ -1017,7 +1067,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // Template/text-tool paths: parse tool-call text (canonical XML, GLM
     // arg_key/arg_value, Qwen JSON, hybrid/unclosed forms) into OpenAI
     // tool_calls, then strip the tool syntax from content.
-    if ((useTemplate || useTextTools) && msg.content) {
+    if (hopParsesText && msg.content) {
       const toolCalls = parseTextToolCalls(rawContent, paramRegistry);
       if (toolCalls.length) {
         msg.tool_calls = toolCalls;
@@ -1063,8 +1113,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       // response was cut off mid-call by the token limit. Don't end the turn —
       // tell the model what happened and let it re-emit the call.
       const truncated = resp.finishReason === "length";
-      const attempted = (useTemplate || useTextTools) && hasToolIntent(rawContent);
-      if ((attempted || (truncated && useTextTools)) && parseRecoveries < MAX_PARSE_RECOVERIES) {
+      const attempted = hopParsesText && hasToolIntent(rawContent);
+      if ((attempted || (truncated && hopTextTools)) && parseRecoveries < MAX_PARSE_RECOVERIES) {
         parseRecoveries++;
         warnLine(
           truncated
@@ -1257,7 +1307,10 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     }
 
     // Print results and push tool messages in original call order
-    // (API requires matching tool_call_id order).
+    // (API requires matching tool_call_id order). Image messages wait until
+    // every result of the batch is in: a user message between two results
+    // breaks the call/result pairing, and strict providers 400 on it.
+    const visionMessages = [];
     for (const { call, name, args, result } of toolResults) {
       toolResultLine(result);
       session.append({ type: "tool", name, args, result, tool_call_id: call.id });
@@ -1302,8 +1355,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           role: "user",
           content: [{ type: "text", text: label }, ...imageParts],
         };
-        messages.push(visionMsg);
-        session.append({ type: "user", content: visionMsg.content });
+        visionMessages.push(visionMsg);
       }
       // Roll into the state trail (bounded to 40) so a resumed session has
       // a compact "what happened here recently" view without re-parsing
@@ -1315,6 +1367,10 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         resultFirstLine: (resultText.split(/\r?\n/)[0] || "").slice(0, 120),
       });
       if (toolTrailForState.length > 40) toolTrailForState.splice(0, toolTrailForState.length - 40);
+    }
+    for (const visionMsg of visionMessages) {
+      messages.push(visionMsg);
+      session.append({ type: "user", content: visionMsg.content });
     }
     // Refresh per-turn state — cheap, one small JSON write. Cross-session
     // resume + /compare-personality both read this instead of the jsonl.
