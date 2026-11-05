@@ -305,7 +305,9 @@ export async function main(args) {
   // beforeExit gives us a chance to flush before the process tears down.
   // We do NOT save on every turn (noisy, races with /model), only on exit;
   // the in-session /model command already saves the new choice.
-  const { setLastProvider: saveLastProvider } = await import("../core/last-provider.mjs");
+  // saveLastProviderOnExit leaves alone a model another Omni window saved
+  // after this one started (last-provider.mjs).
+  const { saveLastProviderOnExit } = await import("../core/last-provider.mjs");
   // Not from a one-shot or headless run: a script's `--model x` (which may
   // not even have a key) must not become the next interactive session's model.
   let persistModelOnExit = true;
@@ -317,7 +319,7 @@ export async function main(args) {
   const saveOnExit = () => {
     if (!persistModelOnExit || savedOnExit) return;
     savedOnExit = true;
-    try { saveLastProvider(modelAtExit()?.key, "exit"); } catch {}
+    try { saveLastProviderOnExit(modelAtExit()?.key); } catch {}
   };
   process.on("beforeExit", saveOnExit);
   // beforeExit alone missed it: /exit lets the event loop drain, with a 250 ms

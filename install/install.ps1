@@ -86,6 +86,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# This file as it was when it started. PowerShell keeps running the copy it
+# loaded, so after the update replaces install\install.ps1, the rest of the
+# run is still the old installer, bugs and all (3.5.40's .Count failure
+# outlived its fix by one update). Compared after the update to hand off to
+# the new copy (see Invoke-NewInstaller). No hash when run from memory (the
+# web one-liner), which always fetches the latest anyway.
+$script:StartHash = if ($PSCommandPath -and (Test-Path $PSCommandPath)) { (Get-FileHash -Algorithm SHA256 $PSCommandPath).Hash } else { $null }
+
 function Info([string]$Message) {
   Write-Host "[Omni Installer] $Message"
 }
@@ -444,6 +452,52 @@ function Install-LlamaBuilds([string]$Root, [string[]]$Builds) {
   }
 }
 
+# The arguments this run was given, for the new installer: the same choices,
+# pointed at the same folder, and -NoUpdate since the update is done.
+function Get-HandoffArgs([System.Collections.IDictionary]$Bound, [string]$Root) {
+  $list = New-Object System.Collections.Generic.List[string]
+  foreach ($k in @($Bound.Keys)) {
+    if (@("NoUpdate", "InstallDir") -contains $k) { continue }
+    $v = $Bound[$k]
+    if ($v -is [System.Management.Automation.SwitchParameter]) { if ($v.IsPresent) { $list.Add("-$k") } }
+    elseif ($v -is [bool]) { if ($v) { $list.Add("-$k") } }
+    else { $list.Add("-$k"); $list.Add([string]$v) }
+  }
+  $list.Add("-InstallDir"); $list.Add($Root)
+  $list.Add("-NoUpdate")
+  return $list.ToArray()
+}
+
+# True when the update changed install\install.ps1 from the copy running now.
+function Test-InstallerChanged([string]$StartHash, [string]$Root) {
+  if (-not $StartHash) { return $false }
+  $new = Join-Path $Root "install\install.ps1"
+  if (-not (Test-Path $new)) { return $false }
+  return (Get-FileHash -Algorithm SHA256 $new).Hash -ne $StartHash
+}
+
+# Run the new installer for everything after the update, in the same
+# PowerShell, and return its exit code; $null when there is nothing to hand
+# off. OMNI_INSTALLER_HANDOFF stops the new one from handing off again.
+function Invoke-NewInstaller([string]$Root, [System.Collections.IDictionary]$Bound) {
+  if ($env:OMNI_INSTALLER_HANDOFF -eq "1") { return $null }
+  if (-not (Test-InstallerChanged $script:StartHash $Root)) { return $null }
+  $new = Join-Path $Root "install\install.ps1"
+  $exe = (Get-Process -Id $PID).Path
+  $handoffArgs = @(Get-HandoffArgs $Bound $Root)
+  Info "The update changed the installer - continuing with the new one"
+  $env:OMNI_INSTALLER_HANDOFF = "1"
+  try {
+    # Out-Host: the new installer's lines go to the screen, not into this
+    # function's return value, which must be the exit code alone.
+    & $exe -NoProfile -ExecutionPolicy Bypass -File $new @handoffArgs | Out-Host
+    return [int]$LASTEXITCODE
+  }
+  finally {
+    Remove-Item Env:OMNI_INSTALLER_HANDOFF -ErrorAction SilentlyContinue
+  }
+}
+
 try {
   Ensure-Command "node" "Install Node.js 20+ from https://nodejs.org, then re-run this installer."
   $nodeMajor = [int]((& node -e "console.log(process.versions.node.split('.')[0])").Trim())
@@ -458,8 +512,14 @@ try {
   }
   Info "Target: $root (mode: $effectiveMode)"
 
-  if ($effectiveMode -eq "git") { Update-FromGit $root }
+  # A run handed off from the old installer starts after the update.
+  if ($env:OMNI_INSTALLER_HANDOFF -eq "1") { Info "Continuing the update with the new installer" }
+  elseif ($effectiveMode -eq "git") { Update-FromGit $root }
   else { Update-FromZip $root }
+
+  # The update brought a different installer: let it do the rest.
+  $handoff = Invoke-NewInstaller $root $PSBoundParameters
+  if ($null -ne $handoff) { exit $handoff }
 
   Check-RequiredFiles $root
   Ensure-ModelsDir

@@ -87,7 +87,7 @@ if (!ps) {
   // `nvidia`: true/false stubs Test-NvidiaGpu; undefined keeps the real one
   // (the timeout tests drive it with fake nvidia-smi scripts on PATH).
   const runLlama = (body, { nvidia, pathPrefix } = {}) => {
-    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu"];
+    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Test-InstallerChanged", "Invoke-NewInstaller"];
     const cmd = [
       // Like install.ps1 itself: without it, $null.Count is 0 and the bug hides.
       "Set-StrictMode -Version Latest",
@@ -164,6 +164,42 @@ if (!ps) {
     assert.match(out, /GPU=False/, out);
     assert.match(out, /did not answer within 2 s/, out);
     assert.ok(Date.now() - t0 < 20000, `took ${Date.now() - t0} ms`);
+  });
+
+  // ── hand-off to the updated installer ──────────────────────────────────
+  // PowerShell keeps running the installer it loaded, so an update that
+  // fixes the installer used to run the old, broken one to the end anyway
+  // (3.5.40's .Count failure outlived its fix by one update). After the
+  // update, a changed install\install.ps1 now takes over. A stub stands in
+  // for it here: it prints what it was given and exits with 7.
+  const stubRoot = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-handoff-"));
+    fs.mkdirSync(path.join(dir, "install"));
+    fs.writeFileSync(path.join(dir, "install", "install.ps1"), '"NEW-INSTALLER handoff=$env:OMNI_INSTALLER_HANDOFF args=$($args -join \' \')"\r\nexit 7\r\n');
+    return dir;
+  };
+
+  await ok("the new installer gets the same choices, the same folder and -NoUpdate", () => {
+    const out = runLlama("$b = [ordered]@{ Llama = 'cpu'; SkipLink = [switch]$true; Force = [switch]$false; NoUpdate = [switch]$true; InstallDir = 'X' }; 'ARGS=' + ((Get-HandoffArgs $b 'C:\\omni') -join '|')");
+    assert.match(out, /ARGS=-Llama\|cpu\|-SkipLink\|-InstallDir\|C:\\omni\|-NoUpdate/, out);
+  });
+
+  await ok("a changed installer takes over after the update, and its exit code is the result", () => {
+    const dir = stubRoot();
+    const out = runLlama(`$script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' @{ Llama = 'cpu' }; 'RESULT=' + $r + ' ENV-AFTER=[' + [string]$env:OMNI_INSTALLER_HANDOFF + ']'`);
+    assert.ok(out.includes(`NEW-INSTALLER handoff=1 args=-Llama cpu -InstallDir ${dir} -NoUpdate`), out);
+    assert.match(out, /RESULT=7 ENV-AFTER=\[\]/, out);
+  });
+
+  await ok("no hand-off when the installer is unchanged, or when this run is already the new one", () => {
+    const dir = stubRoot();
+    const stub = path.join(dir, "install", "install.ps1");
+    const same = runLlama(`$script:StartHash = (Get-FileHash -Algorithm SHA256 '${stub}').Hash; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
+    assert.match(same, /RESULT=\[\]/, same);
+    assert.doesNotMatch(same, /NEW-INSTALLER/, same);
+    const again = runLlama(`$env:OMNI_INSTALLER_HANDOFF = '1'; $script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
+    assert.match(again, /RESULT=\[\]/, again);
+    assert.doesNotMatch(again, /NEW-INSTALLER/, again);
   });
 
   await ok("a 3.5.36 install (CUDA pins, no `omni llama` command) is skipped", () => {
