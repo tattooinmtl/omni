@@ -305,7 +305,9 @@ export async function main(args) {
   // beforeExit gives us a chance to flush before the process tears down.
   // We do NOT save on every turn (noisy, races with /model), only on exit;
   // the in-session /model command already saves the new choice.
-  const { setLastProvider: saveLastProvider } = await import("../core/last-provider.mjs");
+  // saveLastProviderOnExit leaves alone a model another Omni window saved
+  // after this one started (last-provider.mjs).
+  const { saveLastProviderOnExit } = await import("../core/last-provider.mjs");
   // Not from a one-shot or headless run: a script's `--model x` (which may
   // not even have a key) must not become the next interactive session's model.
   let persistModelOnExit = true;
@@ -313,8 +315,18 @@ export async function main(args) {
   // ctx.model, so saving the startup `model` here wrote the old model back
   // over the user's /model choice every time they closed the window.
   let modelAtExit = () => model;
-  const saveOnExit = () => { if (!persistModelOnExit) return; try { saveLastProvider(modelAtExit()?.key, "exit"); } catch {} };
+  let savedOnExit = false;
+  const saveOnExit = () => {
+    if (!persistModelOnExit || savedOnExit) return;
+    savedOnExit = true;
+    try { saveLastProviderOnExit(modelAtExit()?.key); } catch {}
+  };
   process.on("beforeExit", saveOnExit);
+  // beforeExit alone missed it: /exit lets the event loop drain, with a 250 ms
+  // fallback process.exit() (ui.mjs shutdown) for anything still holding it
+  // open, such as an MCP server or the update check, and process.exit() skips
+  // beforeExit. The save is a synchronous write, so it is safe on "exit" too.
+  process.on("exit", saveOnExit);
   // These fire when stdin isn't a TTY (piped input, one-shot runs). In the
   // interactive REPL readline keeps stdin in raw mode, so Ctrl-C arrives as a
   // keypress and is handled there instead — these never pre-empt the REPL's

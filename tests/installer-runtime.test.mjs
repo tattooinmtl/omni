@@ -49,6 +49,8 @@ if (!ps) {
   // script without running its main block, then call the function.
   const run = (fakeRoot) => {
     const cmd = [
+      // The installer runs under StrictMode Latest (install.ps1), so the tests do too.
+      "Set-StrictMode -Version Latest",
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$null)`,
       `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Info','Get-LocalVersion','Install-RuntimePack') }, $true)`,
       `foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }`,
@@ -85,8 +87,10 @@ if (!ps) {
   // `nvidia`: true/false stubs Test-NvidiaGpu; undefined keeps the real one
   // (the timeout tests drive it with fake nvidia-smi scripts on PATH).
   const runLlama = (body, { nvidia, pathPrefix } = {}) => {
-    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu"];
+    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Test-InstallerChanged", "Invoke-NewInstaller"];
     const cmd = [
+      // Like install.ps1 itself: without it, $null.Count is 0 and the bug hides.
+      "Set-StrictMode -Version Latest",
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$null)`,
       `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('${fns.join("','")}') }, $true)`,
       `foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }`,
@@ -116,6 +120,31 @@ if (!ps) {
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'cuda') -join ',') + ']'"), /\[cpu,cuda\]/);
   });
 
+  // Reported on /update-omni 3.5.38 -> 3.5.40: "ERROR: install failed - The
+  // property 'Count' cannot be found on this object". With no local AI
+  // chosen the function returned @(), which PowerShell hands back as $null,
+  // and the installer read $llamaBuilds.Count under StrictMode. The -join
+  // checks above can't see that: $null joins to "" just like @() does.
+  // The installer's own line that sets $llamaBuilds, taken from install.ps1,
+  // run for each choice, then both of the installer's .Count reads.
+  await ok("the installer's $llamaBuilds line gives a list whose .Count works under StrictMode", () => {
+    const line = fs.readFileSync(script, "utf8").split(/\r?\n/).map((l) => l.trim())
+      .find((l) => /^\$llamaBuilds\s*=.*Resolve-LlamaBuilds\s+\$llamaChoice/.test(l));
+    assert.ok(line, "install.ps1 sets $llamaBuilds from Resolve-LlamaBuilds $llamaChoice");
+    const probe = (choice, opts) => runLlama(
+      `$llamaChoice = '${choice}'; ${line}; ` +
+      `'COUNT=' + $llamaBuilds.Count + ' BUILDS=[' + ($llamaBuilds -join ',') + '] ' + $(if ($llamaBuilds.Count) { 'INSTALL' } else { 'SKIP' }) + ' ' + $(if (-not $llamaBuilds.Count) { 'HINT' } else { 'NOHINT' })`,
+      opts,
+    );
+    const expect = { none: "COUNT=0 BUILDS=[] SKIP HINT", cpu: "COUNT=1 BUILDS=[cpu] INSTALL NOHINT", cuda: "COUNT=2 BUILDS=[cpu,cuda] INSTALL NOHINT" };
+    for (const [choice, want] of Object.entries(expect)) {
+      const out = probe(choice);
+      assert.ok(out.includes(want), `${choice}: ${out}`);
+    }
+    const auto = probe("auto", { nvidia: false });
+    assert.ok(auto.includes("COUNT=1 BUILDS=[cpu] INSTALL"), auto);
+  });
+
   await ok("auto adds CUDA only when nvidia-smi finds an NVIDIA GPU", () => {
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'auto') -join ',') + ']'", { nvidia: true }), /\[cpu,cuda\]/);
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'auto') -join ',') + ']'", { nvidia: false }), /\[cpu\]/);
@@ -135,6 +164,42 @@ if (!ps) {
     assert.match(out, /GPU=False/, out);
     assert.match(out, /did not answer within 2 s/, out);
     assert.ok(Date.now() - t0 < 20000, `took ${Date.now() - t0} ms`);
+  });
+
+  // ── hand-off to the updated installer ──────────────────────────────────
+  // PowerShell keeps running the installer it loaded, so an update that
+  // fixes the installer used to run the old, broken one to the end anyway
+  // (3.5.40's .Count failure outlived its fix by one update). After the
+  // update, a changed install\install.ps1 now takes over. A stub stands in
+  // for it here: it prints what it was given and exits with 7.
+  const stubRoot = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-handoff-"));
+    fs.mkdirSync(path.join(dir, "install"));
+    fs.writeFileSync(path.join(dir, "install", "install.ps1"), '"NEW-INSTALLER handoff=$env:OMNI_INSTALLER_HANDOFF args=$($args -join \' \')"\r\nexit 7\r\n');
+    return dir;
+  };
+
+  await ok("the new installer gets the same choices, the same folder and -NoUpdate", () => {
+    const out = runLlama("$b = [ordered]@{ Llama = 'cpu'; SkipLink = [switch]$true; Force = [switch]$false; NoUpdate = [switch]$true; InstallDir = 'X' }; 'ARGS=' + ((Get-HandoffArgs $b 'C:\\omni') -join '|')");
+    assert.match(out, /ARGS=-Llama\|cpu\|-SkipLink\|-InstallDir\|C:\\omni\|-NoUpdate/, out);
+  });
+
+  await ok("a changed installer takes over after the update, and its exit code is the result", () => {
+    const dir = stubRoot();
+    const out = runLlama(`$script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' @{ Llama = 'cpu' }; 'RESULT=' + $r + ' ENV-AFTER=[' + [string]$env:OMNI_INSTALLER_HANDOFF + ']'`);
+    assert.ok(out.includes(`NEW-INSTALLER handoff=1 args=-Llama cpu -InstallDir ${dir} -NoUpdate`), out);
+    assert.match(out, /RESULT=7 ENV-AFTER=\[\]/, out);
+  });
+
+  await ok("no hand-off when the installer is unchanged, or when this run is already the new one", () => {
+    const dir = stubRoot();
+    const stub = path.join(dir, "install", "install.ps1");
+    const same = runLlama(`$script:StartHash = (Get-FileHash -Algorithm SHA256 '${stub}').Hash; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
+    assert.match(same, /RESULT=\[\]/, same);
+    assert.doesNotMatch(same, /NEW-INSTALLER/, same);
+    const again = runLlama(`$env:OMNI_INSTALLER_HANDOFF = '1'; $script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
+    assert.match(again, /RESULT=\[\]/, again);
+    assert.doesNotMatch(again, /NEW-INSTALLER/, again);
   });
 
   await ok("a 3.5.36 install (CUDA pins, no `omni llama` command) is skipped", () => {

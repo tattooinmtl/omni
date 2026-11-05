@@ -41,15 +41,33 @@ function filePath() {
   return path.join(home, "last-provider.json");
 }
 
-export function getLastProvider() {
+// What this process last read from or wrote to the file: the choice it
+// knows about. undefined until it has done either. Two Omni windows share
+// the file, and the exit save uses this to leave alone a choice the other
+// window made after this one read it (see saveLastProviderOnExit).
+let known;
+
+function readKey() {
   try {
-    const raw = fs.readFileSync(filePath(), "utf8");
-    const data = JSON.parse(raw);
-    if (data && typeof data.modelKey === "string" && data.modelKey) {
-      return { modelKey: data.modelKey, savedAt: data.savedAt || null };
-    }
+    const data = JSON.parse(fs.readFileSync(filePath(), "utf8"));
+    if (data && typeof data.modelKey === "string" && data.modelKey) return { modelKey: data.modelKey, savedAt: data.savedAt || null };
   } catch { /* missing or corrupt — first run / never saved */ }
   return null;
+}
+
+export function getLastProvider() {
+  const last = readKey();
+  known = last ? last.modelKey : null;
+  return last;
+}
+
+// The save Omni makes as it exits. It writes only when the file still holds
+// the choice this process knows about: if another window saved a model in the
+// meantime, that newer choice wins. Returns whether it wrote.
+export function saveLastProviderOnExit(modelKey) {
+  if (known !== undefined && (readKey()?.modelKey ?? null) !== known) return false;
+  setLastProvider(modelKey, "exit");
+  return true;
 }
 
 export function setLastProvider(modelKey, reason = "manual") {
@@ -61,6 +79,7 @@ export function setLastProvider(modelKey, reason = "manual") {
       file,
       JSON.stringify({ modelKey, savedAt: new Date().toISOString(), reason }, null, 2) + "\n"
     );
+    known = modelKey;
   } catch {
     /* best effort — never throw from a save path */
   }
