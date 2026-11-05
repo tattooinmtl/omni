@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.37 — 2026-11-05
+
+- **Shipped:** this PR · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Local AI is an install-time choice.** The installer takes `-Llama`, or
+  `OMNI_LLAMA` from the one-liner: `none` (the default: nothing), `cpu`
+  (the CPU llama.cpp build), `cuda` (CPU plus the CUDA 13.4 build) or `auto`
+  (CPU, plus CUDA only when `nvidia-smi` finds an NVIDIA GPU, so a PC without
+  one never downloads it). A failed download warns and the install carries on.
+  On an Omni too old to have the command, the step is skipped with a pointer
+  instead of sending `llama update` to the model as a prompt.
+- **`omni llama update [cuda] [--force]`** works from a shell, with no REPL or
+  model, and exits non-zero when the build isn't in place. The installer uses it.
+- The website's install section gets a matching "Local AI on this PC" choice
+  (English and French) that adds `$env:OMNI_LLAMA = "…";` to the command it
+  shows, next to the runtime-pack checkbox. The website deploys separately.
+- Tests: the installer's real `Resolve-LlamaBuilds` and `Install-LlamaBuilds`
+  (from its AST, with `node` and `nvidia-smi` stubbed): each choice, `auto`
+  with and without an NVIDIA GPU, both update commands in order, and the
+  skip on an old Omni.
+
 ## 3.5.36 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/llama-cuda · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Shipped:** [#49](https://github.com/tattooinmtl/omni/pull/49) · `0065bc6` · TattooAI/llama-cuda · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
 - **CUDA is a third local backend, next to CPU and Vulkan.** `/llama update
   cuda` installs llama.cpp b12125 built for CUDA 13.4, plus its CUDA runtime
   (cuBLAS, cudart), into `server-cuda/` beside the CPU build. Both archives
