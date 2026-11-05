@@ -20,13 +20,22 @@ entries were rebuilt from git history).
   instead of sending `llama update` to the model as a prompt.
 - **`omni llama update [cuda] [--force]`** works from a shell, with no REPL or
   model, and exits non-zero when the build isn't in place. The installer uses it.
+- **Review fixes.** `omni llama update cuda` (and `--force`) was rejected: the
+  argument split had lost its backslash (`/s+/`), so only a bare `update`
+  worked. The installer now checks for the `omni llama` command itself, so a
+  3.5.36 install (CUDA pins, no command) is skipped instead of being handed
+  `llama update` as a prompt. The `auto` GPU check gives `nvidia-smi` 15
+  seconds, then kills its process tree and installs the CPU build only.
 - The website's install section gets a matching "Local AI on this PC" choice
   (English and French) that adds `$env:OMNI_LLAMA = "…";` to the command it
   shows, next to the runtime-pack checkbox. The website deploys separately.
 - Tests: the installer's real `Resolve-LlamaBuilds` and `Install-LlamaBuilds`
   (from its AST, with `node` and `nvidia-smi` stubbed): each choice, `auto`
   with and without an NVIDIA GPU, both update commands in order, and the
-  skip on an old Omni.
+  skip on an old Omni and on 3.5.36. `Test-NvidiaGpu` runs against fake
+  `nvidia-smi` scripts: one that names a GPU, one that fails, and one that
+  hangs (it gives up in 2 s). `llama-spark` checks that `update cuda --force`
+  reaches the update with both arguments.
 
 ## 3.5.36 — 2026-11-05
 

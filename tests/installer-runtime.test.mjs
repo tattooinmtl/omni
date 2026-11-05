@@ -82,20 +82,32 @@ if (!ps) {
   // ── local AI option (-Llama / OMNI_LLAMA) ──────────────────────────────
   // Runs the real Resolve-LlamaBuilds / Install-LlamaBuilds with `node` and
   // `nvidia-smi` stubbed, so "a PC with / without an NVIDIA GPU" is testable.
-  const runLlama = (body, { nvidia } = {}) => {
-    const smi = nvidia === undefined
-      ? "Remove-Item Function:nvidia-smi -ErrorAction SilentlyContinue"
-      : `function global:nvidia-smi { $global:LASTEXITCODE = 0; ${nvidia ? "'NVIDIA GeForce RTX 5060 Ti'" : "''"} }`;
+  // `nvidia`: true/false stubs Test-NvidiaGpu; undefined keeps the real one
+  // (the timeout tests drive it with fake nvidia-smi scripts on PATH).
+  const runLlama = (body, { nvidia, pathPrefix } = {}) => {
+    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu"];
     const cmd = [
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$null)`,
-      `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Info','Get-LocalVersion','Resolve-LlamaBuilds','Install-LlamaBuilds') }, $true)`,
+      `$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('${fns.join("','")}') }, $true)`,
       `foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }`,
       `function node { Write-Output "NODE-RAN $args"; $global:LASTEXITCODE = 0 }`,
-      smi,
+      nvidia === undefined ? "" : `function Test-NvidiaGpu { return ${nvidia ? "$true" : "$false"} }`,
       body,
-    ].join("; ");
-    const r = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { encoding: "utf8" });
+    ].filter(Boolean).join("; ");
+    const env = { ...process.env };
+    if (pathPrefix) {
+      const key = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
+      env[key] = `${pathPrefix};${env[key]}`;
+    }
+    const r = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], { encoding: "utf8", env });
     return (r.stdout || "") + (r.stderr || "");
+  };
+
+  // A directory holding a fake nvidia-smi.cmd with the given body.
+  const fakeSmi = (body) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-smi-"));
+    fs.writeFileSync(path.join(dir, "nvidia-smi.cmd"), `@echo off\r\n${body}\r\n`);
+    return dir;
   };
 
   await ok("local AI choices: none installs nothing, cpu the CPU build, cuda both", () => {
@@ -109,10 +121,39 @@ if (!ps) {
     assert.match(runLlama("'[' + ((Resolve-LlamaBuilds 'auto') -join ',') + ']'", { nvidia: false }), /\[cpu\]/);
   });
 
+  await ok("Test-NvidiaGpu: yes when nvidia-smi names a GPU, no when it names none", () => {
+    const yes = fakeSmi("echo NVIDIA GeForce RTX 5060 Ti");
+    assert.match(runLlama("'GPU=' + (Test-NvidiaGpu)", { pathPrefix: yes }), /GPU=True/);
+    const none = fakeSmi("exit /b 9");
+    assert.match(runLlama("'GPU=' + (Test-NvidiaGpu)", { pathPrefix: none }), /GPU=False/);
+  });
+
+  await ok("Test-NvidiaGpu gives up on a hung nvidia-smi instead of stalling the install", () => {
+    const hang = fakeSmi("ping -n 30 127.0.0.1 >nul");
+    const t0 = Date.now();
+    const out = runLlama("'GPU=' + (Test-NvidiaGpu -TimeoutSec 2) 3>&1", { pathPrefix: hang });
+    assert.match(out, /GPU=False/, out);
+    assert.match(out, /did not answer within 2 s/, out);
+    assert.ok(Date.now() - t0 < 20000, `took ${Date.now() - t0} ms`);
+  });
+
+  await ok("a 3.5.36 install (CUDA pins, no `omni llama` command) is skipped", () => {
+    const fake = fs.mkdtempSync(path.join(os.tmpdir(), "omni-3536-"));
+    fs.writeFileSync(path.join(fake, "package.json"), JSON.stringify({ version: "3.5.36" }));
+    fs.mkdirSync(path.join(fake, "src", "local"), { recursive: true });
+    fs.mkdirSync(path.join(fake, "src", "cli"), { recursive: true });
+    fs.writeFileSync(path.join(fake, "src", "local", "llama-build.mjs"), "export const LLAMA_BUILD = { cudaBuilds: {} };");
+    fs.writeFileSync(path.join(fake, "src", "cli", "main.mjs"), 'if (args[0] === "runtime") {}');
+    const out = runLlama(`Install-LlamaBuilds '${fake.replace(/'/g, "''")}' @('cpu') 3>&1`);
+    assert.doesNotMatch(out, /NODE-RAN/, out);
+    assert.match(out, /Skipping local AI: this Omni \(3\.5\.36\) predates it/, out);
+    fs.rmSync(fake, { recursive: true, force: true });
+  });
+
   await ok("Install-LlamaBuilds runs `omni llama update` then `… update cuda` on a new Omni", () => {
     const fake = fs.mkdtempSync(path.join(os.tmpdir(), "omni-llama-"));
-    fs.mkdirSync(path.join(fake, "src", "local"), { recursive: true });
-    fs.writeFileSync(path.join(fake, "src", "local", "llama-build.mjs"), "export const LLAMA_BUILD = { cudaBuilds: {} };");
+    fs.mkdirSync(path.join(fake, "src", "cli"), { recursive: true });
+    fs.writeFileSync(path.join(fake, "src", "cli", "main.mjs"), 'if (args[0] === "llama") {}');
     const out = runLlama(`Install-LlamaBuilds '${fake.replace(/'/g, "''")}' @('cpu','cuda') 3>&1`);
     assert.match(out, /NODE-RAN \.\/bin\/omni\.mjs llama update\r?\n/, out);
     assert.match(out, /NODE-RAN \.\/bin\/omni\.mjs llama update cuda/, out);

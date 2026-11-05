@@ -364,17 +364,45 @@ function Install-RuntimePack([string]$Root) {
 
 # Which llama.cpp builds the -Llama / OMNI_LLAMA choice means. "auto" asks
 # nvidia-smi: a machine without an NVIDIA GPU never downloads CUDA.
+# True when nvidia-smi names at least one GPU. Bounded: a hung driver or
+# utility must not stall the install, so after $TimeoutSec it is killed and
+# the answer is "no" (CPU only).
+function Test-NvidiaGpu([int]$TimeoutSec = 15) {
+  $smi = Get-Command nvidia-smi -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $smi) { return $false }
+  try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $smi.Source
+    $psi.Arguments = "--query-gpu=name --format=csv,noheader"
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+      # The whole tree: a wrapper script's children would otherwise keep
+      # running and hold the output pipe open.
+      # Started as a bare process, not `& taskkill`, so no stderr reaches
+      # PowerShell's streams (see Invoke-External for why that matters on 5.1).
+      try { [System.Diagnostics.Process]::Start("taskkill.exe", "/PID $($p.Id) /T /F").WaitForExit(5000) | Out-Null } catch { }
+      try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+      Write-Warning "nvidia-smi did not answer within $TimeoutSec s - installing the CPU build only"
+      return $false
+    }
+    return ($p.ExitCode -eq 0) -and [bool]($out.Result.Trim())
+  }
+  catch {
+    return $false
+  }
+}
+
 function Resolve-LlamaBuilds([string]$Choice) {
   switch ($Choice) {
     "cpu"  { return @("cpu") }
     "cuda" { return @("cpu", "cuda") }
     "auto" {
-      $hasNvidia = $false
-      if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        $names = & nvidia-smi --query-gpu=name --format=csv,noheader 2>$null
-        $hasNvidia = ($LASTEXITCODE -eq 0) -and [bool]("$names".Trim())
-      }
-      if ($hasNvidia) { return @("cpu", "cuda") }
+      if (Test-NvidiaGpu) { return @("cpu", "cuda") }
       return @("cpu")
     }
     default { return @() }
@@ -383,10 +411,11 @@ function Resolve-LlamaBuilds([string]$Choice) {
 
 # Local AI is optional: a failed download must not fail the install.
 function Install-LlamaBuilds([string]$Root, [string[]]$Builds) {
-  # `omni llama update` arrived in 3.5.36; on an older Omni the words would be
-  # sent to the model as a prompt, so only run it where the command exists.
-  $buildFile = Join-Path $Root "src\local\llama-build.mjs"
-  if (-not ((Test-Path $buildFile) -and (Select-String -Path $buildFile -Pattern "cudaBuilds" -Quiet))) {
+  # The headless `omni llama update` arrived in 3.5.37 (3.5.36 already has the
+  # CUDA pins, but not the command). On an Omni without the dispatch the words
+  # would be sent to the model as a prompt, so check for the dispatch itself.
+  $mainFile = Join-Path $Root "src\cli\main.mjs"
+  if (-not ((Test-Path $mainFile) -and (Select-String -Path $mainFile -Pattern 'args\[0\] === "llama"' -Quiet))) {
     Write-Warning "Skipping local AI: this Omni ($(Get-LocalVersion $Root)) predates it. Update Omni, then run: omni llama update"
     return
   }

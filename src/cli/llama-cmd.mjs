@@ -377,17 +377,24 @@ async function updateCommand(cfg, arg) {
   }
 }
 
+// Split `omni llama …` arguments: { sub, rest } or null when not an update.
+export function parseHeadlessArgs(argStr) {
+  const [sub, ...rest] = String(argStr || "").trim().split(/\s+/);
+  if (sub !== "update" && sub !== "upgrade") return null;
+  return { sub, rest: rest.join(" ") };
+}
+
 // `omni llama update [cuda] [--force]` from a shell (the installer's llama
 // option): no REPL, no model — settings only for binDir/cudaBinDir.
-export async function llamaHeadless(argStr, { loadSettings } = {}) {
-  const [sub, ...rest] = String(argStr || "").trim().split(/s+/);
-  if (sub !== "update" && sub !== "upgrade") {
+export async function llamaHeadless(argStr, { loadSettings, update = updateCommand } = {}) {
+  const parsed = parseHeadlessArgs(argStr);
+  if (!parsed) {
     errorLine("usage: omni llama update [cuda] [--force]");
     return false;
   }
   const load = loadSettings || (await import("../core/config.mjs")).loadSettings;
   const settings = await load();
-  return updateCommand(llama.llamaConfig(settings), rest.join(" "));
+  return update(llama.llamaConfig(settings), parsed.rest);
 }
 
 // /llama bench [model] — llama-bench on a model, same threads /llama start uses.
