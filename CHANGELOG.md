@@ -26,6 +26,12 @@ entries were rebuilt from git history).
   step is back on your model. `visionFallback` in settings.json picks the
   model, or `false` turns it off. With no such model, Omni says so once,
   and the "image(s) not sent" warning no longer repeats every step.
+- **Fix: the model you switched to is kept after you quit.** `/model` saves
+  the new model, but the save that runs at exit used the model Omni started
+  with, so quitting wrote the old model back over the choice. The next launch
+  was always on the startup model. Exit now saves the model in use.
+- **Tests:** `last-model-exit` (2) runs the real CLI with a temp home:
+  `/model` then `/exit` keeps the new model; no switch keeps the startup one.
 - **Tests:** `vision-fallback` (14): the pairing repair, the pick order, and
   a real `runTurn` against the mock provider with a two-call image batch,
   with and without a fallback model.
