@@ -62,6 +62,13 @@ export async function main(args) {
     process.exit((await runtimeCommand(null, args.slice(1).join(" "))) ? 0 : 1);
   }
 
+  // `omni llama update [cuda]` installs a pinned llama.cpp build and exits.
+  // The installer calls it for its local-AI option (OMNI_LLAMA).
+  if (args[0] === "llama") {
+    const { llamaHeadless } = await import("./llama-cmd.mjs");
+    process.exit((await llamaHeadless(args.slice(1).join(" "))) ? 0 : 1);
+  }
+
   // `omni schedule run <id>` is what Task Scheduler starts; `list` and
   // `run-due` are for you or another runner. No REPL, no model of its own:
   // a run is a headless child Omni (core/scheduler.mjs).

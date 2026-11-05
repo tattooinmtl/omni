@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.37 — 2026-11-05
+## 3.5.38 — 2026-11-05
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,35 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.37 — 2026-11-05
+
+- **Shipped:** [#50](https://github.com/tattooinmtl/omni/pull/50) · `d0322d5` · TattooAI/llama-install-choice · session `439fe57a-0cb0-4c0f-8885-6bdab632b318`
+- **Local AI is an install-time choice.** The installer takes `-Llama`, or
+  `OMNI_LLAMA` from the one-liner: `none` (the default: nothing), `cpu`
+  (the CPU llama.cpp build), `cuda` (CPU plus the CUDA 13.4 build) or `auto`
+  (CPU, plus CUDA only when `nvidia-smi` finds an NVIDIA GPU, so a PC without
+  one never downloads it). A failed download warns and the install carries on.
+  On an Omni too old to have the command, the step is skipped with a pointer
+  instead of sending `llama update` to the model as a prompt.
+- **`omni llama update [cuda] [--force]`** works from a shell, with no REPL or
+  model, and exits non-zero when the build isn't in place. The installer uses it.
+- **Review fixes.** `omni llama update cuda` (and `--force`) was rejected: the
+  argument split had lost its backslash (`/s+/`), so only a bare `update`
+  worked. The installer now checks for the `omni llama` command itself, so a
+  3.5.36 install (CUDA pins, no command) is skipped instead of being handed
+  `llama update` as a prompt. The `auto` GPU check gives `nvidia-smi` 15
+  seconds, then kills its process tree and installs the CPU build only.
+- The website's install section gets a matching "Local AI on this PC" choice
+  (English and French) that adds `$env:OMNI_LLAMA = "…";` to the command it
+  shows, next to the runtime-pack checkbox. The website deploys separately.
+- Tests: the installer's real `Resolve-LlamaBuilds` and `Install-LlamaBuilds`
+  (from its AST, with `node` and `nvidia-smi` stubbed): each choice, `auto`
+  with and without an NVIDIA GPU, both update commands in order, and the
+  skip on an old Omni and on 3.5.36. `Test-NvidiaGpu` runs against fake
+  `nvidia-smi` scripts: one that names a GPU, one that fails, and one that
+  hangs (it gives up in 2 s). `llama-spark` checks that `update cuda --force`
+  reaches the update with both arguments.
 
 ## 3.5.36 — 2026-11-05
 

@@ -239,6 +239,20 @@ async function main() {
     assert.deepEqual(cmd.parseStartArgs("spark cuda high"), { model: "spark", backend: "cuda", force: false, think: "high" });
   });
 
+  await ok("`omni llama update cuda --force` reaches the update with both arguments", async () => {
+    assert.deepEqual(cmd.parseHeadlessArgs("update cuda --force"), { sub: "update", rest: "cuda --force" });
+    assert.deepEqual(cmd.parseHeadlessArgs("  update   cuda "), { sub: "update", rest: "cuda" });
+    assert.deepEqual(cmd.parseHeadlessArgs("update"), { sub: "update", rest: "" });
+    assert.equal(cmd.parseHeadlessArgs("bogus"), null);
+    let got = null;
+    const ok2 = await cmd.llamaHeadless("update cuda", {
+      loadSettings: async () => ({ llama: { binDir: os.tmpdir() } }),
+      update: async (cfg, arg) => { got = arg; return true; },
+    });
+    assert.equal(ok2, true);
+    assert.equal(got, "cuda");
+  });
+
   await ok("the pin is an official ggml-org release with a full SHA-256, new enough for Spark", () => {
     const a = build.LLAMA_BUILD.builds["win32-x64"];
     assert.match(a.url, /^https:\/\/github\.com\/ggml-org\/llama\.cpp\/releases\/download\/b\d+\//);

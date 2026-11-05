@@ -178,6 +178,27 @@ all` everything, `/runtime remove <name>` takes one out. Outside the REPL:
 `omni runtime install`. Downloads are Windows x64; elsewhere `/runtime` prints
 the package-manager command instead.
 
+### Optional local AI (llama.cpp)
+
+Nothing for local models is installed unless you ask. Pick it on the website
+before copying the command, or set `OMNI_LLAMA` (`-Llama` from a checkout):
+
+| Choice | Installs |
+|---|---|
+| `none` (default) | nothing; add it later with `/llama update` |
+| `cpu` | the CPU build, about 25 MB, any PC |
+| `auto` | the CPU build, plus CUDA only if `nvidia-smi` finds an NVIDIA GPU |
+| `cuda` | the CPU build plus the CUDA 13.4 build, about 620 MB in all, for NVIDIA cards with driver 580+ |
+
+```powershell
+$env:OMNI_LLAMA = "auto"; irm https://omni.globalwarningnetworks.com/install.ps1 | iex   # with the install
+.\install\install.ps1 -Llama cuda                                                       # from a checkout
+```
+
+A PC with no NVIDIA card never downloads CUDA under `auto`. A failed download
+warns but does not fail the install. Later, from Omni: `/llama update` and
+`/llama update cuda`; outside the REPL: `omni llama update [cuda]`.
+
 ## API keys
 
 Omni ships **with no API keys**; supply your own. The first run writes a clean
