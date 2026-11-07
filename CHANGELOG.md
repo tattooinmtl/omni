@@ -8,9 +8,27 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.45 — 2026-11-07
+
+- **Shipped:** this PR · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **`/update-omni` finishes a setup that stopped partway.** Updating from
+  3.5.43 or older still runs that version's installer, whose hand-off to the
+  new one drops `-ModelsDir ''`: the files move, then setup stops with
+  "Missing an argument for parameter 'ModelsDir'". Running `/update-omni`
+  again only said "latest version". Now the installer records the version
+  whose setup finished (`.setup-version`, gitignored), and when the files on
+  disk are newer than that record, `/update-omni` runs the installer once
+  more to finish (`/update-omni check` just reports it). With no record yet,
+  only the standard `~/.omni` install is treated as unfinished; a dev
+  checkout is never handed to the installer.
+- README: the stuck-update help says to restart Omni and run `/update-omni`
+  again.
+- Tests: `tests/update-omni.test.mjs` pins finishing an unfinished setup, the
+  check-only report, and how the record is read.
+
 ## 3.5.44 — 2026-11-07
 
-- **Shipped:** this PR · TattooAI/installer-handoff-args · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Shipped:** [#57](https://github.com/tattooinmtl/omni/pull/57) · `6e9014d` · TattooAI/installer-handoff-args · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
 - **Fix: updating from 3.5.41 ended in "Missing an argument for parameter
   'ModelsDir'".** When an update changes the installer, the running one hands
   the rest of the work to the new copy. It passed its arguments as plain
