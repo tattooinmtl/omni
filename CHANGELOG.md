@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.45 — 2026-11-07
+## 3.5.46 — 2026-11-07
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,24 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.45 — 2026-11-07
+
+- **Shipped:** [#58](https://github.com/tattooinmtl/omni/pull/58) · `c974beb` · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **`/update-omni` finishes a setup that stopped partway.** Updating from
+  3.5.43 or older still runs that version's installer, whose hand-off to the
+  new one drops `-ModelsDir ''`: the files move, then setup stops with
+  "Missing an argument for parameter 'ModelsDir'". Running `/update-omni`
+  again only said "latest version". Now the installer records the version
+  whose setup finished (`.setup-version`, gitignored), and when the files on
+  disk are newer than that record, `/update-omni` runs the installer once
+  more to finish (`/update-omni check` just reports it). With no record yet,
+  only the standard `~/.omni` install is treated as unfinished; a dev
+  checkout is never handed to the installer.
+- README: the stuck-update help says to restart Omni and run `/update-omni`
+  again.
+- Tests: `tests/update-omni.test.mjs` pins finishing an unfinished setup, the
+  check-only report, and how the record is read.
 
 ## 3.5.44 — 2026-11-07
 

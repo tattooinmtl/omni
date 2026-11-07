@@ -44,9 +44,41 @@ await test("already on the latest version → says so, never runs the installer"
   let ran = false;
   const { result, out } = await captured(() => updateCommand(null, "", {
     fetchLatest: async () => "3.5.30", current: () => "3.5.30", invocation: () => INV, run: async () => { ran = true; return 0; },
+    setupDone: () => true,
   }));
   ok(result === true && !ran, "installer ran");
   ok(out.includes("is the latest version"), out);
+});
+
+await test("latest version but its setup didn't finish → runs the installer to finish it", async () => {
+  let ran = 0;
+  const { result, out } = await captured(() => updateCommand(null, "", {
+    fetchLatest: async () => "3.5.44", current: () => "3.5.44", invocation: () => INV,
+    run: async () => { ran++; return 0; }, setupDone: (v) => v === "3.5.43",
+  }));
+  ok(ran === 1 && result === true, `ran ${ran}`);
+  ok(out.includes("didn't finish") && out.includes("setup of v3.5.44 finished"), out);
+});
+
+await test("check with an unfinished setup → says so, runs nothing", async () => {
+  let ran = false;
+  const { result, out } = await captured(() => updateCommand(null, "check", {
+    fetchLatest: async () => "3.5.44", current: () => "3.5.44", invocation: () => INV,
+    run: async () => { ran = true; return 0; }, setupDone: () => false,
+  }));
+  ok(result === true && !ran, "installer ran on check");
+  ok(out.includes("didn't finish"), out);
+});
+
+await test("setupFinished reads .setup-version; with none, only the standard ~/.omni counts as unfinished", async () => {
+  const { setupFinished } = await import(u("cli/update-cmd.mjs"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni-setupver-"));
+  ok(setupFinished("3.5.44", dir) === true, "a dev checkout with no record was treated as unfinished");
+  fs.writeFileSync(path.join(dir, ".setup-version"), "3.5.43\r\n");
+  ok(setupFinished("3.5.44", dir) === false, "a stale record was taken as finished");
+  ok(setupFinished("3.5.43", dir) === true, "a matching record was taken as unfinished");
+  ok(setupFinished("3.5.44", path.join(os.homedir(), ".omni-nope")) === true);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 await test("check → reports the newer version but changes nothing", async () => {

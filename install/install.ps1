@@ -592,6 +592,10 @@ try {
     Write-Warning "Install dir: $root"
   } else {
     Info "Install complete - Omni v$installed is ready."
+    # The version whose setup finished. /update-omni compares it with the
+    # files on disk: an update whose files moved but whose setup stopped
+    # (3.5.41-3.5.43's broken hand-off) gets finished by the next run.
+    try { [System.IO.File]::WriteAllText((Join-Path $root ".setup-version"), [string]$installed) } catch { Write-Warning "Could not record the finished setup: $($_.Exception.Message)" }
   }
 
   Write-Host ""
