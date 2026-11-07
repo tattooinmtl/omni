@@ -53,7 +53,16 @@ await test("Esc (stop) drops the unsaved change", () => {
   const q = q3();
   q.move(-1, "");
   assert.equal(q.stop(), "");
+  assert.equal(q.editing, null, "Esc leaves editing");
   assert.deepEqual(q.items.map((i) => i.text), ["one", "two", "three"]);
+});
+
+await test("clicking a later prompt while an emptied one is open opens the one clicked", () => {
+  const q = q3();
+  q.begin(0, "");                  // editing "one"
+  assert.equal(q.begin(2, ""), "three", "emptied 'one' is dropped, 'three' slid up");
+  assert.deepEqual(q.items.map((i) => i.text), ["two", "three"]);
+  assert.equal(q.items[q.editing].text, "three");
 });
 
 await test("nothing runs while a prompt is being edited, so the order holds", () => {
@@ -117,10 +126,17 @@ await test("rows leave the last columns free (🗑 is two columns wide)", () => 
 });
 
 await test("a click on 🗑 deletes, on ✎ or the text edits, elsewhere nothing", () => {
-  const { hits } = layoutFooter({ cols: 60, queue: ["a", "b"] });
+  const { lines, hits } = layoutFooter({ cols: 60, queue: ["a", "b"] });
   const row = hits[1].row;
-  assert.deepEqual(hitQueue(hits, row, hits[1].delete[0] + 1), { index: 1, action: "delete" });
-  assert.deepEqual(hitQueue(hits, row, hits[1].edit[0] + 1), { index: 1, action: "edit" });
+  // Screen columns of the icons as drawn (1-based), not taken from `hits`.
+  const drawn = Array.from(stripAnsi(lines[row]));
+  const pencilCol = drawn.indexOf("✎") + 1;
+  const binCol = drawn.indexOf("🗑") + 1;
+  assert.equal(pencilCol, 54);
+  assert.equal(binCol, 57);
+  assert.deepEqual(hitQueue(hits, row, binCol), { index: 1, action: "delete" });
+  assert.deepEqual(hitQueue(hits, row, binCol + 1), { index: 1, action: "delete" }, "🗑's second column");
+  assert.deepEqual(hitQueue(hits, row, pencilCol), { index: 1, action: "edit" });
   assert.deepEqual(hitQueue(hits, row, 5), { index: 1, action: "edit" });
   assert.equal(hitQueue(hits, row + 5, 5), null);
 });
@@ -135,6 +151,16 @@ await test("SGR mouse reports are taken out of the input; only left presses coun
   const { rest, clicks } = extractMouse("ab\x1b[<0;10;5M\x1b[<0;10;5m\x1b[<64;3;3M\x1b[<32;1;1Mc");
   assert.equal(rest, "abc");
   assert.deepEqual(clicks, [{ x: 10, y: 5 }]);
+});
+
+await test("a mouse report split across chunks is held back, not typed", () => {
+  const a = extractMouse("x\x1b[<0;10");
+  assert.equal(a.rest, "x");
+  assert.equal(a.partial, "\x1b[<0;10");
+  const b = extractMouse(a.partial + ";5M");
+  assert.equal(b.rest, "");
+  assert.deepEqual(b.clicks, [{ x: 10, y: 5 }]);
+  assert.equal(extractMouse("\x1b").partial, "", "a lone Esc is a key, not held");
 });
 
 console.log("\n[prompt-queue] several /commands and /skills in one prompt");
@@ -163,6 +189,17 @@ await test("leading commands run in order, each with its own args", () => {
   assert.equal(r.text, "go");
 });
 
+await test("the task text keeps its line breaks and indentation", () => {
+  const r = parseSlashLine(ctx, "/alpha /beta fix this:\n  if (x) {\n    y();\n  }");
+  assert.equal(r.text, "fix this:\n  if (x) {\n    y();\n  }");
+});
+
+await test("one skill named later in the text still loads", () => {
+  const r = parseSlashLine(ctx, "please use /alpha to inspect this");
+  assert.deepEqual(r.skills, [skA]);
+  assert.equal(r.text, "please use to inspect this");
+});
+
 await test("one /name alone is left to the usual path", () => {
   assert.equal(parseSlashLine(ctx, "/alpha do it"), null);
   assert.equal(parseSlashLine(ctx, "/model fake/two"), null);
@@ -173,7 +210,9 @@ await test("applySkills loads every body and asks once for the task", async () =
   const msgs = [];
   const records = [];
   await applySkills([skA, skB], "build it", msgs, { append: async (r) => records.push(r) });
-  assert.equal(msgs.filter((m) => m.role === "system").length, 2);
+  const sys = msgs.filter((m) => m.role === "system").map((m) => m.content);
+  assert.equal(sys.length, 2);
+  assert.ok(sys.some((c) => c.includes(skA.body)) && sys.some((c) => c.includes(skB.body)), "both bodies are loaded");
   const users = msgs.filter((m) => m.role === "user");
   assert.equal(users.length, 1);
   assert.match(users[0].content, /\/alpha.*\/beta.*build it/);

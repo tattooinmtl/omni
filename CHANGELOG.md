@@ -27,6 +27,13 @@ entries were rebuilt from git history).
   check auth` runs the commands in order, then the skill. Skills named
   anywhere in the text are picked up; paths like `/tmp` stay as text. Works
   in the REPL, `omni -p` and the RPC mode.
+- Review fixes before merge: a prompt sent early from the queue goes through
+  your UserPromptSubmit hooks; a queued prompt with several /names or a skill
+  moves to the front instead of being half-run mid-turn; a click right after
+  emptying a prompt opens the row you clicked; a mouse click split across
+  input chunks never leaks into the box; two clicks in a row each hit the row
+  they were aimed at; the task text after several skills keeps its line
+  breaks; one skill named mid-sentence ("use /python for this") loads.
 - Tests: `tests/prompt-queue.test.mjs` pins the queue editing, the footer
   rows and click targets, mouse parsing, and the multi-/name parsing.
 

@@ -1603,27 +1603,39 @@ export async function dispatchCommand(ctx, cmdName, arg, parts) {
 // Leading /commands each take the words up to the next recognised /name.
 // After that, every recognised /skill anywhere in the text is loaded and taken
 // out of the text; other /words (paths like /tmp, unknown names) stay put.
-// Returns null when the line names at most one, so the usual path handles it.
+// The task text keeps its own line breaks and indentation. Returns null when
+// the line is a single /name at its start, so the usual path handles it.
 export function parseSlashLine(ctx, line) {
-  const tokens = String(line || "").trim().split(/\s+/).filter(Boolean);
+  const src = String(line || "");
+  const tokens = [...src.matchAll(/\S+/g)].map((m) => ({ t: m[0], at: m.index }));
   const kindOf = (t) => (t.length > 1 && t.startsWith("/") ? slashKind(ctx, t) : "unknown");
   const commands = [];
   let i = 0;
-  while (i < tokens.length && kindOf(tokens[i]) === "command") {
-    const head = tokens[i++];
+  while (i < tokens.length && kindOf(tokens[i].t) === "command") {
+    const head = tokens[i++].t;
     const args = [];
-    while (i < tokens.length && kindOf(tokens[i]) === "unknown") args.push(tokens[i++]);
+    while (i < tokens.length && kindOf(tokens[i].t) === "unknown") args.push(tokens[i++].t);
     commands.push({ name: head.slice(1), arg: args.join(" "), parts: [head, ...args] });
   }
   const skills = [];
-  const words = [];
-  for (; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (kindOf(t) === "skill") {
-      const skill = ctx.skillByCommand.get(t);
-      if (!skills.includes(skill)) skills.push(skill);
-    } else words.push(t);
+  let text = "";
+  let pos = i < tokens.length ? tokens[i].at : src.length;
+  let skillFirst = false;
+  for (let k = i; k < tokens.length; k++) {
+    const { t, at } = tokens[k];
+    if (kindOf(t) !== "skill") continue;
+    const skill = ctx.skillByCommand.get(t);
+    if (!skills.includes(skill)) skills.push(skill);
+    if (k === 0) skillFirst = true;
+    text += src.slice(pos, at);
+    pos = at + t.length;
+    // Drop one space after the name so "a /x b" reads "a b", not "a  b".
+    if (src[pos] === " ") pos++;
   }
-  if (commands.length + skills.length < 2) return null;
-  return { commands, skills, text: words.join(" ") };
+  text = (text + src.slice(pos)).trim();
+  const n = commands.length + skills.length;
+  // One skill typed first is the usual "/skill args"; one named later in the
+  // text ("use /python for this") still loads.
+  if (n === 0 || (n === 1 && (commands.length || skillFirst))) return null;
+  return { commands, skills, text };
 }

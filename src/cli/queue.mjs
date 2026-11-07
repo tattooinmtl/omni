@@ -35,8 +35,11 @@ export class PromptQueue {
   begin(index, line = "") {
     if (index < 0 || index >= this.items.length) return null;
     if (this.editing === null) this.draft = String(line ?? "");
-    else this._save(line);
-    // _save may have dropped an emptied item ahead of `index`.
+    else {
+      const from = this.editing;
+      // An emptied item is dropped; the clicked one slides up if it was after it.
+      if (this._save(line) && index > from) index--;
+    }
     this.editing = Math.min(index, this.items.length - 1);
     if (this.editing < 0) { this.editing = null; return this.draft; }
     return this.items[this.editing].display;
@@ -115,17 +118,25 @@ export class PromptQueue {
 }
 
 // SGR mouse reports (ESC[<b;x;yM / …m) in a raw stdin chunk. Returns the
-// chunk with them removed and the left-button presses found.
+// chunk with them removed, the left-button presses found, and `partial`: an
+// unfinished report at the end of the chunk, to put in front of the next one.
 const MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+const MOUSE_TAIL_RE = /\x1b(?:\[(?:<[\d;]*)?)?$/;
 export function extractMouse(chunk) {
   const clicks = [];
-  const rest = String(chunk ?? "").replace(MOUSE_RE, (_m, b, x, y, kind) => {
+  let s = String(chunk ?? "");
+  let partial = "";
+  const tail = MOUSE_TAIL_RE.exec(s);
+  // Only hold back what is clearly a report under way ("ESC[<…"); a lone
+  // Esc or "ESC[" is a key, and those go through untouched.
+  if (tail && tail[0].startsWith("\x1b[<")) { partial = tail[0]; s = s.slice(0, tail.index); }
+  const rest = s.replace(MOUSE_RE, (_m, b, x, y, kind) => {
     const btn = Number(b);
     // Left button press only: no motion (32), no wheel (64+), no release.
     if (kind === "M" && (btn & 3) === 0 && !(btn & 32) && btn < 64) clicks.push({ x: Number(x), y: Number(y) });
     return "";
   });
-  return { rest, clicks };
+  return { rest, clicks, partial };
 }
 
 export const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";

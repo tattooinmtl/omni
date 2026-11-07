@@ -236,6 +236,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   let footerNoteTimer = null;
   const queue = new PromptQueue();   // prompts waiting behind the running turn
   let mouseOn = false;       // click reporting, on only while prompts are queued
+  let mouseCarry = "";       // a mouse report split across stdin chunks
   let multiLine = "";
   let multiLineDisplay = "";
   let menuShown = [];        // rows the footer menu is showing right now
@@ -355,8 +356,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     const decoder = new StringDecoder("utf8");
     onStdinData = (chunk) => {
       let s = typeof chunk === "string" ? chunk : decoder.write(chunk);
-      if (s.includes("\x1b[<")) {
-        const { rest, clicks } = extractMouse(s);
+      if (mouseCarry || s.includes("\x1b[<")) {
+        const { rest, clicks, partial } = extractMouse(mouseCarry + s);
+        mouseCarry = partial;
         for (const { x, y } of clicks) onQueueClick(x, y);
         if (!rest) return;
         s = rest;
@@ -948,13 +950,16 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     } else {
       setBoxLine(queue.begin(hit.index, rl.line || ""));
     }
-    renderFooter();
+    // Redraw now, not on the next tick: a second click in the same chunk must
+    // be matched against the rows as they are after this one.
+    syncMouse();
+    if (footer && !rl.paused && !replClosed) footer.render();
   }
 
   // Enter on a queued prompt in the box: send it now. Mid-turn, text goes to
   // the running turn the way /btw does; a command that can't run mid-turn
   // moves to the front of the queue instead. Idle, it simply runs.
-  function sendQueuedNow(input) {
+  async function sendQueuedNow(input) {
     absorbPastes();
     if (!input.trim()) {
       queue.remove(queue.editing);
@@ -973,6 +978,12 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
     const btw = parseBtw(text);
     const cmdName = btw === null && text.startsWith("/") ? text.slice(1).split(/\s+/)[0].toLowerCase() : "";
+    // Several /names, or a skill: that needs a turn of its own.
+    if (btw === null && parseSlashLine(ctx, text)) {
+      queue.items.unshift(item);
+      flashNote("that prompt needs a turn of its own - it runs next");
+      return;
+    }
     if (cmdName && INSTANT_WHILE_BUSY.has(cmdName)) {
       const parts = text.split(/\s+/);
       console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
@@ -986,8 +997,15 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       flashNote(`/${cmdName} waits for the turn to end - it runs next`);
       return;
     }
-    const note = btw !== null ? btw : text;
+    let note = btw !== null ? btw : text;
     if (!note) { renderFooter(); return; }
+    // Same UserPromptSubmit hooks as any prompt you send.
+    if (btw === null) {
+      const hooked = await submitPromptHooks(note);
+      for (const err of hooked.errors) warnLine(`hook ${err}`);
+      if (hooked.denied) { warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`); renderFooter(); return; }
+      note = hooked.content;
+    }
     ctx.steerQueue.push(note);
     console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
     infoLine("↳ sent — Omi will read this at its next step");
@@ -998,7 +1016,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     let input = String(rawInput || "").replaceAll(PASTE_START, "").replaceAll(PASTE_END, "");
     if (queue.editing !== null && !multiLine) {
       menuShown = [];
-      sendQueuedNow(input);
+      sendQueuedNow(input).catch((e) => warnLine(e?.message || String(e)));
       // readline clears the box on Enter; give the draft back.
       const draft = menuLastLine;
       setImmediate(() => { if (!replClosed) { rl.line = draft; rl.cursor = draft.length; renderFooter(); } });
