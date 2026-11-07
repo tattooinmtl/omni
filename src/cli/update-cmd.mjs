@@ -39,13 +39,23 @@ export function installerInvocation(root = INSTALL_ROOT, platform = process.plat
   };
 }
 
+// The environment the installer runs in. Without PSModulePath, Windows
+// PowerShell builds its own default; an inherited one from PowerShell 7 (Omni
+// started in a pwsh terminal) points it at pwsh's modules first, and then
+// Get-FileHash and friends are "not recognized" (3.5.42's failed update).
+export function installerEnv(env = process.env) {
+  const out = { ...env };
+  for (const k of Object.keys(out)) if (k.toLowerCase() === "psmodulepath") delete out[k];
+  return out;
+}
+
 // Stream the installer's output as it runs (no stdin: it must never wait on
 // a prompt the REPL can't answer). Resolves to the exit code.
 function runInstaller({ file, args }, timeoutMs = INSTALLER_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(file, args, { cwd: INSTALL_ROOT, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      child = spawn(file, args, { cwd: INSTALL_ROOT, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: installerEnv() });
     } catch (e) {
       errorLine(`could not start the installer: ${e.message}`);
       resolve(1);

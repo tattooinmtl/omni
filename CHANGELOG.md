@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.43 — 2026-11-07
+## 3.5.44 — 2026-11-07
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,21 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.43 — 2026-11-07
+
+- **Shipped:** [#56](https://github.com/tattooinmtl/omni/pull/56) · `e0ec24e` · TattooAI/installer-filehash · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Fix: `/update-omni` failed with "Get-FileHash is not recognized" when Omni
+  was started from a PowerShell 7 terminal.** The updater runs the installer
+  in Windows PowerShell 5.1, which inherited PowerShell 7's `PSModulePath`,
+  found PowerShell 7's own copy of the Utility module first and could not
+  load it. Now, in every PowerShell: `/update-omni` starts the installer with
+  no inherited module path, the installer drops PowerShell 7's module
+  folders when it runs under 5.1, and it hashes files with .NET instead of
+  `Get-FileHash`.
+- Tests: `tests/installer-powershells.test.mjs` runs the installer's helpers
+  under each PowerShell found (5.1 and 7), with and without PowerShell 7's
+  module path.
 
 ## 3.5.42 — 2026-11-07
 

@@ -87,7 +87,7 @@ if (!ps) {
   // `nvidia`: true/false stubs Test-NvidiaGpu; undefined keeps the real one
   // (the timeout tests drive it with fake nvidia-smi scripts on PATH).
   const runLlama = (body, { nvidia, pathPrefix } = {}) => {
-    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Test-InstallerChanged", "Invoke-NewInstaller"];
+    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Test-InstallerChanged", "Invoke-NewInstaller", "Get-Sha256"];
     const cmd = [
       // Like install.ps1 itself: without it, $null.Count is 0 and the bug hides.
       "Set-StrictMode -Version Latest",
@@ -194,7 +194,7 @@ if (!ps) {
   await ok("no hand-off when the installer is unchanged, or when this run is already the new one", () => {
     const dir = stubRoot();
     const stub = path.join(dir, "install", "install.ps1");
-    const same = runLlama(`$script:StartHash = (Get-FileHash -Algorithm SHA256 '${stub}').Hash; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
+    const same = runLlama(`$script:StartHash = Get-Sha256 '${stub}'; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
     assert.match(same, /RESULT=\[\]/, same);
     assert.doesNotMatch(same, /NEW-INSTALLER/, same);
     const again = runLlama(`$env:OMNI_INSTALLER_HANDOFF = '1'; $script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' @{}; 'RESULT=[' + $r + ']'`);
