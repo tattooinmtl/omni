@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.44 — 2026-11-07
+
+- **Shipped:** this PR · TattooAI/installer-handoff-args · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Fix: updating from 3.5.41 ended in "Missing an argument for parameter
+  'ModelsDir'".** When an update changes the installer, the running one hands
+  the rest of the work to the new copy. It passed its arguments as plain
+  process arguments, and Windows PowerShell 5.1 drops the empty
+  `-ModelsDir ''` that `/update-omni` always sends, so the new installer
+  stopped before finishing the setup. The hand-off now sends one encoded
+  command with every value quoted, so it arrives intact in every PowerShell,
+  from folders with spaces too. A 3.5.41 install that already hit this
+  finishes the setup on a second `/update-omni` (that run uses the new
+  installer).
+- README: what to do when stuck on 3.5.41's "Get-FileHash is not recognized"
+  (update once with the one-liner, or from Windows PowerShell or cmd), and
+  the prompt box section now covers the editable queue and several /names
+  per prompt.
+- Tests: the hand-off passes `-ModelsDir ''` and the exit code through, run
+  under each PowerShell found (5.1 and 7).
+
 ## 3.5.43 — 2026-11-07
 
-- **Shipped:** this PR · TattooAI/installer-filehash · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Shipped:** [#56](https://github.com/tattooinmtl/omni/pull/56) · `e0ec24e` · TattooAI/installer-filehash · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
 - **Fix: `/update-omni` failed with "Get-FileHash is not recognized" when Omni
   was started from a PowerShell 7 terminal.** The updater runs the installer
   in Windows PowerShell 5.1, which inherited PowerShell 7's `PSModulePath`,
