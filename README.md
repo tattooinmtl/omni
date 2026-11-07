@@ -161,9 +161,10 @@ irm https://omni.globalwarningnetworks.com/install.ps1 | iex
 ```
 
 or start Omni from Windows PowerShell or cmd and run `/update-omni` there.
-From 3.5.43 on, updating works from every PowerShell. If an update says the
-files moved but the installer then failed, run `/update-omni` once more: the
-second run uses the new installer and finishes the setup.
+From 3.5.43 on, updating works from every PowerShell. If an update from
+3.5.43 or older says the files moved but the installer then failed, restart
+Omni and run `/update-omni` again: from 3.5.45 on it notices a setup that
+didn't finish and runs the installer to finish it.
 
 ### Optional runtime pack
 

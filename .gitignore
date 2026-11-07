@@ -90,3 +90,6 @@ buddy/
 extensions/omnibots-launcher.json
 # Next-gen Omni, developed alongside this install - not shipped from here.
 rea-main/
+
+# Written by the installer when a setup finishes (see /update-omni).
+.setup-version

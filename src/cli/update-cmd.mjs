@@ -10,6 +10,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
@@ -82,6 +83,20 @@ function runInstaller({ file, args }, timeoutMs = INSTALLER_TIMEOUT_MS) {
   });
 }
 
+// Whether the installer finished setting up `version`: it writes the version
+// to .setup-version as its last step. An update can move the files and then
+// stop before that (3.5.41-3.5.43 handed off to the new installer with a
+// dropped -ModelsDir ''), and the next /update-omni then sees "latest" and
+// did nothing. No record at all counts as unfinished only for the standard
+// install folder: a dev checkout must never be handed to the installer,
+// which moves its folder onto the release branch.
+export function setupFinished(version, root = INSTALL_ROOT) {
+  let recorded = null;
+  try { recorded = fs.readFileSync(path.join(root, ".setup-version"), "utf8").trim(); } catch { /* none yet */ }
+  if (recorded) return recorded === version;
+  return path.resolve(root).toLowerCase() !== path.join(os.homedir(), ".omni").toLowerCase();
+}
+
 // deps are injectable for tests; the defaults are the real thing.
 export async function updateCommand(ctx, argString, deps = {}) {
   const {
@@ -89,6 +104,7 @@ export async function updateCommand(ctx, argString, deps = {}) {
     current = currentVersion,
     invocation = installerInvocation,
     run = runInstaller,
+    setupDone = setupFinished,
   } = deps;
   const action = String(argString || "").trim().toLowerCase();
   if (action && action !== "check") {
@@ -104,8 +120,30 @@ export async function updateCommand(ctx, argString, deps = {}) {
     return false;
   }
   if (!isNewer(latest, before)) {
-    infoLine(`${c.green("✓")} Omni v${before} is the latest version.`);
-    return true;
+    if (setupDone(before)) {
+      infoLine(`${c.green("✓")} Omni v${before} is the latest version.`);
+      return true;
+    }
+    if (action === "check") {
+      infoLine(`v${before} is the latest, but its setup didn't finish last time — run /update-omni to finish it`);
+      return true;
+    }
+    const inv = invocation();
+    if (!inv) {
+      infoLine(`${c.green("✓")} Omni v${before} is the latest version.`);
+      return true;
+    }
+    if (running) { warnLine("an update is already running."); return false; }
+    infoLine(`v${before} is the latest, but its setup didn't finish last time — finishing it now…`);
+    running = true;
+    let code;
+    try { code = await run(inv); } finally { running = false; }
+    if (code === 0) {
+      infoLine(`${c.green("✓")} setup of v${before} finished. Restart Omni if it is still running an older version (/exit, then omni).`);
+      return true;
+    }
+    warnLine(`finishing the setup failed (exit ${code}) — the installer's messages above say why.`);
+    return false;
   }
   if (action === "check") {
     infoLine(`update available: v${before} → v${latest} — run /update-omni to install it`);
