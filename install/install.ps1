@@ -478,8 +478,17 @@ function Install-LlamaBuilds([string]$Root, [string[]]$Builds) {
   }
 }
 
+# A string as a PowerShell single-quoted literal.
+function ConvertTo-PsLiteral([string]$Value) {
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
 # The arguments this run was given, for the new installer: the same choices,
-# pointed at the same folder, and -NoUpdate since the update is done.
+# pointed at the same folder, and -NoUpdate since the update is done. Values
+# are PowerShell literals, so an empty one (-ModelsDir '', which /update-omni
+# always passes) survives: handed over as plain process arguments, Windows
+# PowerShell 5.1 drops an empty "" and the new installer then stopped on
+# "Missing an argument for parameter 'ModelsDir'" (3.5.41 -> 3.5.43).
 function Get-HandoffArgs([System.Collections.IDictionary]$Bound, [string]$Root) {
   $list = New-Object System.Collections.Generic.List[string]
   foreach ($k in @($Bound.Keys)) {
@@ -487,11 +496,19 @@ function Get-HandoffArgs([System.Collections.IDictionary]$Bound, [string]$Root) 
     $v = $Bound[$k]
     if ($v -is [System.Management.Automation.SwitchParameter]) { if ($v.IsPresent) { $list.Add("-$k") } }
     elseif ($v -is [bool]) { if ($v) { $list.Add("-$k") } }
-    else { $list.Add("-$k"); $list.Add([string]$v) }
+    else { $list.Add("-$k"); $list.Add((ConvertTo-PsLiteral ([string]$v))) }
   }
-  $list.Add("-InstallDir"); $list.Add($Root)
+  $list.Add("-InstallDir"); $list.Add((ConvertTo-PsLiteral $Root))
   $list.Add("-NoUpdate")
   return $list.ToArray()
+}
+
+# The command that runs the new installer with those arguments, for
+# -EncodedCommand: no quoting rules of any PowerShell or of Windows can mangle
+# it, and the installer's exit code comes back as the process exit code.
+function Get-HandoffCommand([string]$Script, [System.Collections.IDictionary]$Bound, [string]$Root) {
+  $call = "& " + (ConvertTo-PsLiteral $Script) + " " + ((Get-HandoffArgs $Bound $Root) -join " ")
+  return $call + "; exit `$LASTEXITCODE"
 }
 
 # True when the update changed install\install.ps1 from the copy running now.
@@ -510,13 +527,13 @@ function Invoke-NewInstaller([string]$Root, [System.Collections.IDictionary]$Bou
   if (-not (Test-InstallerChanged $script:StartHash $Root)) { return $null }
   $new = Join-Path $Root "install\install.ps1"
   $exe = (Get-Process -Id $PID).Path
-  $handoffArgs = @(Get-HandoffArgs $Bound $Root)
+  $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes((Get-HandoffCommand $new $Bound $Root)))
   Info "The update changed the installer - continuing with the new one"
   $env:OMNI_INSTALLER_HANDOFF = "1"
   try {
     # Out-Host: the new installer's lines go to the screen, not into this
     # function's return value, which must be the exit code alone.
-    & $exe -NoProfile -ExecutionPolicy Bypass -File $new @handoffArgs | Out-Host
+    & $exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded | Out-Host
     return [int]$LASTEXITCODE
   }
   finally {
