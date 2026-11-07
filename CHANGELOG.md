@@ -8,9 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.46 — 2026-11-07
+
+- **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
+- **One legal page for all four products.** Omni, OmniBots, OmniOne and
+  OmniVerse now share one EULA and Terms of Use and one Privacy and Cookie
+  Policy, in French and English, at
+  https://omniverse.globalwarningnetworks.com/legal/ (also reachable as
+  `/disclaimer`, `/terms`, `/eula`, `/privacy` and `/cookies`). Both documents
+  must be scrolled to the end before they can be accepted or refused. They say
+  plainly that the products are experimental, for advanced users who
+  understand AI and SI agents and harnesses, have no warranty, and are used at
+  your own risk, including data loss.
+- **The README's License section is now "License and legal terms"**. It
+  points to that page and says installing or running Omni means accepting
+  it, on top of the MIT License.
+- The four websites (deployed separately, not in this repo) link to the page in
+  their footers. A bottom bar asks visitors to accept, and download links go
+  through the page first. Creating or signing in to an Omni account counts as
+  acceptance, and new sign-ups record the version accepted.
+
 ## 3.5.45 — 2026-11-07
 
-- **Shipped:** this PR · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Shipped:** [#58](https://github.com/tattooinmtl/omni/pull/58) · `c974beb` · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
 - **`/update-omni` finishes a setup that stopped partway.** Updating from
   3.5.43 or older still runs that version's installer, whose hand-off to the
   new one drops `-ModelsDir ''`: the files move, then setup stops with
