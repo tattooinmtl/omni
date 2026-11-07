@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.42 — 2026-11-05
+## 3.5.43 — 2026-11-07
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,35 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.42 — 2026-11-07
+
+- **Shipped:** [#55](https://github.com/tattooinmtl/omni/pull/55) · `612d0b8` · TattooAI/omni-queued-prompts-edit-094754 · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Queued prompts are a list you can work with.** What you send while Omi
+  works now shows above the prompt box, one row per prompt, each ending in
+  ✎ and 🗑. ↑ on an empty box picks the newest one and puts it in the box;
+  ↑/↓ walk the list (edits are kept as you move), ↓ past the newest gives
+  your draft back, Esc stops editing without interrupting the turn.
+  Enter sends the selected prompt right now: mid-turn it reaches the running
+  turn like `/btw`, a command that has to wait moves to the front. Clicking
+  ✎ (or the text) edits a prompt, clicking 🗑 deletes it. Mouse clicks are
+  only captured while something is queued (Shift+drag still selects text;
+  `OMNI_MOUSE=0` turns clicks off). Nothing queued runs while you edit, so
+  the order you see is the order they run in.
+- **Several /commands and /skills in one prompt.** `/brainstorming /python
+  make a game` loads both skills for one turn; `/clear /model x /review
+  check auth` runs the commands in order, then the skill. Skills named
+  anywhere in the text are picked up; paths like `/tmp` stay as text. Works
+  in the REPL, `omni -p` and the RPC mode.
+- Review fixes before merge: a prompt sent early from the queue goes through
+  your UserPromptSubmit hooks; a queued prompt with several /names or a skill
+  moves to the front instead of being half-run mid-turn; a click right after
+  emptying a prompt opens the row you clicked; a mouse click split across
+  input chunks never leaks into the box; two clicks in a row each hit the row
+  they were aimed at; the task text after several skills keeps its line
+  breaks; one skill named mid-sentence ("use /python for this") loads.
+- Tests: `tests/prompt-queue.test.mjs` pins the queue editing, the footer
+  rows and click targets, mouse parsing, and the multi-/name parsing.
 
 ## 3.5.41 — 2026-11-05
 
