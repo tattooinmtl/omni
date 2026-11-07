@@ -30,9 +30,9 @@ import { classifyIntent, killSidecar } from "../integrations/router.mjs";
 import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
 import { stopNeuralView } from "../local/neuralview-server.mjs";
-import { applySkill, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
+import { applySkill, applySkills, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
-import { dispatchCommand, commandNames, commandMenu, slashKind, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
+import { dispatchCommand, commandNames, commandMenu, slashKind, parseSlashLine, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
 import { expandTemplate } from "../core/templates.mjs";
@@ -43,6 +43,7 @@ import { Checkpointer } from "../core/checkpoints.mjs";
 import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/update-check.mjs";
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
 import { createFooter, stripAnsi } from "./footer.mjs";
+import { PromptQueue, extractMouse, MOUSE_ON, MOUSE_OFF } from "./queue.mjs";
 
 // Rows of the live "/" menu visible at once (plus one hint line below them).
 export const MENU_MAX = 12;
@@ -233,7 +234,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   let activityText = null;   // Omi's line while a status animates
   let footerNote = "";       // transient hint on the box border
   let footerNoteTimer = null;
-  let pendingSubmits = 0;    // messages queued behind the running turn
+  const queue = new PromptQueue();   // prompts waiting behind the running turn
+  let mouseOn = false;       // click reporting, on only while prompts are queued
   let multiLine = "";
   let multiLineDisplay = "";
   let menuShown = [];        // rows the footer menu is showing right now
@@ -273,9 +275,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     getState: () => {
       const cols = process.stdout.columns || 80;
       const line = rl.line || "";
-      menuShown = !multiLine && line.startsWith("/") ? buildMenuRows(line) : [];
+      menuShown = !multiLine && queue.editing === null && line.startsWith("/") ? buildMenuRows(line) : [];
       if (menuSelected >= menuShown.length) menuSelected = Math.max(0, menuShown.length - 1);
-      const note = footerNote || (pendingSubmits > 0 ? `${pendingSubmits} queued` : "");
+      const note = footerNote;
       return {
         activity: activityText || idleActivity(),
         prompt: multiLine ? "… " : stripAnsi(rl.getPrompt()),
@@ -285,12 +287,26 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         statusText: statusBarText(ctx.model, ctx.session, cols - 1),
         menuLines: formatMenuRows(menuShown, { width: cols, selected: menuSelected, max: MENU_MAX }),
         note,
+        queue: queue.items.map((q) => q.display),
+        queueSelected: queue.editing ?? -1,
       };
     },
   }) : null;
 
+  // Mouse reporting makes the ✎ / 🗑 next to queued prompts clickable. It
+  // also takes the wheel and plain drag-select from the terminal, so it is on
+  // only while something is queued (Shift+drag still selects text).
+  // OMNI_MOUSE=0 turns it off for good.
+  function syncMouse() {
+    const want = Boolean(footer) && tty && !replClosed && !rl.paused && queue.length > 0 && process.env.OMNI_MOUSE !== "0";
+    if (want === mouseOn) return;
+    mouseOn = want;
+    process.stdout.write(want ? MOUSE_ON : MOUSE_OFF);
+  }
+
   let renderQueued = false;
   function renderFooter() {
+    syncMouse();
     if (!footer || replClosed || rl.paused) return;
     if (renderQueued) return;
     renderQueued = true;
@@ -312,11 +328,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     setStatusSink((text) => { activityText = text; renderFooter(); });
     // Pickers (/model, /provider, …) pause readline and take the whole screen;
     // get out of their way and come back when they hand the keyboard back.
-    rl.on("pause", () => footer.suspend());
+    rl.on("pause", () => { footer.suspend(); syncMouse(); });
     rl.on("resume", () => renderFooter());
     process.stdout.on("resize", () => { if (!rl.paused && !replClosed) footer.onResize(); });
     // Never leave the shell with a scroll region or a hidden cursor.
-    process.on("exit", () => footer.disable());
+    process.on("exit", () => { footer.disable(); if (mouseOn) process.stdout.write(MOUSE_OFF); });
   }
 
   // ── Raw stdin → paste filter → readline ──────────────────────────────────
@@ -338,7 +354,16 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     });
     const decoder = new StringDecoder("utf8");
     onStdinData = (chunk) => {
-      const s = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      let s = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      if (s.includes("\x1b[<")) {
+        const { rest, clicks } = extractMouse(s);
+        for (const { x, y } of clicks) onQueueClick(x, y);
+        if (!rest) return;
+        s = rest;
+      }
+      // Esc while a queued prompt is in the box stops editing it; it doesn't
+      // interrupt the turn.
+      if (queue.editing !== null && isInterruptKey(s)) { setBoxLine(queue.stop()); pump(); renderFooter(); return; }
       if (ctx.currentAbort && isInterruptKey(s)) { ctx.currentAbort.abort(); return; }
       // Shift+Tab cycles the permission mode, idle or mid-turn. Caught here,
       // before readline, which would also treat it as Tab and complete.
@@ -535,6 +560,21 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   if (tty) {
     rlInput.on("keypress", (_str, key) => {
       if (footer) {
+        // Up on an empty box walks the queued prompts (newest first); while
+        // one is shown, up/down move between them and down past the newest
+        // gives the draft back. Readline has already swapped in a history
+        // entry for this key, so put our text over it.
+        const arrow = key && (key.name === "up" || key.name === "down") ? (key.name === "up" ? -1 : 1) : 0;
+        if (arrow && !multiLine && (queue.editing !== null || (arrow < 0 && menuLastLine === "" && queue.length))) {
+          absorbPastes();
+          const text = queue.move(arrow, menuLastLine);
+          if (text !== null) {
+            setBoxLine(text);
+            if (queue.editing === null) pump();
+            renderFooter();
+            return;
+          }
+        }
         // The box shows the draft even while a turn runs.
         if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/") && !multiLine) {
           const rows = buildMenuRows(menuLastLine);
@@ -720,8 +760,6 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
   }
 
-  let submitChain = Promise.resolve();
-
   async function handleSubmittedText(rawText, { display = rawText } = {}) {
     const line = String(rawText || "").replace(/\r/g, "").trim();
     const shown = String(display || "").trim();
@@ -752,6 +790,30 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     echoSubmitted(fullDisplay);
 
     const commandLine = fullLine.trim();
+
+    // Several /commands and /skills in one prompt: the commands run in order,
+    // then every skill named is loaded for one turn on the remaining text.
+    const multi = parseSlashLine(ctx, commandLine);
+    if (multi) {
+      for (const cmd of multi.commands) {
+        infoLine(`▸ /${cmd.name}${cmd.arg ? " " + cmd.arg : ""}`);
+        const result = await dispatchCommand(ctx, cmd.name, cmd.arg, cmd.parts);
+        if (result?.closed || replClosed) return;
+        if (result?.startTurn) {
+          if (result.prompt) {
+            ctx.messages.push({ role: "user", content: result.prompt });
+            await ctx.session.append({ type: "user", content: result.prompt });
+          }
+          if (!reportMissingKey(ctx.model) && !activeModelBlockedByHealth(ctx)) await runAgentTurns();
+        }
+      }
+      if (multi.skills.length) {
+        for (const skill of multi.skills) infoLine(skillLoadedLine(skill));
+        await applySkills(multi.skills, multi.text, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
+        if (!reportMissingKey(ctx.model) && !activeModelBlockedByHealth(ctx)) await runAgentTurns();
+      }
+      return showPrompt();
+    }
     // A prompt template expands into the text it stands for and then goes to
     // the agent exactly like something you typed (hooks, plan mode, router).
     let agentText = fullLine;
@@ -826,23 +888,122 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     showPrompt();
   }
 
-  // Submissions run one at a time; anything sent while a turn runs waits here.
-  function queueSubmittedText(rawText, opts) {
-    pendingSubmits++;
+  // Submissions run one at a time; anything sent while a turn runs waits in
+  // `queue`, where it can be edited, sent early or deleted (see queue.mjs).
+  function queueSubmittedText(rawText, { display = rawText } = {}) {
+    queue.add({ text: rawText, display, pastes: new Map(pastes) });
+    pump();
     renderFooter();
-    submitChain = submitChain
-      .then(() => {
-        pendingSubmits--;
-        return handleSubmittedText(rawText, opts);
-      })
-      .catch((e) => {
-        warnLine(e?.message || String(e));
-      });
-    return submitChain;
+  }
+
+  let pumping = false;
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
+    try {
+      let item;
+      while (!replClosed && (item = queue.next())) {
+        renderFooter();
+        try {
+          await handleSubmittedText(item.text, { display: item.display });
+        } catch (e) {
+          warnLine(e?.message || String(e));
+        }
+      }
+    } finally {
+      pumping = false;
+      renderFooter();
+    }
+  }
+
+  // Put `text` in the box with the caret at its end.
+  function setBoxLine(text) {
+    const t = String(text ?? "");
+    rl.line = t;
+    rl.cursor = t.length;
+    menuLastLine = t;
+    menuSelected = 0;
+  }
+
+  // A paste made while editing a queued prompt belongs to that prompt.
+  function absorbPastes() {
+    const item = queue.editing !== null ? queue.items[queue.editing] : null;
+    if (!item) return;
+    if (!item.pastes) item.pastes = new Map();
+    for (const [k, v] of pastes) item.pastes.set(k, v);
+  }
+
+  // A click on a queued prompt: its pencil (or its text) puts it in the box,
+  // its bin removes it.
+  function onQueueClick(x, y) {
+    const hit = footer?.hitTest(x, y);
+    if (!hit) return;
+    absorbPastes();
+    if (hit.action === "delete") {
+      const wasEditing = queue.editing === hit.index;
+      queue.remove(hit.index);
+      if (wasEditing) setBoxLine(queue.stop());
+      flashNote(`removed queued prompt #${hit.index + 1}`);
+      pump();
+    } else {
+      setBoxLine(queue.begin(hit.index, rl.line || ""));
+    }
+    renderFooter();
+  }
+
+  // Enter on a queued prompt in the box: send it now. Mid-turn, text goes to
+  // the running turn the way /btw does; a command that can't run mid-turn
+  // moves to the front of the queue instead. Idle, it simply runs.
+  function sendQueuedNow(input) {
+    absorbPastes();
+    if (!input.trim()) {
+      queue.remove(queue.editing);
+      setBoxLine(queue.stop());
+      flashNote("removed the emptied queued prompt");
+      pump();
+      return;
+    }
+    const { item, draft } = queue.take(input);
+    setBoxLine(draft);
+    const text = String(item.text || "").trim();
+    if (!ctx.currentAbort) {
+      queue.items.unshift(item);
+      pump();
+      return;
+    }
+    const btw = parseBtw(text);
+    const cmdName = btw === null && text.startsWith("/") ? text.slice(1).split(/\s+/)[0].toLowerCase() : "";
+    if (cmdName && INSTANT_WHILE_BUSY.has(cmdName)) {
+      const parts = text.split(/\s+/);
+      console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
+      Promise.resolve(dispatchCommand(ctx, cmdName, parts.slice(1).join(" "), parts))
+        .catch((e) => warnLine(e?.message || String(e)))
+        .finally(renderFooter);
+      return;
+    }
+    if (cmdName) {
+      queue.items.unshift(item);
+      flashNote(`/${cmdName} waits for the turn to end - it runs next`);
+      return;
+    }
+    const note = btw !== null ? btw : text;
+    if (!note) { renderFooter(); return; }
+    ctx.steerQueue.push(note);
+    console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
+    infoLine("↳ sent — Omi will read this at its next step");
+    renderFooter();
   }
 
   rl.on("line", (rawInput) => {
     let input = String(rawInput || "").replaceAll(PASTE_START, "").replaceAll(PASTE_END, "");
+    if (queue.editing !== null && !multiLine) {
+      menuShown = [];
+      sendQueuedNow(input);
+      // readline clears the box on Enter; give the draft back.
+      const draft = menuLastLine;
+      setImmediate(() => { if (!replClosed) { rl.line = draft; rl.cursor = draft.length; renderFooter(); } });
+      return;
+    }
     promptActive = false;
     // Enter runs whichever row is highlighted in the live "/" menu, not
     // necessarily the literal text typed (e.g. typed "/mod", arrowed to
@@ -890,6 +1051,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
 
   rl.on("close", async () => {
     replClosed = true;
+    syncMouse();
     if (onStdinData) process.stdin.off("data", onStdinData);
     if (footer) { footer.disable(); setStatusSink(null); }
     // Only worth saying when there is something to come back to.

@@ -19,6 +19,11 @@
 import { c } from "../ui.mjs";
 
 export const BOX_MAX_ROWS = 8;
+// Queued prompts listed above the box at once (the rest scroll with ↑/↓).
+export const QUEUE_MAX_ROWS = 5;
+
+export const ICON_EDIT = "✎";
+export const ICON_DELETE = "🗑";
 
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
@@ -36,6 +41,45 @@ export function fitVisible(s, max) {
   return Array.from(stripAnsi(s)).slice(0, Math.max(0, max - 1)).join("") + "…";
 }
 
+// The queued-prompt rows: a hint line, then one row per prompt ending in
+// ✎ and 🗑. `hits` says where those are (0-based row in the returned lines,
+// 1-based screen columns) so a mouse click can be matched to them.
+//
+// Rows are kept two columns short of `width`: 🗑 draws two columns wide in
+// most terminals but counts as one here, and the last column must stay free
+// (see the eager-wrap note above).
+export function formatQueueRows(items = [], { width = 79, selected = -1, max = QUEUE_MAX_ROWS } = {}) {
+  if (!items.length) return { lines: [], hits: [] };
+  const budget = Math.max(20, width - 1);
+  const textWidth = budget - 7;              // then "  ✎  🗑"
+  let start = 0;
+  if (items.length > max) {
+    const focus = selected >= 0 ? selected : items.length - 1;
+    start = Math.min(Math.max(0, focus - Math.floor(max / 2)), items.length - max);
+  }
+  const shown = items.slice(start, start + max);
+  const more = items.length > max ? ` · ${start + 1}-${start + shown.length} of ${items.length}` : "";
+  const hint = selected >= 0
+    ? `  editing #${selected + 1} · enter sends it now · ↑/↓ next · esc stops editing${more}`
+    : `  ${items.length} queued · ↑ to edit · click ${ICON_EDIT} edit · ${ICON_DELETE} delete${more}`;
+  const lines = [c.dim(fitVisible(hint, budget))];
+  const hits = [];
+  shown.forEach((raw, k) => {
+    const index = start + k;
+    const one = String(raw ?? "").replace(/\s*\n\s*/g, " ⏎ ");
+    const isSel = index === selected;
+    const label = `${isSel ? "›" : " "} ${index + 1}. ${one}`;
+    const cut = fitVisible(" " + label, textWidth);
+    const pad = " ".repeat(Math.max(0, textWidth - visibleLength(cut)));
+    const left = isSel ? c.bold(c.cyan(cut)) : cut;
+    lines.push(left + pad + "  " + c.cyan(ICON_EDIT) + "  " + c.red(ICON_DELETE));
+    const pencil = textWidth + 3;            // 1-based column of ✎
+    const trash = pencil + 3;                // and of 🗑 (two columns wide)
+    hits.push({ row: lines.length - 1, index, text: [1, textWidth], edit: [pencil - 1, pencil + 1], delete: [trash - 1, trash + 2] });
+  });
+  return { lines, hits };
+}
+
 // Pure: every row of the footer plus nothing else. The controller below only
 // decides where on screen these go.
 export function layoutFooter({
@@ -49,6 +93,8 @@ export function layoutFooter({
   note = "",
   highlight = 0,                         // leading chars of `line` to draw blue (a recognised /command)
   maxRows = BOX_MAX_ROWS,
+  queue = [],                            // queued prompts (display text), oldest first
+  queueSelected = -1,                    // the one being edited, or -1
 } = {}) {
   const width = Math.max(20, cols - 1);
   const inner = width - 4;               // "│ " + text + " │"
@@ -91,15 +137,30 @@ export function layoutFooter({
   const top = c.gray("╭" + "─".repeat(dashes)) + (noteText ? c.yellow(noteText) + c.gray("─") : "") + c.gray("╮");
   const bottom = c.gray("╰" + "─".repeat(width - 2) + "╯");
 
+  const q = formatQueueRows(queue, { width, selected: queueSelected });
   const lines = [
     fitVisible(activity, width),
+    ...q.lines,
     top,
     ...bodyRows,
     bottom,
     fitVisible(statusText, width),
     ...menuLines.map((l) => fitVisible(l, width)),
   ];
-  return { lines, caretRow: caretRow - first, caretCol };
+  // q.lines sit right under the activity line.
+  const hits = q.hits.map((h) => ({ ...h, row: h.row + 1 }));
+  return { lines, caretRow: caretRow - first, caretCol, hits };
+}
+
+// Which queued prompt a click at screen column x, footer row `row` (0-based
+// from the footer's first line) landed on: { index, action } or null.
+export function hitQueue(hits = [], row, x) {
+  const h = hits.find((t) => t.row === row);
+  if (!h) return null;
+  const inside = ([a, b]) => x >= a && x <= b;
+  if (inside(h.delete)) return { index: h.index, action: "delete" };
+  if (inside(h.edit) || inside(h.text)) return { index: h.index, action: "edit" };
+  return null;
 }
 
 // Screen controller. `getState()` returns layoutFooter's input minus `cols`.
@@ -107,6 +168,7 @@ export function createFooter({ out = process.stdout, getState } = {}) {
   let height = 0;        // rows currently reserved at the bottom (0 = none)
   let active = false;    // reserved + drawn
   let disabled = false;
+  let hits = [];         // queue click targets from the last render
 
   const rowsTotal = () => out.rows || 24;
   const write = (s) => { if (s) out.write(s); };
@@ -140,9 +202,10 @@ export function createFooter({ out = process.stdout, getState } = {}) {
     if (disabled) return;
     const H = rowsTotal();
     const st = getState ? getState() : {};
-    const { lines: all } = layoutFooter({ ...st, cols: out.columns || 80 });
+    const laid = layoutFooter({ ...st, cols: out.columns || 80 });
     // Never take more than the screen minus a few rows of output.
-    const lines = all.slice(0, Math.max(5, H - 3));
+    const lines = laid.lines.slice(0, Math.max(5, H - 3));
+    hits = laid.hits.filter((h) => h.row < lines.length);
     reserve(lines.length);
     active = true;
     const top = H - height + 1;
@@ -162,6 +225,7 @@ export function createFooter({ out = process.stdout, getState } = {}) {
     write(s);
     height = 0;
     active = false;
+    hits = [];
   }
 
   function resume() {
@@ -183,8 +247,14 @@ export function createFooter({ out = process.stdout, getState } = {}) {
     disabled = true;
   }
 
+  // A click at 1-based screen (x, y) on a queued prompt's row.
+  function hitTest(x, y) {
+    if (!active) return null;
+    return hitQueue(hits, y - (rowsTotal() - height + 1), x);
+  }
+
   return {
-    render, suspend, resume, onResize, disable,
+    render, suspend, resume, onResize, disable, hitTest,
     get active() { return active; },
     get height() { return height; },
   };

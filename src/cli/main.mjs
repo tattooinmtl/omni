@@ -18,7 +18,7 @@ import { registerMcpProxy, disconnectAll as disconnectMcpServers } from "../inte
 import { registerNimToolsProxy, disconnectBridge } from "../integrations/bridge.mjs";
 import { classifyIntent, warmSidecar, killSidecar } from "../integrations/router.mjs";
 import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
-import { applySkill, reportMissingKey, reportInsecureEndpoint, maskKey, evictEphemeralSkillMessages } from "./helpers.mjs";
+import { applySkill, applySkills, reportMissingKey, reportInsecureEndpoint, maskKey, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
@@ -28,7 +28,7 @@ import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs"
 import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.mjs";
 import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
-import { dispatchCommand, findCommand, skillLoadedLine, slashKind } from "./commands.mjs";
+import { dispatchCommand, findCommand, skillLoadedLine, slashKind, parseSlashLine } from "./commands.mjs";
 import { loadScannedSkills, applySkillIndexSetting } from "../core/skill-index.mjs";
 import { loadInstructions } from "../core/instructions.mjs";
 import { loadHooks, runHooks, submitPromptHooks } from "../core/hooks.mjs";
@@ -411,7 +411,12 @@ export async function main(args) {
     const firstWord = promptArg.split(/\s+/)[0];
     const kind = slashKind(ctx, firstWord);
     const skill = kind === "skill" ? skillByCommand.get(firstWord) : null;
-    if (skill) {
+    // `omni -p "/a /b do X"`: every skill named loads for the one prompt.
+    const multi = parseSlashLine(ctx, promptArg);
+    if (multi && !multi.commands.length) {
+      for (const sk of multi.skills) infoLine(skillLoadedLine(sk));
+      await applySkills(multi.skills, multi.text, messages, session, { contextMode: ctx.contextMode });
+    } else if (skill) {
       infoLine(skillLoadedLine(skill));
       await applySkill(skill, promptArg.slice(firstWord.length).trim(), messages, session, { contextMode: ctx.contextMode });
     } else {

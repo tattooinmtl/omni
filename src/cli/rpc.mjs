@@ -31,8 +31,8 @@ import { submitPromptHooks } from "../core/hooks.mjs";
 import { getPermissionMode, setPermissionMode, modeLabel } from "../core/permission-mode.mjs";
 import { Checkpointer } from "../core/checkpoints.mjs";
 import { streamSessionEvents } from "./headless.mjs";
-import { dispatchCommand, slashKind, findCommand } from "./commands.mjs";
-import { applySkill, evictEphemeralSkillMessages } from "./helpers.mjs";
+import { dispatchCommand, slashKind, findCommand, parseSlashLine } from "./commands.mjs";
+import { applySkill, applySkills, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { expandTemplate } from "../core/templates.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
 
@@ -65,7 +65,10 @@ export async function startRpc(ctx, { emit, input = process.stdin, onExit = () =
     if (!line) throw new Error("text is required");
     const head = line.split(/\s+/)[0];
     const kind = line.startsWith("/") ? slashKind(ctx, line) : "text";
-    if (kind === "skill") {
+    const multi = parseSlashLine(ctx, line);
+    if (multi && !multi.commands.length) {
+      await applySkills(multi.skills, multi.text, ctx.messages, ctx.session, { contextMode: ctx.contextMode });
+    } else if (kind === "skill") {
       await applySkill(ctx.skillByCommand.get(head), line.slice(head.length).trim(), ctx.messages, ctx.session, { contextMode: ctx.contextMode });
     } else {
       const body = kind === "template" ? expandTemplate(ctx.templates.get(head.toLowerCase()), line.slice(head.length)) : line;

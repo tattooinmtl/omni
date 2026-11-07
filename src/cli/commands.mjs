@@ -1593,3 +1593,37 @@ export async function dispatchCommand(ctx, cmdName, arg, parts) {
     errorLine(e.message || String(e));
   }
 }
+
+// Split a prompt that names several /commands or /skills.
+//
+//   /clear /model fake/two            → two commands, run in order
+//   /brainstorming /python a snake game → both skills loaded, one turn on the text
+//   /compact /review check auth.mjs   → /compact runs, then the review skill
+//
+// Leading /commands each take the words up to the next recognised /name.
+// After that, every recognised /skill anywhere in the text is loaded and taken
+// out of the text; other /words (paths like /tmp, unknown names) stay put.
+// Returns null when the line names at most one, so the usual path handles it.
+export function parseSlashLine(ctx, line) {
+  const tokens = String(line || "").trim().split(/\s+/).filter(Boolean);
+  const kindOf = (t) => (t.length > 1 && t.startsWith("/") ? slashKind(ctx, t) : "unknown");
+  const commands = [];
+  let i = 0;
+  while (i < tokens.length && kindOf(tokens[i]) === "command") {
+    const head = tokens[i++];
+    const args = [];
+    while (i < tokens.length && kindOf(tokens[i]) === "unknown") args.push(tokens[i++]);
+    commands.push({ name: head.slice(1), arg: args.join(" "), parts: [head, ...args] });
+  }
+  const skills = [];
+  const words = [];
+  for (; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (kindOf(t) === "skill") {
+      const skill = ctx.skillByCommand.get(t);
+      if (!skills.includes(skill)) skills.push(skill);
+    } else words.push(t);
+  }
+  if (commands.length + skills.length < 2) return null;
+  return { commands, skills, text: words.join(" ") };
+}

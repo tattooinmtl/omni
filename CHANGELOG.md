@@ -8,9 +8,31 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.42 — 2026-11-07
+
+- **Shipped:** this PR · TattooAI/omni-queued-prompts-edit-094754 · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Queued prompts are a list you can work with.** What you send while Omi
+  works now shows above the prompt box, one row per prompt, each ending in
+  ✎ and 🗑. ↑ on an empty box picks the newest one and puts it in the box;
+  ↑/↓ walk the list (edits are kept as you move), ↓ past the newest gives
+  your draft back, Esc stops editing without interrupting the turn.
+  Enter sends the selected prompt right now: mid-turn it reaches the running
+  turn like `/btw`, a command that has to wait moves to the front. Clicking
+  ✎ (or the text) edits a prompt, clicking 🗑 deletes it. Mouse clicks are
+  only captured while something is queued (Shift+drag still selects text;
+  `OMNI_MOUSE=0` turns clicks off). Nothing queued runs while you edit, so
+  the order you see is the order they run in.
+- **Several /commands and /skills in one prompt.** `/brainstorming /python
+  make a game` loads both skills for one turn; `/clear /model x /review
+  check auth` runs the commands in order, then the skill. Skills named
+  anywhere in the text are picked up; paths like `/tmp` stay as text. Works
+  in the REPL, `omni -p` and the RPC mode.
+- Tests: `tests/prompt-queue.test.mjs` pins the queue editing, the footer
+  rows and click targets, mouse parsing, and the multi-/name parsing.
+
 ## 3.5.41 — 2026-11-05
 
-- **Shipped:** this PR · TattooAI/installer-count · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
+- **Shipped:** [#54](https://github.com/tattooinmtl/omni/pull/54) · `1851620` · TattooAI/installer-count · session `0f80b8bc-8a58-48be-8dbb-553cc1b403f2`
 - **Fix: every update ended in "ERROR: install failed - The property 'Count'
   cannot be found on this object".** With no local AI chosen (the default) or
   the CPU build only, the installer's list of llama.cpp builds came back from
