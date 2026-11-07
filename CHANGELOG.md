@@ -8,9 +8,24 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.43 — 2026-11-07
+
+- **Shipped:** this PR · TattooAI/installer-filehash · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Fix: `/update-omni` failed with "Get-FileHash is not recognized" when Omni
+  was started from a PowerShell 7 terminal.** The updater runs the installer
+  in Windows PowerShell 5.1, which inherited PowerShell 7's `PSModulePath`,
+  found PowerShell 7's own copy of the Utility module first and could not
+  load it. Now, in every PowerShell: `/update-omni` starts the installer with
+  no inherited module path, the installer drops PowerShell 7's module
+  folders when it runs under 5.1, and it hashes files with .NET instead of
+  `Get-FileHash`.
+- Tests: `tests/installer-powershells.test.mjs` runs the installer's helpers
+  under each PowerShell found (5.1 and 7), with and without PowerShell 7's
+  module path.
+
 ## 3.5.42 — 2026-11-07
 
-- **Shipped:** this PR · TattooAI/omni-queued-prompts-edit-094754 · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Shipped:** [#55](https://github.com/tattooinmtl/omni/pull/55) · `612d0b8` · TattooAI/omni-queued-prompts-edit-094754 · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
 - **Queued prompts are a list you can work with.** What you send while Omi
   works now shows above the prompt box, one row per prompt, each ending in
   ✎ and 🗑. ↑ on an empty box picks the newest one and puts it in the box;

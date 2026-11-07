@@ -86,13 +86,39 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Windows PowerShell 5.1 started from PowerShell 7 (Omni launched from a pwsh
+# terminal, then /update-omni) inherits pwsh's PSModulePath, which lists
+# PowerShell 7's own modules first. 5.1 then finds the 7-only copy of
+# Microsoft.PowerShell.Utility, can't load it, and its cmdlets (Get-FileHash,
+# Invoke-RestMethod, ConvertFrom-Json, ...) are "not recognized". Drop the
+# PowerShell 7 folders so 5.1 loads its own. Nothing to do under pwsh 6/7.
+function Repair-ModulePath {
+  if ($PSVersionTable.PSEdition -eq "Core" -or -not $env:PSModulePath) { return }
+  $keep = @($env:PSModulePath -split ";" | Where-Object {
+    $_ -and -not ($_ -like "*\PowerShell\*" -and $_ -notlike "*\WindowsPowerShell\*") -and $_ -notlike "*\microsoft.powershell_*"
+  })
+  $system = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules"
+  if (-not ($keep -contains $system)) { $keep += $system }
+  $env:PSModulePath = $keep -join ";"
+}
+Repair-ModulePath
+
+# SHA-256 of a file, by .NET directly: works in every PowerShell (5.1, 6, 7)
+# whatever modules it can load.
+function Get-Sha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $stream = [System.IO.File]::OpenRead($Path)
+  try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "") }
+  finally { $stream.Dispose(); $sha.Dispose() }
+}
+
 # This file as it was when it started. PowerShell keeps running the copy it
 # loaded, so after the update replaces install\install.ps1, the rest of the
 # run is still the old installer, bugs and all (3.5.40's .Count failure
 # outlived its fix by one update). Compared after the update to hand off to
 # the new copy (see Invoke-NewInstaller). No hash when run from memory (the
 # web one-liner), which always fetches the latest anyway.
-$script:StartHash = if ($PSCommandPath -and (Test-Path $PSCommandPath)) { (Get-FileHash -Algorithm SHA256 $PSCommandPath).Hash } else { $null }
+$script:StartHash = if ($PSCommandPath -and (Test-Path $PSCommandPath)) { Get-Sha256 $PSCommandPath } else { $null }
 
 function Info([string]$Message) {
   Write-Host "[Omni Installer] $Message"
@@ -473,7 +499,7 @@ function Test-InstallerChanged([string]$StartHash, [string]$Root) {
   if (-not $StartHash) { return $false }
   $new = Join-Path $Root "install\install.ps1"
   if (-not (Test-Path $new)) { return $false }
-  return (Get-FileHash -Algorithm SHA256 $new).Hash -ne $StartHash
+  return (Get-Sha256 $new) -ne $StartHash
 }
 
 # Run the new installer for everything after the update, in the same
