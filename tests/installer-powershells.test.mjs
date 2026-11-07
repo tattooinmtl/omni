@@ -12,6 +12,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -61,7 +62,7 @@ if (process.platform !== "win32" || !shells.length) {
       "Set-StrictMode -Version Latest",
       "$ErrorActionPreference = 'Stop'",
       `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${q(script)}', [ref]$null, [ref]$null)`,
-      "$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Repair-ModulePath','Get-Sha256') }, $true)",
+      "$fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Repair-ModulePath','Get-Sha256','Info','ConvertTo-PsLiteral','Get-HandoffArgs','Get-HandoffCommand','Test-InstallerChanged','Invoke-NewInstaller') }, $true)",
       "foreach ($f in $fns) { . ([ScriptBlock]::Create($f.Extent.Text)) }",
       body,
     ].join("; ");
@@ -84,6 +85,21 @@ if (process.platform !== "win32" || !shells.length) {
         assert.match(out, /WEB=True/, out);
       });
     }
+
+    // The hand-off to an updated installer, in this same PowerShell: an
+    // empty -ModelsDir '' must arrive as '' (5.1 used to drop it), from a
+    // folder with a space in its name.
+    await ok(`${exe}: the hand-off passes -ModelsDir '' and the exit code through`, () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni handoff-"));
+      fs.mkdirSync(path.join(dir, "install"));
+      fs.writeFileSync(path.join(dir, "install", "install.ps1"),
+        String.raw`param([string]$InstallDir, [string]$ModelsDir = 'C:\models', [switch]$SkipLink, [switch]$NoUpdate)` + "\r\n" +
+        `"BOUND models=[$ModelsDir] skip=$SkipLink noupdate=$NoUpdate dir=[$InstallDir]"` + "\r\nexit 3\r\n");
+      const out = run(exe, `$script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${q(dir)}' ([ordered]@{ ModelsDir = ''; SkipLink = [switch]$true }); 'RESULT=' + $r`, { ...process.env });
+      fs.rmSync(dir, { recursive: true, force: true });
+      assert.ok(out.includes(`BOUND models=[] skip=True noupdate=True dir=[${dir}]`), out);
+      assert.match(out, /RESULT=3/, out);
+    });
   }
 }
 

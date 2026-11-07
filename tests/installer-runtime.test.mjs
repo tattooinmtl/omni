@@ -87,7 +87,7 @@ if (!ps) {
   // `nvidia`: true/false stubs Test-NvidiaGpu; undefined keeps the real one
   // (the timeout tests drive it with fake nvidia-smi scripts on PATH).
   const runLlama = (body, { nvidia, pathPrefix } = {}) => {
-    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Test-InstallerChanged", "Invoke-NewInstaller", "Get-Sha256"];
+    const fns = ["Info", "Get-LocalVersion", "Resolve-LlamaBuilds", "Install-LlamaBuilds", "Test-NvidiaGpu", "Get-HandoffArgs", "Get-HandoffCommand", "ConvertTo-PsLiteral", "Test-InstallerChanged", "Invoke-NewInstaller", "Get-Sha256"];
     const cmd = [
       // Like install.ps1 itself: without it, $null.Count is 0 and the bug hides.
       "Set-StrictMode -Version Latest",
@@ -181,7 +181,22 @@ if (!ps) {
 
   await ok("the new installer gets the same choices, the same folder and -NoUpdate", () => {
     const out = runLlama("$b = [ordered]@{ Llama = 'cpu'; SkipLink = [switch]$true; Force = [switch]$false; NoUpdate = [switch]$true; InstallDir = 'X' }; 'ARGS=' + ((Get-HandoffArgs $b 'C:\\omni') -join '|')");
-    assert.match(out, /ARGS=-Llama\|cpu\|-SkipLink\|-InstallDir\|C:\\omni\|-NoUpdate/, out);
+    assert.match(out, /ARGS=-Llama\|'cpu'\|-SkipLink\|-InstallDir\|'C:\\omni'\|-NoUpdate/, out);
+  });
+
+  await ok("an empty -ModelsDir '' (what /update-omni passes) reaches the new installer intact", () => {
+    // A stub with the real installer's kind of param block: 5.1 used to drop
+    // the empty value and the binder stopped on "Missing an argument".
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omni handoff-"));
+    fs.mkdirSync(path.join(dir, "install"));
+    fs.writeFileSync(path.join(dir, "install", "install.ps1"),
+      "param([string]$InstallDir, [string]$ModelsDir = 'C:\\models', [switch]$SkipLink, [switch]$NoUpdate)\r\n" +
+      "\"BOUND models=[$ModelsDir] skip=$SkipLink noupdate=$NoUpdate dir=[$InstallDir]\"\r\nexit 3\r\n");
+    const out = runLlama(`$script:StartHash = 'OLD'; $r = Invoke-NewInstaller '${dir}' ([ordered]@{ ModelsDir = ''; SkipLink = [switch]$true }); 'RESULT=' + $r`);
+    assert.ok(out.includes(`BOUND models=[] skip=True noupdate=True dir=[${dir}]`), out);
+    assert.match(out, /RESULT=3/, out);
+    assert.doesNotMatch(out, /Missing an argument/, out);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await ok("a changed installer takes over after the update, and its exit code is the result", () => {

@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.44 — 2026-11-07
+## 3.5.45 — 2026-11-07
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,26 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.44 — 2026-11-07
+
+- **Shipped:** [#57](https://github.com/tattooinmtl/omni/pull/57) · `6e9014d` · TattooAI/installer-handoff-args · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Fix: updating from 3.5.41 ended in "Missing an argument for parameter
+  'ModelsDir'".** When an update changes the installer, the running one hands
+  the rest of the work to the new copy. It passed its arguments as plain
+  process arguments, and Windows PowerShell 5.1 drops the empty
+  `-ModelsDir ''` that `/update-omni` always sends, so the new installer
+  stopped before finishing the setup. The hand-off now sends one encoded
+  command with every value quoted, so it arrives intact in every PowerShell,
+  from folders with spaces too. A 3.5.41 install that already hit this
+  finishes the setup on a second `/update-omni` (that run uses the new
+  installer).
+- README: what to do when stuck on 3.5.41's "Get-FileHash is not recognized"
+  (update once with the one-liner, or from Windows PowerShell or cmd), and
+  the prompt box section now covers the editable queue and several /names
+  per prompt.
+- Tests: the hand-off passes `-ModelsDir ''` and the exit code through, run
+  under each PowerShell found (5.1 and 7).
 
 ## 3.5.43 — 2026-11-07
 

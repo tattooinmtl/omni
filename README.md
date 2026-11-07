@@ -151,6 +151,20 @@ streams its output. `/update-omni check` only reports. Restart Omni afterwards
 to load the new code. Omni also checks once a day by itself and says so at
 startup when an update is waiting.
 
+**Stuck on 3.5.41 with "Get-FileHash is not recognized"?** That version's
+updater fails when Omni was started from a PowerShell 7 (`pwsh`) terminal, and
+since it is the copy you have, `/update-omni` can't fix itself. Update once by
+hand, from any terminal:
+
+```powershell
+irm https://omni.globalwarningnetworks.com/install.ps1 | iex
+```
+
+or start Omni from Windows PowerShell or cmd and run `/update-omni` there.
+From 3.5.43 on, updating works from every PowerShell. If an update says the
+files moved but the installer then failed, run `/update-omni` once more: the
+second run uses the new installer and finishes the setup.
+
 ### Optional runtime pack
 
 Portable tools Omni uses when they are there, installed into Omni's own
@@ -369,8 +383,17 @@ The input box is pinned to the bottom of the terminal, with Omi's status line
 above it and the context/model bar below. Output scrolls above the box, and the
 box stays usable while the agent works:
 
-- **Enter while the agent works** queues your message (the border shows
-  `1 queued`); it runs as soon as the current turn ends.
+- **Enter while the agent works** queues your message; it runs as soon as
+  the current turn ends. Queued prompts are listed above the box, each with
+  ✎ (edit) and 🗑 (delete) you can click.
+- **↑ on an empty box** opens the newest queued prompt for editing; ↑/↓ walk
+  the queue (edits are kept), ↓ past the newest gives your draft back.
+  **Enter** sends the open prompt right now (into the running turn, like
+  `/btw`), **Esc** stops editing. Clicks are captured only while something is
+  queued; Shift+drag still selects text, `OMNI_MOUSE=0` turns clicks off.
+- **Several /commands and /skills in one prompt:** `/brainstorming /python
+  make a game` loads both skills for one turn; leading commands
+  (`/clear /model x …`) run in order first.
 - **`/btw <note>` while the agent works** goes straight into the running turn.
   The agent reads it at its next step and adjusts without stopping. `/help`,
   `/status`, `/cost` and `/version` also run right away; other commands wait
