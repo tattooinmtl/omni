@@ -114,6 +114,16 @@ export function skillInvocationPrompt(skill, arg) {
     : `${loaded} No task was given with it, so reply briefly: say in a sentence or two what this skill helps with, then ask what the user wants to do with it.`;
 }
 
+// Several skills for one task (/a /b do X): every body is loaded, then one
+// invocation names them all.
+export async function applySkills(skills, arg, msgs, sess, opts = {}) {
+  if (skills.length === 1) return applySkill(skills[0], arg, msgs, sess, opts);
+  for (const skill of skills) await applySkill(skill, arg, msgs, sess, { ...opts, quiet: true });
+  const names = skills.map((s) => `${s.command} ("${s.name}")`).join(", ");
+  const loaded = `The user typed ${names} — those skills' instructions are already loaded above; do not call invoke_skill for them. Use them together`;
+  msgs.push(syntheticUser(arg ? `${loaded} for this task: ${arg}` : `${loaded}. No task was given with them, so reply briefly: say what they help with together, then ask what the user wants to do.`, { userText: arg }));
+}
+
 export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   rememberSkillBody(skill);
   if (skill.learned) { try { recordSkillUse(skill.name); } catch { /* usage is advisory */ } }
@@ -155,7 +165,7 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   const skillMsg = { role: "system", content: systemContent };
   markEphemeralSkill(skillMsg);
   msgs.push(skillMsg);
-  msgs.push(syntheticUser(skillInvocationPrompt(skill, arg), { userText: arg }));
+  if (!opts.quiet) msgs.push(syntheticUser(skillInvocationPrompt(skill, arg), { userText: arg }));
   await sess.append({ type: "skill", skill: skill.name, arg, contextMode });
 }
 
