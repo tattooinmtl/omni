@@ -29,6 +29,12 @@ if (!exe) {
   console.log("  SKIP no Chromium-family browser installed");
   process.exit(0);
 }
+// browser_use talks to the browser over Node's built-in WebSocket (Node 21+)
+// and says so on older Nodes; that refusal is the intended behaviour there.
+if (typeof WebSocket === "undefined") {
+  console.log(`  SKIP browser_use needs Node 21+ (this is ${process.version})`);
+  process.exit(0);
+}
 
 delete process.env.OMNI_BROWSER_GPU; // default launch: software rendering, no sandbox
 const ext = (await import(pathToFileURL(path.join(root, "extensions/browser-use.js")).href)).default.impl;

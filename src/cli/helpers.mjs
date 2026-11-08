@@ -130,7 +130,10 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
   const contextMode = opts.contextMode || "classic";
   let systemContent;
   if (contextMode === "lean" && skill.body && skill.body.length > 800) {
-    const chunks = chunkSkillBody(skill.body);
+    // The tool-name note of a ported skill (core/ported-skills.mjs) must
+    // survive the cut, so rank the rest and put the note back in front.
+    const note = skill.toolNote && skill.body.startsWith(skill.toolNote) ? skill.toolNote : "";
+    const chunks = chunkSkillBody(note ? skill.body.slice(note.length) : skill.body);
     // Rank against the arg first, then fall back to whatever the latest
     // user turn was — an "invoke with no args" call still deserves the
     // most relevant sections, ranked against the standing conversation.
@@ -157,6 +160,7 @@ export async function applySkill(skill, arg, msgs, sess, opts = {}) {
     kept.sort((a, b) => chunks.indexOf(a) - chunks.indexOf(b));
     systemContent =
       `# Skill: ${skill.name} (lean-distilled ${kept.length}/${chunks.length} sections)\n` +
+      (note ? note + "\n" : "") +
       kept.join("\n\n") +
       `\n\n[Full skill available — reply "/expand-skill ${skill.name}" to load it in full.]`;
   } else {
