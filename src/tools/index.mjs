@@ -3165,6 +3165,10 @@ const CRITIC_PROMPT = [
   "Do not invent problems to look thorough — a fabricated finding wastes more time than it saves. Report what you can point at in the code.",
 ].join("\n");
 
+// A failed critique that a different model could get past: an HTTP 429, or a
+// throttling/quota message from a provider that doesn't prefix its status.
+const RATE_LIMIT_ERROR = /^Provider 429\b|too many requests|rate.?limit|ResourceExhausted|\bquota\b/i;
+
 // diffText: review this diff instead of taking one from git (merge_agent
 // passes a sub-agent branch's diff).
 async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, focus, timeout_ms = 240000, diffText = null }) {
@@ -3248,8 +3252,13 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(30000, Math.min(Number(timeout_ms) || 240000, 600000)));
-  const critique = (m) => runTurn({
+  // With somewhere better to go, a rate-limited named model is left at once
+  // rather than backed off for ~93s first.
+  const sessionKey = _sessionCtx?.model?.key;
+  const canFallBack = Boolean(sessionKey && sessionKey !== resolved.key);
+  const critique = (m, failFast = false) => runTurn({
     model: m,
+    rateLimitFailFast: failFast,
     settings,
     messages,
     session: new Session({ kind: "review" }),
@@ -3260,13 +3269,12 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
     confirmTool: null,
   });
   try {
-    let out = await critique(resolved);
+    let out = await critique(resolved, canFallBack);
     // A model the author picked for a second opinion is rate-limited (often a
     // free tier whose daily quota is spent): review on the session's own model
     // rather than return nothing. It is the same model as the author, which is
     // weaker than a second opinion but far better than no review.
-    const sessionKey = _sessionCtx?.model?.key;
-    if (out?.stop === "error" && /^Provider 429\b/.test(out.error || "") && sessionKey && sessionKey !== resolved.key && !controller.signal.aborted) {
+    if (out?.stop === "error" && RATE_LIMIT_ERROR.test(out.error || "") && canFallBack && !controller.signal.aborted) {
       fellBackFrom = { key: resolved.key, error: String(out.error).split("\n")[0].slice(0, 160) };
       resolved = resolveModel(settings, sessionKey);
       messages = freshMessages();
@@ -3354,7 +3362,9 @@ function spawnSubAgent({ prompt, model, name, agent: agentName, isolation, permi
     try {
       if (worktree) {
         const out = await runHeadlessAgent({
-          cwd: worktree.cwd, prompt, model: model || agent?.model || null, agent: agent?.name || null,
+          // Name the model: the child process would otherwise pick its own
+          // last-good/default, not the model this session is on.
+          cwd: worktree.cwd, prompt, model: model || agent?.model || _sessionCtx?.model?.key || null, agent: agent?.name || null,
           mode: childMode(), signal: rec.controller.signal,
         });
         if (rec.controller.signal.aborted) throw new Error("stopped");

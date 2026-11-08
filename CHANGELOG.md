@@ -17,14 +17,18 @@ entries were rebuilt from git history).
   every review to xKiro's free tier. Once xKiro's 500k-token daily free
   quota was spent, the critic hit 429 "today's free-model token quota" five
   times over ~93s and came back empty, while MiniMax still had most of its
-  5-hour window. In-process `spawn_agent` sub-agents had the same fallback
-  and get the same fix.
-- If the model named for a review is rate-limited, the review runs on the
-  session's own model and says so, instead of returning nothing. An empty
-  review now gives the provider's reason.
-- A 429 that says a daily quota is spent ("today's … quota", "exceeded your
-  current quota") is no longer retried with 3s→48s backoff. Account rotation
-  and the failover chain still get their turn first.
+  5-hour window. `spawn_agent` sub-agents had the same fallback and get the
+  same fix, in-process and in a worktree (the child process is now told the
+  session's model instead of picking its own).
+- If the model named for a review is rate-limited (any 429, or a throttle or
+  quota message without a status), the review moves to the session's own
+  model at once, without backing off first, and says so, instead of
+  returning nothing. An empty review now gives the provider's reason.
+- A 429 that says a daily quota is spent ("today's … quota", with a straight
+  or curly apostrophe, "exceeded your current quota") is no longer retried
+  with 3s→48s backoff. Account rotation and the failover chain still get
+  their turn first, and when the chain runs out its error now carries the
+  provider's last message.
 - **A key with no credits sees only the models it can run.** An OpenRouter
   key that never bought credits, or an xKiro account with no plan and an
   empty wallet, can only run free models, yet `/model` and `/models` listed

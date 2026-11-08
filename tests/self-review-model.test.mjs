@@ -43,11 +43,14 @@ const server = http.createServer((req, res) => {
     let model = "";
     try { model = JSON.parse(body).model; } catch { /* keep "" */ }
     seen.push(model);
-    if (model === "free-model") {
-      res.writeHead(429, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "You've reached today's free-model token quota. Your quota resets at 00:00 UTC." } }));
-      return;
-    }
+    const fail = (status, message) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message } })); };
+    if (model === "free-model") return fail(429, "You've reached today's free-model token quota. Your quota resets at 00:00 UTC.");
+    // Curly apostrophe, as some providers write it.
+    if (model === "curly-model") return fail(429, "You’ve reached today’s token quota.");
+    // An ordinary throttle: no quota wording, would be backed off for ~93s.
+    if (model === "busy-model") return fail(429, "Too many requests, slow down.");
+    // Anything but the paid model is a bug in the code under test.
+    if (model !== "paid-model") return fail(400, `unexpected model ${model}`);
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
     send({ choices: [{ delta: { content: "Checked the file.\nVERDICT: CLEAN" }, finish_reason: null }] });
@@ -70,6 +73,8 @@ fs.writeFileSync(path.join(tmpHome, "settings.json"), JSON.stringify({
   models: {
     "free/m": { provider: "free", id: "free-model", maxTokens: 256, contextWindow: 32768 },
     "paid/m": { provider: "paid", id: "paid-model", maxTokens: 256, contextWindow: 32768 },
+    "curly/m": { provider: "free", id: "curly-model", maxTokens: 256, contextWindow: 32768 },
+    "busy/m": { provider: "free", id: "busy-model", maxTokens: 256, contextWindow: 32768 },
   },
 }, null, 2));
 
@@ -94,6 +99,12 @@ try {
     assert.equal(subRunModelKey(settings), "free/m");
   });
 
+  await ok("a worktree sub-agent is handed the session's model, not left to pick its own", () => {
+    const src = fs.readFileSync(path.join(root, "src", "tools", "index.mjs"), "utf8");
+    const call = src.slice(src.indexOf("await runHeadlessAgent({"), src.indexOf("await runHeadlessAgent({") + 400);
+    assert.match(call, /model: model \|\| agent\?\.model \|\| _sessionCtx\?\.model\?\.key/, "the child process would fall back to its own last-good/default");
+  });
+
   await ok("with no model named, the critic runs on the session's model, not defaultModel", async () => {
     setSessionCtx({ model: resolveModel(settings, "paid/m") });
     seen.length = 0;
@@ -101,6 +112,7 @@ try {
     assert.match(out, /by paid\/m/, out.slice(0, 200));
     assert.match(out, /VERDICT: CLEAN/);
     assert.ok(!seen.includes("free-model"), `defaultModel was called: ${seen.join(",")}`);
+    assert.deepEqual(seen, ["paid-model"], "the session's model must be the one asked");
   });
 
   await ok("a named model out of quota falls back to the session's model, quickly", async () => {
@@ -112,8 +124,29 @@ try {
     assert.match(out, /free\/m was rate-limited/, out.slice(0, 200));
     assert.match(out, /paid\/m/);
     assert.match(out, /VERDICT: CLEAN/);
-    assert.equal(seen.filter((m) => m === "free-model").length, 1, `daily-quota 429 was retried: ${seen.join(",")}`);
+    assert.deepEqual(seen, ["free-model", "paid-model"], `daily-quota 429 was retried, or the fallback asked the wrong model: ${seen.join(",")}`);
     assert.ok(ms < 15000, `took ${ms}ms — the spent quota was waited on with backoff`);
+  });
+
+  await ok("an ordinary 429 on a named model falls back at once instead of backing off", async () => {
+    setSessionCtx({ model: resolveModel(settings, "paid/m") });
+    seen.length = 0;
+    const t0 = Date.now();
+    const out = String(await review({ model: "busy/m" }));
+    assert.match(out, /busy\/m was rate-limited/, out.slice(0, 200));
+    assert.deepEqual(seen, ["busy-model", "paid-model"]);
+    assert.ok(Date.now() - t0 < 15000, "a model with a fallback must not be backed off first");
+  });
+
+  await ok("a quota message with a curly apostrophe is not backed off either", async () => {
+    setSessionCtx(null);
+    seen.length = 0;
+    const t0 = Date.now();
+    const out = String(await review({ model: "curly/m" }));
+    assert.match(out, /UNREVIEWED/);
+    assert.match(out, /quota/);
+    assert.deepEqual(seen, ["curly-model"], "today’s quota must not be retried");
+    assert.ok(Date.now() - t0 < 15000);
   });
 
   await ok("with nothing to fall back to, a spent quota reports UNREVIEWED with the reason", async () => {

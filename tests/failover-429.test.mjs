@@ -119,6 +119,8 @@ async function main() {
         String(errorEvent.message || ""),
         /failover chain exhausted \(nvidia:nvidia1 -> agnes:agnes1 -> nvidia:nvidia2 -> agnes:agnes2 -> openrouter\)/
       );
+      // The provider's own reason survives (a spent daily quota says so).
+      assert.match(String(errorEvent.message || ""), /Last error: Too many requests \(test 429\)/);
     });
 
     const checkpoints = session.records.filter((r) => r.type === "interrupt_checkpoint");
