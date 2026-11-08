@@ -1,6 +1,6 @@
 {
   "name": "omni-agent",
-  "version": "3.5.49",
+  "version": "3.6.0",
   "private": true,
   "type": "module",
   "description": "OMNI-AGENT - Omni-present harness for agents",

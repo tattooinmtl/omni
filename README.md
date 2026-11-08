@@ -235,9 +235,25 @@ refuses `max_tokens` and names its limit is retried with it.
 /doctor                       probe the active model and save its health
 /probe-contexts               detect every model's real context window
 /disconnect nvidia            clear a key so you can reconnect with another
+/usage                        the active provider's usage, balance and rate limits
 ```
 
 The last model you used is restored on the next launch.
+
+**`/usage`** (also `/limits`, `/quota`) asks the active provider what it
+knows about your key. It shows two kinds of information:
+
+- **Balance and spending**, from providers that publish them for an ordinary
+  API key. OpenRouter reports what you spent (today, this week, this month),
+  the key's limit and what is left of it, free tier, and remaining credits.
+  DeepSeek and Kimi/Moonshot report the account balance. Other providers have
+  no such API (or need an admin key), and `/usage` says so. A gateway that
+  copies one of these APIs can name it in settings.json with
+  `"usageApi": "openrouter"`, `"deepseek"` or `"moonshot"`.
+- **Rate limits**, from the last reply. Most providers send what is left of
+  their per-minute or per-day request and token limits, and when they reset,
+  with every answer. Omni keeps the latest per provider and account, so
+  `/usage` shows them after your first message.
 
 ## Usage
 
@@ -331,7 +347,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 
 | Category | Commands |
 |---|---|
-| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
+| Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
@@ -358,7 +374,7 @@ box stays usable while the agent works:
   (`/clear /model x …`) run in order first.
 - **`/btw <note>` while the agent works** goes straight into the running turn.
   The agent reads it at its next step and adjusts without stopping. `/help`,
-  `/status`, `/cost` and `/version` also run right away; other commands wait
+  `/status`, `/cost`, `/usage` and `/version` also run right away; other commands wait
   in the queue.
 - **Esc** interrupts the turn, including a running shell command. Arrow keys
   don't interrupt; they edit and recall history.
