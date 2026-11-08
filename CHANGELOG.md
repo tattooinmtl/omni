@@ -8,9 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.48 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/minimax-cap-500 · session `71644163-382c-4fbb-9817-64a848b83c09`
+- **MiniMax runs up to 500 tool rounds per prompt (was 200).** The 200 cap
+  rested on "MiniMax allows 200 calls per 5 hours", which is wrong: a real
+  session made 420 rounds (466 tool calls) before MiniMax answered 429, so
+  the cap only made the user type "continue" twice. 500 lets one prompt use
+  the whole quota; MiniMax's own 429 (and Omni's failover) stops a run that
+  outlasts it. Only MiniMax changes: every other provider keeps its cap.
+- **Existing installs get it too.** The old 200 was saved into
+  `settings.json` on the `minimax.io` provider and each MiniMax model, and a
+  saved entry beats the shipped one. Loading settings now lifts exactly 200
+  on MiniMax to 500; any other number you set yourself is kept.
+- Tests: `tests/max-tool-iterations.test.mjs` expects 500 for MiniMax, and 3
+  new: a saved 200 on the provider and models becomes 500, a custom MiniMax
+  cap stays, and another provider's 200 is untouched.
+
 ## 3.5.47 — 2026-11-08
 
-- **Shipped:** this PR · TattooAI/elated-cannon-cac880 · session `d051aad3-94fe-442c-9ffb-ca0fa7489c1a`
+- **Shipped:** [#60](https://github.com/tattooinmtl/omni/pull/60) · `eaf9e72` · TattooAI/elated-cannon-cac880 · session `d051aad3-94fe-442c-9ffb-ca0fa7489c1a`
 - **Search tools work without the runtime pack.** ripgrep and fd are
   optional, so a default install has neither, and several tools gave wrong
   answers without them. Each now falls back to a pure-Node search with the
