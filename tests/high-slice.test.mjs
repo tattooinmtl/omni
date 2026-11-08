@@ -341,8 +341,13 @@ await ok("#20 Session.append logs to stderr when the underlying appendFile fails
 // ============================================================================
 
 process.chdir(origCwd);
-fs.rmSync(workspace, { recursive: true, force: true });
-fs.rmSync(process.env.OMNI_HOME, { recursive: true, force: true });
+// A session log append (#20) can still be landing in OMNI_HOME/sessions when
+// we get here; on Node 20 that made rmdir throw ENOTEMPTY and fail a suite
+// whose tests had all passed. Retry, and never let temp cleanup fail the run.
+for (const dir of [workspace, process.env.OMNI_HOME]) {
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  catch (e) { console.log(`  (temp cleanup left ${dir}: ${e.code || e.message})`); }
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

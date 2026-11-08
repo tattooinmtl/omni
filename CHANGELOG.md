@@ -52,7 +52,9 @@ entries were rebuilt from git history).
     find and secret-scan suites had only ever passed on PCs that already
     had both, and failed on a clean runner. `browser-session` skips on
     Node 20, where `browser_use` deliberately refuses (it needs Node 21's
-    built-in WebSocket).
+    built-in WebSocket). `high-slice` retries its temp-folder cleanup,
+    which a late session-log write made fail on Node 20 after every test
+    had passed.
 - Tests: `tests/ported-skills.test.mjs` (7): Hermes tool names map to Omni's,
   plain English words ("process", "memory") are not taken for tool names, a
   missing tool is named, a non-Hermes skill gets no note, a real bundled port
