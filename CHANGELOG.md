@@ -8,6 +8,25 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.2 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/reflection-ai-usage-calls-a2513f · session —
+- **`/usage` now shows Reflection AI spend.** It reads this month's total from
+  Reflection's spend gateway (`oapi.reflectionai.dev/spend/logs/v2`, every
+  page added up) and prints just two lines: `spent this month: $X` and
+  `left: N% of $Y`. The log rows themselves are never shown.
+- The % left is measured against the key's own budget (`/key/info`), or a
+  `"usageBudget"` (in $) set under `providers.reflection`. With neither, it
+  says so and still prints the total.
+- The spend gateway refuses the chat key Omni already holds, so
+  `"usageKey"` under `providers.reflection` (or `OMNI_REFLECTION_USAGE_KEY`)
+  sets a separate key for it. A refused key points at that setting instead of
+  `/apikey`. A stored `usageKey` is redacted from tool results like every
+  other key.
+- Tests: `usage.test.mjs` covers the paged total, the % left, `usageKey` and
+  `usageBudget`, a missing budget and a refused key; `security-audit.test.mjs`
+  checks that `usageKey` is redacted.
+
 ## 3.6.1 — 2026-11-08
 
 - **Shipped:** this PR · TattooAI/minimax-api-quota-728a6e · session `9547b884-008e-4d34-92af-d17b9a211432`
