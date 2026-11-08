@@ -33,6 +33,15 @@ export const SESSIONS_DIR = path.join(HOME, "sessions");
 // settings.json, or via environment variables:
 //   OMNI_NVIDIA_KEY, OMNI_OPENAI_KEY, OMNI_<PROVIDER>_KEY, …
 // See settings.example.json for a fully-commented template.
+// MiniMax's per-prompt tool-loop cap. It used to be 200, on the belief that
+// MiniMax allowed 200 calls per 5 hours; a real run made 420 rounds (466
+// tool calls) before MiniMax answered 429, so 200 only made the user type
+// "continue" twice. 500 lets one prompt use the whole quota; MiniMax's own
+// 429 (and Omni's failover) is what stops a run that outlasts it.
+export const MINIMAX_MAX_TOOL_ITERATIONS = 500;
+// The value 3.5.47 and earlier shipped, and saved into settings.json.
+const MINIMAX_OLD_TOOL_ITERATIONS = 200;
+
 export const DEFAULT_SETTINGS = {
   defaultProvider: "xkiro",
   defaultModel: "xkiro/mistral-medium-3.5",
@@ -177,9 +186,9 @@ export const DEFAULT_SETTINGS = {
       // via a `thinking` field, not the simple reasoning_effort string this
       // app's /effort sends — "none" skips sending a param it wouldn't understand.
       reasoningParam: "none",
-      // MiniMax allows 200 calls per 5 hours. Setting it on the provider
-      // means every minimax.io model gets the cap automatically.
-      maxToolIterations: 200,
+      // Setting the cap on the provider means every minimax.io model gets it
+      // (see MINIMAX_MAX_TOOL_ITERATIONS).
+      maxToolIterations: MINIMAX_MAX_TOOL_ITERATIONS,
     },
     kimi: {
       baseUrl: "https://api.moonshot.cn/v1",
@@ -278,7 +287,7 @@ export const DEFAULT_SETTINGS = {
       maxTokens: 128000,
       contextWindow: 1000000,
       vision: true,
-      maxToolIterations: 200,
+      maxToolIterations: MINIMAX_MAX_TOOL_ITERATIONS,
     },
     "minimax.io/m3": {
       provider: "minimax.io",
@@ -292,11 +301,10 @@ export const DEFAULT_SETTINGS = {
       // verified-good output ceiling across the M2/M3 line.
       maxTokens: 128000,
       contextWindow: 1000000,
-      // MiniMax's rate-limit window is 200 calls / 5 hours — well above the
-      // 30 default most providers use. Letting the loop run that long is
-      // the difference between finishing the task and giving up mid-way
-      // on a long edit/refactor session.
-      maxToolIterations: 200,
+      // Well above the 30 default most providers use: letting the loop run
+      // that long is the difference between finishing the task and giving
+      // up mid-way on a long edit/refactor session.
+      maxToolIterations: MINIMAX_MAX_TOOL_ITERATIONS,
     },
     // maxTokens is the OUTPUT half of the context, not a second budget:
     // prompt + completion must fit the window. These three shipped with
@@ -767,6 +775,15 @@ function migrateMiniMax(settings) {
     if (Number(entry.maxTokens) > MINIMAX_MAX_OUTPUT_TOKENS) entry.maxTokens = MINIMAX_SAFE_OUTPUT_TOKENS;
   }
 
+  // The old shipped cap of 200 was saved into settings.json on the provider
+  // and on each MiniMax model, and a saved entry beats the shipped one, so
+  // it would never move. Lift exactly 200 (the old default) to the new cap;
+  // any other number is the user's own choice and stays.
+  const capped = [providers[MINIMAX_PROVIDER], ...Object.values(models).filter((m) => m?.provider === MINIMAX_PROVIDER)];
+  for (const entry of capped) {
+    if (entry && entry.maxToolIterations === MINIMAX_OLD_TOOL_ITERATIONS) entry.maxToolIterations = MINIMAX_MAX_TOOL_ITERATIONS;
+  }
+
   // minimax.io used to ship with the bare "MiniMax" label it shared with the
   // alias. A custom label the user typed is preserved.
   if (providers[MINIMAX_PROVIDER]?.label === "MiniMax") {
@@ -972,7 +989,7 @@ export function resolveModel(settings, modelKey) {
     // The known-provider check sits ABOVE the settings-level value because
     // a user's saved settings.json typically has `maxToolIterations: 30`
     // seeded by loadSettings from DEFAULT_SETTINGS — that's a default, not
-    // a deliberate override, so the name-based cap (200 for minimax) has
+    // a deliberate override, so the name-based cap (500 for minimax) has
     // to take precedence. A user who actually wants a different cap for
     // a specific model sets it on that model's entry (top of the chain).
     maxToolIterations: m.maxToolIterations
@@ -990,7 +1007,8 @@ export function resolveModel(settings, modelKey) {
 // DEFAULT_SETTINGS still needs the right cap).
 //
 // Per-provider rate limits (as confirmed against the live APIs/docs):
-//   minimax      200 calls / 5 hours
+//   minimax      ~420 requests before a 429 in a real run (the documented
+//                "200 calls / 5 hours" was wrong); 500 = the whole quota
 //   xai          no binding request limit even at Tier 0 (≥37 RPS, no daily
 //                cap — docs.x.ai/docs/rate-limits); 200 is a runaway-cost
 //                guard, not 429 avoidance
@@ -1005,11 +1023,11 @@ export function resolveModel(settings, modelKey) {
 //                the provider entry if you're on it
 //   everything else 30
 // Order: most specific first (minimax before nvidia, so a hypothetical
-// "minimax-via-nvidia" still gets 200).
+// "minimax-via-nvidia" still gets MiniMax's cap).
 function knownProviderMaxIterations(providerName) {
   if (!providerName) return null;
   const n = String(providerName).toLowerCase();
-  if (n.includes("minimax")) return 200;
+  if (n.includes("minimax")) return MINIMAX_MAX_TOOL_ITERATIONS;
   if (n.includes("xai")) return 200;
   if (n.includes("kimi") || n.includes("moonshot")) return 100;
   if (n.includes("nvidia")) return 40;

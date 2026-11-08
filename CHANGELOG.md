@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.48 — 2026-11-08
+## 3.5.49 — 2026-11-08
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,23 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.48 — 2026-11-08
+
+- **Shipped:** [#61](https://github.com/tattooinmtl/omni/pull/61) · `63ec250` · TattooAI/minimax-cap-500 · session `71644163-382c-4fbb-9817-64a848b83c09`
+- **MiniMax runs up to 500 tool rounds per prompt (was 200).** The 200 cap
+  rested on "MiniMax allows 200 calls per 5 hours", which is wrong: a real
+  session made 420 rounds (466 tool calls) before MiniMax answered 429, so
+  the cap only made the user type "continue" twice. 500 lets one prompt use
+  the whole quota; MiniMax's own 429 (and Omni's failover) stops a run that
+  outlasts it. Only MiniMax changes: every other provider keeps its cap.
+- **Existing installs get it too.** The old 200 was saved into
+  `settings.json` on the `minimax.io` provider and each MiniMax model, and a
+  saved entry beats the shipped one. Loading settings now lifts exactly 200
+  on MiniMax to 500; any other number you set yourself is kept.
+- Tests: `tests/max-tool-iterations.test.mjs` expects 500 for MiniMax, and 3
+  new: a saved 200 on the provider and models becomes 500, a custom MiniMax
+  cap stays, and another provider's 200 is untouched.
 
 ## 3.5.47 — 2026-11-08
 

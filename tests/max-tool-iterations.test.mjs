@@ -1,6 +1,7 @@
 // Regression test for the per-model maxToolIterations fix.
 // Calibrated per-provider caps (confirmed against official docs):
-// minimax 200 calls/5h, xai unmetered (200 as runaway guard), kimi 100 RPM
+// minimax 500 (a real run got ~420 requests before its 429; the documented
+// "200 calls/5h" was wrong), xai unmetered (200 as runaway guard), kimi 100 RPM
 // at Tier1, nvidia 40/h, agnes/openrouter/groq 30, everything else 30.
 // Previously this was hardcoded to 30 in DEFAULT_SETTINGS, which cut
 // minimax sessions short on long edit/refactor tasks.
@@ -41,8 +42,8 @@ function makeSettings(overrides = {}) {
       "minimax.io": { baseUrl: "https://example.invalid/v1", apiKey: "" },
     },
     models: {
-      // minimax.io/m3 has the model-level 200 (the canonical fix).
-      "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxToolIterations: 200, maxTokens: 16384 },
+      // minimax.io/m3 has the model-level 500 (the canonical fix).
+      "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxToolIterations: 500, maxTokens: 16384 },
       // Other models deliberately have NO maxToolIterations — the name-based
       // fallback is what the test is verifying.
       "nvidia/glm-5.2": { provider: "nvidia", id: "z-ai/glm-5.2", maxTokens: 16384 },
@@ -53,9 +54,9 @@ function makeSettings(overrides = {}) {
   };
 }
 
-ok("minimax model carries 200 (model-level override wins)", () => {
+ok("minimax model carries 500 (model-level override wins)", () => {
   const m = resolveModel(makeSettings(), "minimax.io/m3");
-  assert.equal(m.maxToolIterations, 200);
+  assert.equal(m.maxToolIterations, 500);
 });
 
 ok("nvidia model carries 40 (its 40-calls/hr rate-limit window, via name-based fallback)", () => {
@@ -77,7 +78,7 @@ ok("settings.maxToolIterations beats the global default but loses to model", () 
   // settings.maxToolIterations = 50 only applies to models without their own
   // override. Models with their own value win.
   const s = makeSettings({ maxToolIterations: 50 });
-  assert.equal(resolveModel(s, "minimax.io/m3").maxToolIterations, 200, "model should beat settings");
+  assert.equal(resolveModel(s, "minimax.io/m3").maxToolIterations, 500, "model should beat settings");
   assert.equal(resolveModel(s, "openai/gpt-4.1").maxToolIterations, 50, "settings should beat default");
 });
 
@@ -86,7 +87,7 @@ ok("settings.maxToolIterations beats the global default but loses to model", () 
 // Their saved settings don't include the maxToolIterations field. The
 // name-based fallback has to fire on the provider name string so the
 // cap reaches them without them having to edit settings.json.
-ok("a user-saved 'minimax' provider (no maxToolIterations field) still gets 200 via the name-based fallback", () => {
+ok("a user-saved 'minimax' provider (no maxToolIterations field) still gets 500 via the name-based fallback", () => {
   const s = {
     defaultModel: "minimax/m3",
     reasoning: "medium",
@@ -99,7 +100,7 @@ ok("a user-saved 'minimax' provider (no maxToolIterations field) still gets 200 
     },
   };
   const m = resolveModel(s, "minimax/m3");
-  assert.equal(m.maxToolIterations, 200, `expected 200 from name-based fallback, got ${m.maxToolIterations}`);
+  assert.equal(m.maxToolIterations, 500, `expected 500 from name-based fallback, got ${m.maxToolIterations}`);
 });
 
 ok("the name-based fallback also matches 'minimax.io' (canonical provider name)", () => {
@@ -114,7 +115,7 @@ ok("the name-based fallback also matches 'minimax.io' (canonical provider name)"
     },
   };
   const m = resolveModel(s, "minimax.io/m3");
-  assert.equal(m.maxToolIterations, 200);
+  assert.equal(m.maxToolIterations, 500);
 });
 
 ok("non-minimax providers without any field get the right cap via the name-based fallback", () => {
@@ -169,7 +170,7 @@ ok("turnMaxIterations follows the current model, not the launch model", () => {
   const launch = resolveModel(s, "nvidia/glm-5.2");
   assert.equal(turnMaxIterations(launch, s), 40);
   const switched = resolveModel(s, "minimax.io/m3");
-  assert.equal(turnMaxIterations(switched, s), 200, "after /model the new model's cap must apply");
+  assert.equal(turnMaxIterations(switched, s), 500, "after /model the new model's cap must apply");
 });
 
 ok("turnMaxIterations falls back to settings, then 30", () => {
@@ -177,6 +178,55 @@ ok("turnMaxIterations falls back to settings, then 30", () => {
   assert.equal(turnMaxIterations({}, {}), 30);
   assert.equal(turnMaxIterations(null, null), 30);
 });
+
+// --- Saved settings carry the old cap ---------------------------------------
+// 3.5.47 and earlier shipped 200 and saved it into settings.json on the
+// minimax.io provider and each MiniMax model. A saved entry beats the shipped
+// one, so without a migration an existing install kept stopping at 200.
+const { loadSettings, MINIMAX_MAX_TOOL_ITERATIONS } = await import(u("core/config.mjs"));
+
+async function loadSaved(saved) {
+  fs.writeFileSync(path.join(process.env.OMNI_HOME, "settings.json"), JSON.stringify(saved, null, 2));
+  return loadSettings();
+}
+
+ok("the shipped MiniMax cap is 500", () => {
+  assert.equal(MINIMAX_MAX_TOOL_ITERATIONS, 500);
+});
+
+await (async () => {
+  const s = await loadSaved({
+    defaultModel: "minimax.io/m3",
+    maxToolIterations: 30,
+    providers: { "minimax.io": { baseUrl: "https://api.minimax.io/v1", apiKey: "", maxToolIterations: 200 } },
+    models: {
+      "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxTokens: 128000, maxToolIterations: 200 },
+      "minimax.io/m3.1-flash": { provider: "minimax.io", id: "MiniMax-M3.1-Flash", maxTokens: 128000, maxToolIterations: 200 },
+      "xai/grok": { provider: "xai", id: "grok-5", maxToolIterations: 200 },
+    },
+  });
+  ok("a saved 200 on the MiniMax provider and its models becomes 500", () => {
+    assert.equal(s.providers["minimax.io"].maxToolIterations, 500);
+    assert.equal(s.models["minimax.io/m3"].maxToolIterations, 500);
+    assert.equal(s.models["minimax.io/m3.1-flash"].maxToolIterations, 500);
+    assert.equal(resolveModel(s, "minimax.io/m3").maxToolIterations, 500);
+  });
+  ok("other providers' 200 is left alone (MiniMax only)", () => {
+    assert.equal(s.models["xai/grok"].maxToolIterations, 200);
+  });
+})();
+
+await (async () => {
+  const s = await loadSaved({
+    defaultModel: "minimax.io/m3",
+    providers: { "minimax.io": { baseUrl: "https://api.minimax.io/v1", apiKey: "", maxToolIterations: 120 } },
+    models: { "minimax.io/m3": { provider: "minimax.io", id: "MiniMax-M3", maxTokens: 128000, maxToolIterations: 250 } },
+  });
+  ok("a MiniMax cap the user chose (not 200) is kept", () => {
+    assert.equal(s.providers["minimax.io"].maxToolIterations, 120);
+    assert.equal(s.models["minimax.io/m3"].maxToolIterations, 250);
+  });
+})();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
