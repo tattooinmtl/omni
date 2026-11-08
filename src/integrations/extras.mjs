@@ -12,6 +12,7 @@ import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
 import { HOME } from "../core/config.mjs";
 import { wrapSessionContext } from "../core/session-context.mjs";
 import { parseFrontmatter } from "../core/frontmatter.mjs";
+import { portedToolNote } from "../core/ported-skills.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
@@ -159,11 +160,15 @@ export function loadSkills(config) {
       const { meta, body } = parseFrontmatter(raw);
       const dir = path.dirname(file);
       const name = meta.name || path.basename(dir);
+      // A skill ported from Hermes Agent names Hermes tools; the note maps
+      // them to Omni's (core/ported-skills.mjs).
+      const toolNote = portedToolNote(raw, body);
       skills.push({
         name,
         command: meta.command || "/" + name,
         description: meta.description || "",
-        body,
+        body: toolNote ? toolNote + "\n" + body : body,
+        toolNote,
         dir,
         // Derive a category from the directory so the system prompt can group
         // skills rather than dumping one flat 200-line list (TODO #1). For

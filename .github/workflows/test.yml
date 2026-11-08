@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Omni is a Windows app: the installer and several suites drive PowerShell.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json promises Node >= 20; 24 is what most installs run.
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Zero npm dependencies, so there is nothing to install.
+      - run: npm test

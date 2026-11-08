@@ -17,7 +17,7 @@ There are two sources, and they behave differently:
 | Source | Location | How it loads |
 | --- | --- | --- |
 | **Bundled** | `<INSTALL_ROOT>/skills/**/SKILL.md` | Auto-discovered at startup, always available |
-| **External** | Whatever `skillIndex` points at (default `C:/.skills/skills.json`) | Indexed by the scan-now hook, loaded on demand |
+| **External** | Whatever `skillIndex` in your `agent/settings.json` points at (none by default) | Indexed by the scan-now hook, loaded on demand |
 
 External skills show up in `find_skill` output tagged `[external]`. On a name
 collision the bundled skill wins — it is version-controlled with the install
