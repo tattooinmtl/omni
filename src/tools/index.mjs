@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
+import { grep as nodeGrep, findEntries as nodeFind } from "./node-search.mjs";
 import { jqLite, formatJqResult, JqLiteError } from "./jq-lite.mjs";
 import { HOME, loadSettings, saveSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
@@ -1726,9 +1727,15 @@ export const impl = {
     const args = ["--line-number", "--no-heading", "--color", "never"];
     for (const pat of patterns) args.push("-e", pat);
     if (references) args.push("--max-count", "50");
-    args.push(resolve(p));
-    const r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
-    if (r.error) return "find_symbol unavailable: " + r.error.message;
+    const root = resolve(p);
+    args.push(root);
+    let r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
+    if (r.error) {
+      // No ripgrep (the runtime pack is optional): same search in Node.
+      const g = nodeGrep({ patterns, root, maxCount: references ? 50 : Infinity });
+      r = { status: g.output ? 0 : 1, stdout: g.output };
+    }
+    if (r.status === 2 && !r.stdout) return clip(`find_symbol failed: ${r.stderr || "ripgrep error"}`);
     if (r.status === 1 || !r.stdout) {
       return references
         ? `(no references to "${name}" found)`
@@ -1911,21 +1918,10 @@ export const impl = {
         return clip(entries.join("\n") || "(empty)");
       }
 
-      // Fallback to recursive Node walk if fd is unavailable.
-      const fallbackEntries = [];
-      function walk(dir, prefix) {
-        const items = fs.readdirSync(dir, { withFileTypes: true });
-        for (const item of items.sort()) {
-          const rel = prefix ? `${prefix}/${item.name}` : item.name;
-          if (item.isDirectory()) {
-            fallbackEntries.push(rel + "/");
-            try { walk(path.join(dir, item.name), rel); } catch { /* skip */ }
-          } else {
-            fallbackEntries.push(rel);
-          }
-        }
-      }
-      walk(full);
+      // No fd: the same listing in Node — files and directories only, so a
+      // symlink (and any loop through one) is left out exactly as fd leaves
+      // it out.
+      const fallbackEntries = nodeFind({ root: full, types: ["f", "d"], hidden: true, ignore: false });
       return clip(fallbackEntries.join("\n") || "(empty)");
     }
     const entries = fs.readdirSync(full, { withFileTypes: true });
@@ -1943,15 +1939,19 @@ export const impl = {
     if (case_insensitive) args.push("-i");
     if (context > 0) args.push("-C", String(context));
     if (glob) args.push("--glob", glob);
-    args.push(resolve(p));
+    const root = resolve(p);
+    args.push(root);
     const r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
     if (r.error) {
-      // Node.js fallback when rg is unavailable.
+      // No ripgrep (the runtime pack is optional): same search in Node,
+      // same output shape, context and glob included.
+      let g;
       try {
-        return clip(searchFallback(pattern, resolve(p), glob, case_insensitive));
+        g = nodeGrep({ patterns: [pattern], root, globs: glob ? [glob] : [], caseInsensitive: case_insensitive, context });
       } catch (e) {
-        return "search unavailable: " + r.error.message;
+        return `search failed: ${e.message} (install ripgrep with /runtime install ripgrep for the full regex dialect)`;
       }
+      return clip(g.output || "(no matches)");
     }
     if (r.status === 1) return "(no matches)";
     return clip(r.stdout || r.stderr || "(no matches)");
@@ -1976,8 +1976,18 @@ export const impl = {
     if (!regex) args.push("--fixed-strings");
     if (glob) args.push("--glob", glob);
     args.push("-e", pattern, root);
-    const r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
-    if (r.error) throw new Error("find_replace requires ripgrep: " + r.error.message);
+    let r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
+    if (r.error) {
+      // No ripgrep (the runtime pack is optional): find the candidate files
+      // in Node with the same ignore/glob/binary rules.
+      let g;
+      try {
+        g = nodeGrep({ patterns: [pattern], root, globs: glob ? [glob] : [], caseInsensitive: case_insensitive, fixed: !regex, filesWithMatches: true, maxLines: Infinity });
+      } catch (e) {
+        throw new Error(`invalid pattern: ${e.message}`);
+      }
+      r = { status: g.files.length ? 0 : 1, stdout: g.files.join("\n") };
+    }
     if (r.status === 1) return "(no matches)";
     if (r.status !== 0) return clip(r.stderr || `ripgrep exited with code ${r.status}`);
 
@@ -2079,21 +2089,21 @@ export const impl = {
       args.push("--max-depth", String(max_depth));
     }
 
+    let fdType = null;
     if (type) {
       const t = String(type).toLowerCase();
-      if (t === "f" || t === "file") args.push("--type", "f");
-      else if (t === "d" || t === "dir" || t === "directory") args.push("--type", "d");
-      else if (t === "symlink" || t === "l") args.push("--type", "l");
+      if (t === "f" || t === "file") fdType = "f";
+      else if (t === "d" || t === "dir" || t === "directory") fdType = "d";
+      else if (t === "symlink" || t === "l") fdType = "l";
       else throw new Error(`Unsupported type: ${type}. Use f, d, or symlink.`);
+      args.push("--type", fdType);
     }
 
-    if (extension) {
-      for (const ext of String(extension).split(",").map(s => s.trim()).filter(Boolean)) {
-        args.push("--extension", ext);
-      }
-    }
+    const extensions = extension ? String(extension).split(",").map(s => s.trim()).filter(Boolean) : [];
+    for (const ext of extensions) args.push("--extension", ext);
 
-    if (/[*?\[\]{}]/.test(pattern)) args.push("--glob");
+    const isGlob = /[*?\[\]{}]/.test(pattern);
+    if (isGlob) args.push("--glob");
 
     args.push(pattern, ".");
 
@@ -2102,7 +2112,20 @@ export const impl = {
       encoding: "utf8",
       maxBuffer: 1024 * 1024 * 16,
     });
-    if (r.error) return "find_files unavailable: " + r.error.message;
+    if (r.error) {
+      // No fd (the runtime pack is optional): the same lookup in Node.
+      let found;
+      try {
+        found = nodeFind({
+          root: full, pattern, glob: isGlob, types: fdType ? [fdType] : null, extensions,
+          maxDepth: Number.isInteger(max_depth) && max_depth >= 0 ? max_depth : Infinity,
+          hidden: true, ignore: Boolean(respect_gitignore),
+        });
+      } catch (e) {
+        return `find_files failed: ${e.message}`;
+      }
+      return clip(found.join("\n") || "(no matches)");
+    }
     if (r.status === 1) return "(no matches)";
     if (r.status && r.status !== 0) return clip(r.stderr || `fd exited with code ${r.status}`);
 
@@ -2214,15 +2237,46 @@ export const impl = {
 
     if (scope === "all" || scope === "secrets") {
       const findings = [];
+      // Rules that couldn't be checked. A rule that errored used to fall
+      // through the same `continue` as "no matches", so a missing ripgrep
+      // produced "0 finding(s) (clean)" — a false all-clear on a security
+      // check. Now a missing rg means the Node scan, and any other failure
+      // is reported instead of counted as clean.
+      const failed = [];
+      const root = resolve(p);
+      const globs = ["!*.example*", "!*.sample*", "!*lock*"];
+      let useNode = false;
       for (const [rule, pattern] of SECRET_RULES) {
-        const args = [
-          "--line-number", "--no-heading", "--color", "never", "--max-count", "20",
-          "--glob", "!*.example*", "--glob", "!*.sample*", "--glob", "!*lock*",
-          "-e", pattern, resolve(p),
-        ];
-        const r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
-        if (r.status !== 0 || !r.stdout) continue;
-        for (const line of r.stdout.trim().split("\n")) {
+        let r;
+        if (!useNode) {
+          const args = ["--line-number", "--no-heading", "--color", "never", "--max-count", "20"];
+          for (const g of globs) args.push("--glob", g);
+          args.push("-e", pattern, root);
+          r = spawnSync(rgPath(), args, { encoding: "utf8", maxBuffer: 1024 * 1024 * 16 });
+          if (r.error) useNode = true;
+        }
+        if (useNode) {
+          try {
+            const g = nodeGrep({ patterns: [pattern], root, globs, maxCount: 20, maxLines: Infinity });
+            r = { status: g.output ? 0 : 1, stdout: g.output };
+          } catch (e) {
+            failed.push(`${rule} (${e.message})`);
+            continue;
+          }
+        }
+        if (r.status === 1) continue;
+        if (r.status !== 0 && !r.stdout) {
+          failed.push(`${rule} (${String(r.stderr || `ripgrep exited with code ${r.status}`).trim().split("\n")[0]})`);
+          continue;
+        }
+        if (!r.stdout) continue;
+        // rg prints no path when the target is a single file.
+        const single = fs.statSync(root).isFile();
+        // Split on \r?\n: rg keeps a CRLF file's "\r" on each matched line,
+        // and the `(.*)$` below can't match across it — so on a Windows
+        // checkout every finding but the last one per rule was dropped.
+        for (const raw of r.stdout.trim().split(/\r?\n/)) {
+          const line = single ? `${root}:${raw}` : raw;
           const m = line.match(/^(.*?):(\d+):(.*)$/);
           if (!m) continue;
           // Skip obvious placeholders to keep the report actionable.
@@ -2237,8 +2291,12 @@ export const impl = {
         try { ignored = /^\s*\.?\/?\.env\b/m.test(fs.readFileSync(path.join(process.cwd(), ".gitignore"), "utf8")); } catch { /* no .gitignore */ }
         if (!ignored) hygiene.push("  .env exists but is not listed in .gitignore — real keys may get committed");
       }
+      const verdict = findings.length
+        ? ":\n" + findings.join("\n") + "\n  (matched values are never printed — open each file:line to review)"
+        : failed.length ? " (INCOMPLETE — not every rule ran, so this is not a clean result)" : " (clean)";
       sections.push(
-        `Secrets scan — ${findings.length} finding(s)${findings.length ? ":\n" + findings.join("\n") + "\n  (matched values are never printed — open each file:line to review)" : " (clean)"}` +
+        `Secrets scan — ${findings.length} finding(s)${verdict}` +
+        (failed.length ? `\nCould not check: ${failed.join("; ")}` : "") +
         (hygiene.length ? "\nHygiene:\n" + hygiene.join("\n") : "")
       );
     }
@@ -3727,54 +3785,6 @@ async function whereIs(name) {
   const paths = await resolveOnPath(String(name).trim());
   if (!paths.length) return `${name}: not found on PATH`;
   return clip(paths.join("\n"));
-}
-
-function searchFallback(pattern, searchPath, glob, caseInsensitive) {
-  const flags = caseInsensitive ? "gi" : "g";
-  const re = new RegExp(pattern, flags);
-  const results = [];
-  const globRe = glob ? globToRegex(glob) : null;
-
-  function walk(dir) {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name !== "node_modules" && entry.name !== ".git") walk(full);
-      } else if (entry.isFile()) {
-        if (globRe && !globRe.test(entry.name)) continue;
-        try {
-          const content = fs.readFileSync(full, "utf8");
-          const lines = content.split(/\r?\n/);
-          const rel = path.relative(searchPath, full).replace(/\\/g, "/");
-          for (let i = 0; i < lines.length; i++) {
-            if (re.test(lines[i])) {
-              results.push(`${rel}:${i + 1}:${lines[i]}`);
-              if (results.length > 500) return;
-            }
-            re.lastIndex = 0;
-          }
-        } catch { /* skip unreadable files */ }
-      }
-    }
-  }
-
-  if (fs.statSync(searchPath).isFile()) {
-    const content = fs.readFileSync(searchPath, "utf8");
-    const lines = content.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i])) results.push(`${i + 1}:${lines[i]}`);
-      re.lastIndex = 0;
-    }
-  } else {
-    walk(searchPath);
-  }
-  return results.length ? results.join("\n") : "(no matches)";
-}
-
-function globToRegex(g) {
-  const s = g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${s}$`, "i");
 }
 
 // Which tool names each extension file (relative path) most recently

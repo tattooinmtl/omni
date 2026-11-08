@@ -8,9 +8,41 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.47 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/elated-cannon-cac880 · session `d051aad3-94fe-442c-9ffb-ca0fa7489c1a`
+- **Search tools work without the runtime pack.** ripgrep and fd are
+  optional, so a default install has neither, and several tools gave wrong
+  answers without them. Each now falls back to a pure-Node search with the
+  same rules (no symlink following, hidden files, `.gitignore` inside a git
+  repo, `--glob` includes and `!` excludes, binary files skipped) and the
+  same output, only slower:
+  - **`security_scan` no longer reports a false "clean".** With no `rg` it
+    counted "couldn't run" as "no matches" and said "0 finding(s) (clean)".
+    It now scans in Node, and if a rule can't run at all the report says
+    **INCOMPLETE** and names the rules it couldn't check.
+  - `find_replace` works instead of throwing "requires ripgrep";
+    `find_files` and `find_symbol` work instead of "unavailable"; `search`
+    honours `context=` and glob excludes.
+  - `list_dir` (recursive) leaves symlinks out like fd does, so a link loop
+    no longer shows up in the listing.
+  - Skill discovery finds nested skills, so `skills/languages/bash-coding`
+    is grouped under "Languages" again.
+- **Fix (with ripgrep too): `security_scan` dropped findings in CRLF files.**
+  rg keeps each line's `\r`, which the line parser couldn't match, so on a
+  Windows checkout only the last finding per rule was reported.
+- `OMNI_RG_PATH` / `OMNI_FD_PATH` name the rg/fd binary outright, ahead of
+  the runtime pack and PATH.
+- Tests: `tests/no-rg-fd.test.mjs` points both at a missing path and checks
+  every tool's fallback (including a scanner that runs but fails, and two
+  keys in one CRLF file), and reruns the `tools`, `secret-handling`,
+  `rollback`, `high-slice`, `symlink-loop` and `skill-grouping` suites
+  without rg/fd, so CI covers the default install even though it installs
+  the runtime pack.
+
 ## 3.5.46 — 2026-11-08
 
-- **Shipped:** this PR · TattooAI/omni-public-readiness-db85d0 · session `71644163-382c-4fbb-9817-64a848b83c09`
+- **Shipped:** [#59](https://github.com/tattooinmtl/omni/pull/59) · `f4f64f9` · TattooAI/omni-public-readiness-db85d0 · session `71644163-382c-4fbb-9817-64a848b83c09`
 - **Ready to go public.** A pass over what a stranger sees when they open the
   repo or install Omni:
   - **Removed three bundled skills.** `productivity/powerpoint` was
@@ -61,9 +93,10 @@ entries were rebuilt from git history).
   (`baoyu-comic`) loads with the note while `code-review` loads unchanged, and
   lean mode keeps the note.
 
+
 ## 3.5.45 — 2026-11-07
 
-- **Shipped:** this PR · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
+- **Shipped:** [#58](https://github.com/tattooinmtl/omni/pull/58) · `c974beb` · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`
 - **`/update-omni` finishes a setup that stopped partway.** Updating from
   3.5.43 or older still runs that version's installer, whose hand-off to the
   new one drops `-ModelsDir ''`: the files move, then setup stops with
