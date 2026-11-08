@@ -8,7 +8,7 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
-## 3.5.47 — 2026-11-08
+## 3.5.48 — 2026-11-08
 
 - **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
@@ -27,6 +27,38 @@ entries were rebuilt from git history).
   their footers. A bottom bar asks visitors to accept, and download links go
   through the page first. Creating or signing in to an Omni account counts as
   acceptance, and new sign-ups record the version accepted.
+
+## 3.5.47 — 2026-11-08
+
+- **Shipped:** [#60](https://github.com/tattooinmtl/omni/pull/60) · `eaf9e72` · TattooAI/elated-cannon-cac880 · session `d051aad3-94fe-442c-9ffb-ca0fa7489c1a`
+- **Search tools work without the runtime pack.** ripgrep and fd are
+  optional, so a default install has neither, and several tools gave wrong
+  answers without them. Each now falls back to a pure-Node search with the
+  same rules (no symlink following, hidden files, `.gitignore` inside a git
+  repo, `--glob` includes and `!` excludes, binary files skipped) and the
+  same output, only slower:
+  - **`security_scan` no longer reports a false "clean".** With no `rg` it
+    counted "couldn't run" as "no matches" and said "0 finding(s) (clean)".
+    It now scans in Node, and if a rule can't run at all the report says
+    **INCOMPLETE** and names the rules it couldn't check.
+  - `find_replace` works instead of throwing "requires ripgrep";
+    `find_files` and `find_symbol` work instead of "unavailable"; `search`
+    honours `context=` and glob excludes.
+  - `list_dir` (recursive) leaves symlinks out like fd does, so a link loop
+    no longer shows up in the listing.
+  - Skill discovery finds nested skills, so `skills/languages/bash-coding`
+    is grouped under "Languages" again.
+- **Fix (with ripgrep too): `security_scan` dropped findings in CRLF files.**
+  rg keeps each line's `\r`, which the line parser couldn't match, so on a
+  Windows checkout only the last finding per rule was reported.
+- `OMNI_RG_PATH` / `OMNI_FD_PATH` name the rg/fd binary outright, ahead of
+  the runtime pack and PATH.
+- Tests: `tests/no-rg-fd.test.mjs` points both at a missing path and checks
+  every tool's fallback (including a scanner that runs but fails, and two
+  keys in one CRLF file), and reruns the `tools`, `secret-handling`,
+  `rollback`, `high-slice`, `symlink-loop` and `skill-grouping` suites
+  without rg/fd, so CI covers the default install even though it installs
+  the runtime pack.
 
 ## 3.5.46 — 2026-11-08
 
@@ -80,6 +112,7 @@ entries were rebuilt from git history).
   missing tool is named, a non-Hermes skill gets no note, a real bundled port
   (`baoyu-comic`) loads with the note while `code-review` loads unchanged, and
   lean mode keeps the note.
+
 
 ## 3.5.45 — 2026-11-07
 

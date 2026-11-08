@@ -8,6 +8,7 @@ import { atomicWriteFileSync } from "../core/atomic-write.mjs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fdPath, INSTALL_ROOT } from "../paths.mjs";
+import { findEntries } from "../tools/node-search.mjs";
 import { systemPrompt as fallbackPrompt } from "../core/agent.mjs";
 import { HOME } from "../core/config.mjs";
 import { wrapSessionContext } from "../core/session-context.mjs";
@@ -120,16 +121,14 @@ function discoverSkills() {
       .map((p) => path.dirname(p.replace(/\\/g, "/")));
   }
 
-  // Fallback for environments where fd is unavailable.
-  const out = [];
-  const top = fs.readdirSync(skillsRoot, { withFileTypes: true });
-  for (const item of top) {
-    if (!item.isDirectory()) continue;
-    const rel = path.posix.join("skills", item.name);
-    const skillFile = path.join(INSTALL_ROOT, rel, "SKILL.md");
-    if (fs.existsSync(skillFile)) out.push(rel);
-  }
-  return out;
+  // No fd (the runtime pack is optional): the same search in Node, sorted the
+  // way fd lists them. This used to look one level deep only, so nested
+  // skills (skills/<category>/<skill>) were never discovered, and where a
+  // top-level copy shares a nested skill's command (skills/bash-coding vs
+  // skills/languages/bash-coding) the top-level one won, under the wrong
+  // category.
+  return findEntries({ root: skillsRoot, pattern: "SKILL.md", glob: true, types: ["f"], hidden: true, ignore: false })
+    .map((rel) => path.posix.dirname(path.posix.join("skills", rel)));
 }
 
 // Frontmatter parsing lives in core/frontmatter.mjs — core/skill-index.mjs
