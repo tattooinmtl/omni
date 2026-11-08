@@ -141,7 +141,11 @@ ok("spawn_agent accepts a context argument and the sub-agent still finishes", as
 });
 
 await new Promise((resolve) => server.close(resolve));
-fs.rmSync(tmpHome, { recursive: true, force: true });
+// A sub-agent's session log can still be landing in tmpHome/sessions here; on
+// Windows + Node 20 rmdir then threw ENOTEMPTY and failed a suite whose tests
+// had all passed (as high-slice did). Retry, and never let cleanup fail it.
+try { fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+catch (e) { console.log(`  (temp cleanup left ${tmpHome}: ${e.code || e.message})`); }
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

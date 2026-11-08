@@ -34,6 +34,10 @@ entries were rebuilt from git history).
   without mixing accounts, the OpenRouter, DeepSeek and Moonshot answers, a
   refused key, a provider with no account API, a local server, and the
   `/limits` and `/quota` aliases. All network calls go to a stubbed fetch.
+- **Tests:** `subagent-permissions` no longer fails on Windows + Node 20
+  after all its tests pass: its temp-folder cleanup retries when a
+  sub-agent's session log is still being written (`ENOTEMPTY`), like
+  `high-slice` already does.
 
 ## 3.5.49 — 2026-11-08
 
