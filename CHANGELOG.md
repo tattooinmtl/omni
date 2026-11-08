@@ -47,7 +47,12 @@ entries were rebuilt from git history).
     3.5.32), and the older entries moved to a one-line pointer at the
     changelog.
   - **Tests run on GitHub.** `.github/workflows/test.yml` runs `npm test` on
-    Windows with Node 20 and 24 for every PR and push to `main`.
+    Windows with Node 20 and 24 for every PR and push to `main`. It first
+    installs ripgrep and fd through Omni's own runtime pack: the search,
+    find and secret-scan suites had only ever passed on PCs that already
+    had both, and failed on a clean runner. `browser-session` skips on
+    Node 20, where `browser_use` deliberately refuses (it needs Node 21's
+    built-in WebSocket).
 - Tests: `tests/ported-skills.test.mjs` (7): Hermes tool names map to Omni's,
   plain English words ("process", "memory") are not taken for tool names, a
   missing tool is named, a non-Hermes skill gets no note, a real bundled port

@@ -22,5 +22,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # Zero npm dependencies, so there is nothing to install.
+      # The search, find and secret-scan suites need ripgrep and fd. Install
+      # them the way users do, through Omni's own runtime pack (pinned
+      # versions, SHA-256 checked) into vendor/, with one retry for a flaky
+      # download.
+      - name: Runtime pack (ripgrep, fd)
+        shell: pwsh
+        run: |
+          node bin/omni.mjs runtime install ripgrep fd
+          if ($LASTEXITCODE -ne 0) { node bin/omni.mjs runtime install ripgrep fd }
+          if (-not (Test-Path vendor/rg.exe) -or -not (Test-Path vendor/fd.exe)) { throw "runtime pack did not install" }
+          "$PWD\vendor" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      # Zero npm dependencies, so there is nothing else to install.
       - run: npm test
