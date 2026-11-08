@@ -47,6 +47,17 @@ let nextAgentId = 1;
 let _sessionCtx = null;
 export function setSessionCtx(ctx) { _sessionCtx = ctx; }
 
+// The model a sub-run (self_review's critic, an in-process spawn_agent) uses
+// when the caller names none: the model this session is actually running on,
+// not settings.defaultModel. Startup prefers the last provider that worked
+// over defaultModel (main.mjs), so the two often differ — falling back to
+// defaultModel sent a MiniMax session's review to a free xKiro model whose
+// daily quota was spent, and the critic died on 429s while MiniMax had room.
+export function subRunModelKey(settings, ...preferred) {
+  for (const key of preferred) if (key) return key;
+  return _sessionCtx?.model?.key || settings?.defaultModel;
+}
+
 // Name the agents spawn_agent can run, in its own description, so the model
 // picks one by what it is for. Called at startup and by /agents reload.
 export function refreshAgentCatalog(agents = loadAgents()) {
@@ -980,7 +991,7 @@ export const tools = [
         type: "object",
         properties: {
           prompt: { type: "string", description: "Full, self-contained task description for the sub-agent — it has no memory of this conversation." },
-          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.5-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the default model if omitted." },
+          model: { type: "string", description: "Model key to run it on, e.g. 'agnes/agnes-2.5-flash' or 'nvidia/nemotron-3-ultra-550b-a55b'. Defaults to the model this session is running on if omitted." },
           name: { type: "string", description: "Optional short label shown in agent_status." },
           agent: { type: "string", description: "Run it as a named agent (its role, tool limits and model come from the definition). Available agents are listed in this tool's description." },
           isolation: {
@@ -1007,7 +1018,7 @@ export const tools = [
           id: { type: "string", description: "The sub-agent id from spawn_agent, e.g. 'A001'." },
           action: { type: "string", enum: ["merge", "discard"], description: "Default merge." },
           force: { type: "boolean", description: "Merge even if the review found BLOCKERS or MAJOR issues. Only when the user agreed." },
-          model: { type: "string", description: "Model for the review; defaults to the default model." },
+          model: { type: "string", description: "Model for the review; defaults to the model this session is running on." },
         },
         required: ["id"],
       },
@@ -1048,7 +1059,7 @@ export const tools = [
           },
           model: {
             type: "string",
-            description: "Optional model key to run the critic on, e.g. 'xkiro/mistral-large'. Defaults to the default model.",
+            description: "Optional model key to run the critic on, e.g. 'xkiro/mistral-large'. Defaults to the model this session is running on. If the named model is rate-limited, the review runs on the session's model instead.",
           },
           timeout_ms: {
             type: "integer",
@@ -3154,6 +3165,10 @@ const CRITIC_PROMPT = [
   "Do not invent problems to look thorough — a fabricated finding wastes more time than it saves. Report what you can point at in the code.",
 ].join("\n");
 
+// A failed critique that a different model could get past: an HTTP 429, or a
+// throttling/quota message from a provider that doesn't prefix its status.
+const RATE_LIMIT_ERROR = /^Provider 429\b|too many requests|rate.?limit|ResourceExhausted|\bquota\b/i;
+
 // diffText: review this diff instead of taking one from git (merge_agent
 // passes a sub-agent branch's diff).
 async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, focus, timeout_ms = 240000, diffText = null }) {
@@ -3215,8 +3230,8 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
 
   const { runTurn } = await import("../core/agent.mjs");
   const settings = await loadSettings();
-  const resolved = resolveModel(settings, model || settings.defaultModel);
-  const messages = [
+  let resolved = resolveModel(settings, subRunModelKey(settings, model));
+  const freshMessages = () => [
     { role: "system", content: CRITIC_PROMPT },
     {
       role: "user",
@@ -3231,21 +3246,41 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
       ].filter(Boolean).join("\n"),
     },
   ];
+  let messages = freshMessages();
+  let fellBackFrom = null;
+  let runError = null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(30000, Math.min(Number(timeout_ms) || 240000, 600000)));
+  // With somewhere better to go, a rate-limited named model is left at once
+  // rather than backed off for ~93s first.
+  const sessionKey = _sessionCtx?.model?.key;
+  const canFallBack = Boolean(sessionKey && sessionKey !== resolved.key);
+  const critique = (m, failFast = false) => runTurn({
+    model: m,
+    rateLimitFailFast: failFast,
+    settings,
+    messages,
+    session: new Session({ kind: "review" }),
+    maxIterations: 12,
+    diffPreview: false,
+    signal: controller.signal,
+    permissions: CRITIC_PERMISSIONS,
+    confirmTool: null,
+  });
   try {
-    await runTurn({
-      model: resolved,
-      settings,
-      messages,
-      session: new Session({ kind: "review" }),
-      maxIterations: 12,
-      diffPreview: false,
-      signal: controller.signal,
-      permissions: CRITIC_PERMISSIONS,
-      confirmTool: null,
-    });
+    let out = await critique(resolved, canFallBack);
+    // A model the author picked for a second opinion is rate-limited (often a
+    // free tier whose daily quota is spent): review on the session's own model
+    // rather than return nothing. It is the same model as the author, which is
+    // weaker than a second opinion but far better than no review.
+    if (out?.stop === "error" && RATE_LIMIT_ERROR.test(out.error || "") && canFallBack && !controller.signal.aborted) {
+      fellBackFrom = { key: resolved.key, error: String(out.error).split("\n")[0].slice(0, 160) };
+      resolved = resolveModel(settings, sessionKey);
+      messages = freshMessages();
+      out = await critique(resolved);
+    }
+    if (out?.stop === "error") runError = String(out.error || "").split("\n")[0].slice(0, 200);
   } catch (e) {
     if (controller.signal.aborted) {
       return `(self_review timed out after ${Math.round((Number(timeout_ms) || 240000) / 1000)}s on ${resolved.key} — treat the change as UNREVIEWED. Re-run with a smaller paths scope, or review it yourself against the task.)`;
@@ -3257,10 +3292,13 @@ async function runSelfReview({ task, diff_from = "unstaged", paths = [], model, 
 
   const verdict = lastAssistantText(messages);
   if (!verdict) {
-    return `(the critic on ${resolved.key} returned nothing — treat the change as UNREVIEWED rather than approved.)`;
+    const why = runError ? ` (${runError})` : "";
+    return `(the critic on ${resolved.key} returned nothing${why} — treat the change as UNREVIEWED rather than approved.)`;
   }
   return [
-    `Independent review of your change by ${resolved.key} (it saw only the task and the work itself, not your reasoning):`,
+    fellBackFrom
+      ? `${fellBackFrom.key} was rate-limited (${fellBackFrom.error}), so ${resolved.key} — your own model — reviewed instead. It saw only the task and the work itself, not your reasoning:`
+      : `Independent review of your change by ${resolved.key} (it saw only the task and the work itself, not your reasoning):`,
     "",
     verdict,
     "",
@@ -3324,7 +3362,9 @@ function spawnSubAgent({ prompt, model, name, agent: agentName, isolation, permi
     try {
       if (worktree) {
         const out = await runHeadlessAgent({
-          cwd: worktree.cwd, prompt, model: model || agent?.model || null, agent: agent?.name || null,
+          // Name the model: the child process would otherwise pick its own
+          // last-good/default, not the model this session is on.
+          cwd: worktree.cwd, prompt, model: model || agent?.model || _sessionCtx?.model?.key || null, agent: agent?.name || null,
           mode: childMode(), signal: rec.controller.signal,
         });
         if (rec.controller.signal.aborted) throw new Error("stopped");
@@ -3339,7 +3379,7 @@ function spawnSubAgent({ prompt, model, name, agent: agentName, isolation, permi
       }
       const { runTurn, systemPrompt } = await import("../core/agent.mjs");
       const settings = await loadSettings();
-      const resolved = resolveModel(settings, model || agent?.model || settings.defaultModel);
+      const resolved = resolveModel(settings, subRunModelKey(settings, model, agent?.model));
       rec.model = resolved.key;
       // The project's OMNI.md / AGENTS.md rules bind a sub-agent too.
       const rules = loadInstructions().text;

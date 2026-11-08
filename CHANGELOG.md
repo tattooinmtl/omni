@@ -8,6 +8,49 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.1 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/minimax-api-quota-728a6e · session `9547b884-008e-4d34-92af-d17b9a211432`
+- **`self_review` reviews on the model you are running, not `defaultModel`.**
+  Startup picks the last provider that worked over `defaultModel`, so a
+  MiniMax session whose `defaultModel` was `xkiro/mistral-medium-3.5` sent
+  every review to xKiro's free tier. Once xKiro's 500k-token daily free
+  quota was spent, the critic hit 429 "today's free-model token quota" five
+  times over ~93s and came back empty, while MiniMax still had most of its
+  5-hour window. `spawn_agent` sub-agents had the same fallback and get the
+  same fix, in-process and in a worktree (the child process is now told the
+  session's model instead of picking its own).
+- If the model named for a review is rate-limited (any 429, or a throttle or
+  quota message without a status), the review moves to the session's own
+  model at once, without backing off first, and says so, instead of
+  returning nothing. An empty review now gives the provider's reason.
+- A 429 that says a daily quota is spent ("today's … quota", with a straight
+  or curly apostrophe, "exceeded your current quota") is no longer retried
+  with 3s→48s backoff. Account rotation and the failover chain still get
+  their turn first, and when the chain runs out its error now carries the
+  provider's last message.
+- **A key with no credits sees only the models it can run.** An OpenRouter
+  key that never bought credits, or an xKiro account with no plan and an
+  empty wallet, can only run free models, yet `/model` and `/models` listed
+  all 500+ OpenRouter models (each paid one answers 402) plus saved `:free`
+  ids OpenRouter no longer serves. The OpenRouter picker even printed
+  "showing N free model(s) only" and then filtered nothing. Omni now asks the
+  provider whether the key can pay (OpenRouter `/key`, xKiro `/usage`). If it
+  can't, the list holds only models the provider lists as free (all-zero
+  pricing, xKiro's `access_tier`), models a probe found working that the
+  provider still serves, and the current model, and says how many are
+  hidden. Models whose last probe failed are hidden too. Nothing is deleted
+  from `settings.json`; a key with credits still lists everything. Fetched
+  models now carry `free: true|false`.
+- Tests: `free-tier-models` checks free detection (pricing, tier, `:free`,
+  OpenRouter's `-1` as paid), the OpenRouter and xKiro credit checks, the
+  filtered list for a no-credit key, and the full list for a key with credits.
+- Tests: `self-review-model` drives `self_review` against a local mock with a
+  quota-spent free model and a working one: it reviews on the session's model
+  when none is named, falls back from a rate-limited named model with a single
+  request in under 15s, and reports UNREVIEWED with the reason when there is
+  nothing to fall back to.
+
 ## 3.6.0 — 2026-11-08
 
 - **Shipped:** this PR · TattooAI/usage-command · session `37c22332-7590-40eb-80d2-a1ff354ab4be`

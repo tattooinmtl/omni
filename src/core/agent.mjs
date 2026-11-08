@@ -272,6 +272,11 @@ const RETRYABLE = /ResourceExhausted|workers are busy|Service Unavailable|too ma
 // The subset that means "this key is throttled" — worth failing over to
 // another account of the same provider before waiting it out.
 const RATE_LIMITED = /ResourceExhausted|too many requests|rate.?limit/i;
+// A 429 that says a daily quota is spent ("You've reached today's free-model
+// token quota", OpenAI's "exceeded your current quota"). Backing off for 93s
+// cannot outwait it — it resets in hours — so after account rotation and
+// failover have had their turn, give up at once instead of stalling the user.
+const QUOTA_SPENT = /today['’]?s\b[^.\n]*\bquota|\bdaily\b[^.\n]*\b(?:quota|token limit)\b|exceeded your (?:current )?quota/i;
 
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
@@ -395,7 +400,10 @@ function abortableSleep(ms, signal) {
 // `allowFailover: false` keeps the request on this model (account rotation
 // and backoff still apply): a vision-fallback step carries image parts that a
 // failover model may not be able to see.
-async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt, allowFailover = true }) {
+// rateLimitFailFast: a 429 that account rotation and the failover chain can't
+// absorb is thrown at once instead of backed off — for a caller with a better
+// place to go (self_review falls back to the session's own model).
+async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt, allowFailover = true, rateLimitFailFast = false }) {
   let attempt = 0;
   let rotations = 0;
   const failoverChain = allowFailover ? buildRateLimitChain(settings) : [];
@@ -488,7 +496,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
           });
         }
         throw new Error(
-          `Provider 429 Too Many Requests: failover chain exhausted (${chainText}). Switch provider/account manually with /provider or /switch-provider, then retry.`
+          `Provider 429 Too Many Requests: failover chain exhausted (${chainText}). Last error: ${msg.split("\n")[0].replace(/^Provider 429 Too Many Requests:\s*/, "").slice(0, 200)} — switch provider/account manually with /provider or /switch-provider, then retry.`
         );
       }
 
@@ -506,6 +514,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
           continue;
         }
       }
+      if (isRateLimited(msg) && (rateLimitFailFast || QUOTA_SPENT.test(msg))) throw e;
       attempt++;
       const delay = BASE_DELAY * Math.pow(2, attempt - 1);
       const secs  = Math.round(delay / 1000);
@@ -797,7 +806,7 @@ export function steeringMessage(note) {
   return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
 }
 
-export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null, allowedTools = null }) {
+export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null, allowedTools = null, rateLimitFailFast = false }) {
   // allowedTools: a Set of tool names a named sub-agent may use. Only those
   // are offered to the model; the permission gate refuses the rest anyway.
   const turnTools = allowedTools ? tools.filter((t) => allowedTools.has(t.function?.name)) : tools;
@@ -980,6 +989,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           tools: null,
           signal,
           _templatePrompt: prompt,
+          rateLimitFailFast,
           onToken(token) {
             tokenCount++;
             router.onToken(token);
@@ -1002,6 +1012,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           messages: providerMessages,
           tools: hopTextTools ? null : turnTools,
           allowFailover: hopModel === model,
+          rateLimitFailFast,
           signal,
           // Always count real deltas so the generation panel's token/TPS
           // readout is accurate. In text-tools mode we still skip routing
