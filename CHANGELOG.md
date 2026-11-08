@@ -8,6 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.1 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/minimax-api-quota-728a6e · session `9547b884-008e-4d34-92af-d17b9a211432`
+- **`self_review` reviews on the model you are running, not `defaultModel`.**
+  Startup picks the last provider that worked over `defaultModel`, so a
+  MiniMax session whose `defaultModel` was `xkiro/mistral-medium-3.5` sent
+  every review to xKiro's free tier. Once xKiro's 500k-token daily free
+  quota was spent, the critic hit 429 "today's free-model token quota" five
+  times over ~93s and came back empty, while MiniMax still had most of its
+  5-hour window. In-process `spawn_agent` sub-agents had the same fallback
+  and get the same fix.
+- If the model named for a review is rate-limited, the review runs on the
+  session's own model and says so, instead of returning nothing. An empty
+  review now gives the provider's reason.
+- A 429 that says a daily quota is spent ("today's … quota", "exceeded your
+  current quota") is no longer retried with 3s→48s backoff. Account rotation
+  and the failover chain still get their turn first.
+- Tests: `self-review-model` drives `self_review` against a local mock with a
+  quota-spent free model and a working one: it reviews on the session's model
+  when none is named, falls back from a rate-limited named model with a single
+  request in under 15s, and reports UNREVIEWED with the reason when there is
+  nothing to fall back to.
+
 ## 3.6.0 — 2026-11-08
 
 - **Shipped:** this PR · TattooAI/usage-command · session `37c22332-7590-40eb-80d2-a1ff354ab4be`

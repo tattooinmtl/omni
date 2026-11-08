@@ -272,6 +272,11 @@ const RETRYABLE = /ResourceExhausted|workers are busy|Service Unavailable|too ma
 // The subset that means "this key is throttled" — worth failing over to
 // another account of the same provider before waiting it out.
 const RATE_LIMITED = /ResourceExhausted|too many requests|rate.?limit/i;
+// A 429 that says a daily quota is spent ("You've reached today's free-model
+// token quota", OpenAI's "exceeded your current quota"). Backing off for 93s
+// cannot outwait it — it resets in hours — so after account rotation and
+// failover have had their turn, give up at once instead of stalling the user.
+const QUOTA_SPENT = /today'?s\b[^.\n]*\bquota|\bdaily\b[^.\n]*\b(?:quota|token limit)\b|exceeded your (?:current )?quota/i;
 
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
@@ -506,6 +511,7 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
           continue;
         }
       }
+      if (isRateLimited(msg) && QUOTA_SPENT.test(msg)) throw e;
       attempt++;
       const delay = BASE_DELAY * Math.pow(2, attempt - 1);
       const secs  = Math.round(delay / 1000);
