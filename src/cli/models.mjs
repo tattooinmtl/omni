@@ -5,7 +5,7 @@ import { c, infoLine, warnLine, errorLine } from "../ui.mjs";
 import { saveSettings, resolveModel, providerKeyMissing, providerKeyEnvVar, setProviderKey, isRetiredMiniMaxId, MINIMAX_PROVIDER } from "../core/config.mjs";
 import { detectContextWindow, formatContextSize } from "../core/context.mjs";
 import { setLastProvider } from "../core/last-provider.mjs";
-import { listProviderModelDetails, probeModel } from "../core/provider.mjs";
+import { listProviderModelDetails, probeModel, authHeaders } from "../core/provider.mjs";
 import * as llama from "../local/llama.mjs";
 import { localStartOptions } from "../local/hardware-profile.mjs";
 import { maskKey, normalizeProviderKey, modelKeyFor, trimHealthMessage } from "./helpers.mjs";
@@ -215,6 +215,32 @@ export function providerModelRows(settings, provKey, liveIds) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// Can this key run paid models? false when the provider says it cannot —
+// an OpenRouter key that never bought credits (is_free_tier), an xKiro
+// account with no plan and an empty wallet — true when it can, null when the
+// provider doesn't say (every other provider, or the check failed). On such a
+// key every paid model in a 500-model list answers 402, so the picker offered
+// almost nothing that would run.
+export async function keyCanPay(provKey, provider, fetchImpl = fetch) {
+  const base = String(provider?.baseUrl || "").replace(/\/+$/, "");
+  const get = async (p) => {
+    const res = await fetchImpl(base + p, { headers: authHeaders(provider), signal: AbortSignal.timeout(8000) });
+    return res.ok ? res.json() : null;
+  };
+  try {
+    if (provKey === "openrouter") {
+      const d = (await get("/key"))?.data;
+      return d && typeof d.is_free_tier === "boolean" ? !d.is_free_tier : null;
+    }
+    if (provKey === "xkiro") {
+      const u = await get("/usage");
+      if (!u || typeof u !== "object" || !("plan" in u)) return null;
+      return Boolean(u.plan) || Number(u.wallet?.balance_usd) > 0;
+    }
+  } catch { /* unknown: show everything */ }
+  return null;
+}
+
 // quiet: no model list printed. silent: nothing printed at all (the provider
 // card draws its own screen and takes the rows).
 export async function fetchModelsForProvider(ctx, providerName, { save = true, filter = "", quiet = false, silent = false } = {}) {
@@ -245,8 +271,27 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     ids.sort((a, b) => a.localeCompare(b));
   }
   const q = String(filter || "").toLowerCase();
-  const shown = providerModelRows(ctx.settings, provKey, ids)
+  let shown = providerModelRows(ctx.settings, provKey, ids)
     .filter((row) => !q || row.id.toLowerCase().includes(q) || row.key.toLowerCase().includes(q));
+  // A key that can't pay sees only what it can run: models the live list
+  // marks free, or that a probe (/doctor) found working. Saved models the
+  // provider no longer lists (dead ":free" ids) and models whose last probe
+  // failed go too. The current model always stays, so it can be seen.
+  let hidden = 0;
+  if (details.some((m) => m.meta.free) && (await keyCanPay(provKey, provider)) === false) {
+    const live = new Set(details.map((m) => m.id));
+    const liveFree = new Set(details.filter((m) => m.meta.free).map((m) => m.id));
+    const before = shown.length;
+    shown = shown.filter((row) => {
+      if (row.key === ctx.model?.key) return true;
+      const health = ctx.settings.models[row.key]?.health;
+      // A probe that passed counts only while the provider still serves it.
+      if (health?.ok) return live.has(row.id);
+      if (health && health.ok === false && !health.timeout) return false;
+      return liveFree.has(row.id);
+    });
+    hidden = before - shown.length;
+  }
   ctx.lastFetchedModels = shown.map((row, i) => ({ index: i + 1, provider: provKey, ...row }));
   if (save) {
     for (const row of ctx.lastFetchedModels) {
@@ -262,6 +307,7 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
         // Reported capabilities fill gaps only: a value the user set wins.
         ...(existing.vision === undefined && meta.vision !== undefined ? { vision: meta.vision } : {}),
         ...(existing.contextWindow === undefined && meta.contextWindow ? { contextWindow: meta.contextWindow } : {}),
+        ...(meta.free !== undefined ? { free: meta.free } : {}),
       };
     }
     await saveSettings(ctx.settings);
@@ -272,6 +318,7 @@ export async function fetchModelsForProvider(ctx, providerName, { save = true, f
     return;
   }
   if (!silent) infoLine(`${provKey}: ${ctx.lastFetchedModels.length} model(s)${save ? " saved" : ""}`);
+  if (hidden && !silent) infoLine(`${provKey}: ${hidden} model(s) hidden — this key has no credits, so only free (or tested-working) models are listed`);
   if (quiet) return ctx.lastFetchedModels;
   for (const row of ctx.lastFetchedModels.slice(0, 80)) {
     const active = row.key === ctx.model.key ? c.green("● ") : "  ";
@@ -495,16 +542,10 @@ function renderModelPicker(ctx, rows, selected, providerName) {
 
 export async function pickModelWithArrows(ctx, providerName = ctx.model.providerName, filter = "") {
   const provKey = resolveProviderAlias(ctx.settings, providerName || ctx.model.providerName);
-  // Auto-filter to free models for openrouter if no explicit filter given
-  let autoFilter = filter;
-  if (!filter && provKey === "openrouter") {
-    const freeModels = Object.entries(ctx.settings.models)
-      .filter(([, m]) => m.provider === provKey && m.free);
-    if (freeModels.length) {
-      infoLine(`${provKey}: showing ${freeModels.length} free model(s) only`);
-    }
-  }
-  const rows = await fetchModelsForProvider(ctx, providerName, { save: true, filter: autoFilter });
+  // A key with no credits sees only free models: fetchModelsForProvider asks
+  // the provider (keyCanPay). This used to announce "showing N free model(s)
+  // only" for OpenRouter and then list every model anyway.
+  const rows = await fetchModelsForProvider(ctx, provKey, { save: true, filter });
   if (!rows?.length) return;
   if (!ctx.canRaw) {
     warnLine("arrow picker needs an interactive terminal; use /model <number> instead");

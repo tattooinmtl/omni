@@ -341,6 +341,16 @@ export function modelMetaFrom(m) {
   if (Number.isFinite(out) && out > 0) meta.maxOutput = out;
   const category = ext.category ?? m.category;
   if (typeof category === "string") meta.chat = category.toLowerCase() === "chat";
+  // Free to run: every listed price is 0 (OpenRouter's prompt/completion,
+  // xKiro's input/output; OpenRouter's "-1" means variable, i.e. paid), the
+  // provider tags the model's tier free (xKiro access_tier), or the id ends
+  // in ":free".
+  const pricing = m.pricing && typeof m.pricing === "object" ? m.pricing : null;
+  const prices = pricing ? ["prompt", "completion", "input", "output"].filter((k) => pricing[k] != null).map((k) => Number(pricing[k])) : [];
+  if (prices.length && prices.every(Number.isFinite)) meta.free = prices.every((n) => n === 0);
+  const tier = ext.access_tier ?? m.access_tier;
+  if (typeof tier === "string") meta.free = tier.toLowerCase() === "free";
+  else if (/:free$/i.test(String(m.id || ""))) meta.free = true;
   return meta;
 }
 

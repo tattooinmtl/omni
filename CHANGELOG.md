@@ -25,6 +25,22 @@ entries were rebuilt from git history).
 - A 429 that says a daily quota is spent ("today's … quota", "exceeded your
   current quota") is no longer retried with 3s→48s backoff. Account rotation
   and the failover chain still get their turn first.
+- **A key with no credits sees only the models it can run.** An OpenRouter
+  key that never bought credits, or an xKiro account with no plan and an
+  empty wallet, can only run free models, yet `/model` and `/models` listed
+  all 500+ OpenRouter models (each paid one answers 402) plus saved `:free`
+  ids OpenRouter no longer serves. The OpenRouter picker even printed
+  "showing N free model(s) only" and then filtered nothing. Omni now asks the
+  provider whether the key can pay (OpenRouter `/key`, xKiro `/usage`). If it
+  can't, the list holds only models the provider lists as free (all-zero
+  pricing, xKiro's `access_tier`), models a probe found working that the
+  provider still serves, and the current model, and says how many are
+  hidden. Models whose last probe failed are hidden too. Nothing is deleted
+  from `settings.json`; a key with credits still lists everything. Fetched
+  models now carry `free: true|false`.
+- Tests: `free-tier-models` checks free detection (pricing, tier, `:free`,
+  OpenRouter's `-1` as paid), the OpenRouter and xKiro credit checks, the
+  filtered list for a no-credit key, and the full list for a key with credits.
 - Tests: `self-review-model` drives `self_review` against a local mock with a
   quota-spent free model and a working one: it reviews on the session's model
   when none is named, falls back from a rate-limited named model with a single
