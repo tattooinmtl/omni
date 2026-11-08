@@ -65,6 +65,7 @@ import { searchSessions, formatHits, formatWhen } from "../core/session-search.m
 import { runArrowPicker } from "./models.mjs";
 import { resumeSessionInto, copyConversation } from "./helpers.mjs";
 import { exportSession } from "../core/session-export.mjs";
+import { usageReport } from "../core/usage.mjs";
 import { getPermissionMode, setPermissionMode, normalizeMode, modeLabel } from "../core/permission-mode.mjs";
 
 function pkgVersion() {
@@ -430,6 +431,14 @@ export const COMMANDS = [
     name: "cost", aliases: [], usage: "/cost", category: "Session",
     summary: "token usage this session",
     handler: (ctx) => costLine(ctx.session),
+  },
+  {
+    name: "usage", aliases: ["limits", "quota"], usage: "/usage", category: "Session",
+    summary: "the active provider's usage, balance and rate limits",
+    handler: async (ctx) => {
+      for (const line of await usageReport(ctx.model)) infoLine(line);
+      costLine(ctx.session);
+    },
   },
   {
     name: "cwd", aliases: [], usage: "/cwd", category: "Session",

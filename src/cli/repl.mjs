@@ -116,7 +116,7 @@ export function wantBracketedPaste({ tty, env = process.env } = {}) {
 // only read state (or, for /btw, hand the running turn a note). Everything
 // else waits in the queue until the turn ends, since e.g. /model or /clear
 // mid-turn would pull the conversation out from under it.
-export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "version", "about"]);
+export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "usage", "limits", "quota", "version", "about"]);
 
 // Pull the note out of a "/btw …" line, or null when it isn't one.
 export function parseBtw(line) {

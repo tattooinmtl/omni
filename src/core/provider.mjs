@@ -1,6 +1,7 @@
 // OpenAI-compatible streaming chat client (uses Node's global fetch / undici).
 //
-// Imports only leaves (core/env-keys.mjs, local/request-extras.mjs) —
+// Imports only leaves (core/env-keys.mjs, local/request-extras.mjs,
+// core/rate-limits.mjs) —
 // core/context.mjs imports authHeaders from here, so anything with its own
 // dependencies would close a cycle back through core/config.mjs.
 // Works with NVIDIA NIM, local llama.cpp, Ollama, OpenRouter, etc.
@@ -9,6 +10,7 @@
 // and returns { message, finishReason, usage } once the stream ends.
 import { providerKeyEnvVar } from "./env-keys.mjs";
 import { applyRequestExtras } from "../local/request-extras.mjs";
+import { recordRateLimits, noteRefusal } from "./rate-limits.mjs";
 
 export function authHeaders(provider) {
   const headers = { "Content-Type": "application/json" };
@@ -240,8 +242,10 @@ export function maxTokensCapFrom(text) {
 async function postWithTokenCap(url, model, body, { signal, onTokenCap } = {}) {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body), signal });
+    recordRateLimits(model.provider, res.headers, res.status);
     if (res.ok) return res;
     const text = await res.text().catch(() => "");
+    noteRefusal(model.provider, res.status, extractProviderMessage(text) || text);
     const cap = res.status === 400 && attempt === 0 ? maxTokensCapFrom(extractProviderMessage(text) || text) : null;
     if (cap && body.max_tokens && cap < body.max_tokens) {
       body.max_tokens = cap;

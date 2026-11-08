@@ -8,9 +8,40 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.0 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/usage-command · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
+- **New: `/usage`** (also `/limits`, `/quota`) asks the active provider what
+  it knows about your key, and runs right away even while the agent works.
+  - **Balance and spending**, where the provider publishes them for an
+    ordinary API key. OpenRouter reports what you spent (in all, today,
+    this week, this month), the key's limit and what is left of it, free
+    tier, and remaining credits. DeepSeek and Kimi/Moonshot report the
+    account balance. Other providers have no such API, or need an admin
+    key, and `/usage` says so instead of guessing. A gateway that copies one
+    of these APIs can name it in settings.json with `"usageApi"`.
+  - **Rate limits from the last reply.** Every answer's rate-limit headers
+    are kept per provider and account: requests and tokens left per minute
+    or per day, when they reset, and `retry-after`. The OpenAI, OpenRouter,
+    Mistral and Anthropic header styles are all read. A refused request
+    (429, or 402 for an empty balance) is kept too, with the provider's own
+    message, which often says which quota ran out.
+  - A local server (llama.cpp, Ollama) is reported as having no account or
+    limits; a provider whose replies carry no rate-limit headers says so.
+  - This session's token count follows, as in `/cost`.
+- **Tests:** `usage` (14) covers every header shape and reset format, that
+  `chatStream` records each reply's limits (and a 429's, with its message)
+  without mixing accounts, the OpenRouter, DeepSeek and Moonshot answers, a
+  refused key, a provider with no account API, a local server, and the
+  `/limits` and `/quota` aliases. All network calls go to a stubbed fetch.
+- **Tests:** `subagent-permissions` no longer fails on Windows + Node 20
+  after all its tests pass: its temp-folder cleanup retries when a
+  sub-agent's session log is still being written (`ENOTEMPTY`), like
+  `high-slice` already does.
+
 ## 3.5.49 — 2026-11-08
 
-- **Shipped:** this PR · — · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
+- **Shipped:** [#47](https://github.com/tattooinmtl/omni/pull/47) · `15abe29` · TattooAI/unified-eula-legal-disclaimers-e01e25 · session `37c22332-7590-40eb-80d2-a1ff354ab4be`
 - **One legal page for all four products.** Omni, OmniBots, OmniOne and
   OmniVerse now share one EULA and Terms of Use and one Privacy and Cookie
   Policy, in French and English, at
