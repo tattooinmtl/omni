@@ -8,6 +8,59 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.5.46 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/omni-public-readiness-db85d0 · session `71644163-382c-4fbb-9817-64a848b83c09`
+- **Ready to go public.** A pass over what a stranger sees when they open the
+  repo or install Omni:
+  - **Removed three bundled skills.** `productivity/powerpoint` was
+    Anthropic's proprietary pptx skill ("All rights reserved"), which can't be
+    redistributed under MIT. `red-teaming/godmode` (prompt jailbreaks against
+    hosted models, which can get a user's API key banned) and
+    `mlops/inference/obliteratus` (stripping refusals out of open-weight
+    models) don't belong in a default install.
+  - **Credit for borrowed skills.** New `THIRD_PARTY_NOTICES.md` names where
+    the bundled skills came from (Hermes Agent by Nous Research, obra's
+    superpowers, JimLiu's baoyu-skills, get-shit-done, awesome-design-md,
+    Orchestra Research, humanizer, pixel-art-studio, the conference LaTeX kits)
+    with each MIT copyright line, as their licenses require. The README's
+    License section links to it.
+  - **Ported skills name Omni's tools.** 44 bundled skills were written for
+    Hermes Agent and tell the model to call `terminal`, `clarify`,
+    `delegate_task`, `web_extract` and other tools Omni doesn't have. When one
+    loads, a short note in front of it now maps each Hermes tool it names to
+    Omni's (`run_shell`, `ask_user`, `spawn_agent`, `web_fetch`, …), and says
+    plainly when a tool such as `image_generate` has no Omni equivalent. The
+    upstream text is left as written. Lean context mode keeps the note when it
+    cuts sections. New module: `src/core/ported-skills.mjs`.
+  - **The shipped config is machine-neutral.** `omni.config.json` no longer
+    sets `skillIndex` to `C:/.skills/skills.json` or runs the `scan-now`
+    SessionStart hook (`node C:/.skills/bin/scan-now.js`) on every PC. Any
+    Windows account can create a folder under `C:\`, so whoever put a file
+    there had it run in every Omni session. Set `skillIndex` (and the hook,
+    if you use it) in your own `agent/settings.json`. `hooks/scan-now.json`
+    stays as an example.
+  - **No personal paths in public docs:** `instructions_omnibots.md` and
+    `packages/okf/README.md` use `%USERPROFILE%` instead of one PC's user
+    folder.
+  - **README "What's new"** covers 3.5.33 to this release (it stopped at
+    3.5.32), and the older entries moved to a one-line pointer at the
+    changelog.
+  - **Tests run on GitHub.** `.github/workflows/test.yml` runs `npm test` on
+    Windows with Node 20 and 24 for every PR and push to `main`. It first
+    installs ripgrep and fd through Omni's own runtime pack: the search,
+    find and secret-scan suites had only ever passed on PCs that already
+    had both, and failed on a clean runner. `browser-session` skips on
+    Node 20, where `browser_use` deliberately refuses (it needs Node 21's
+    built-in WebSocket). `high-slice` retries its temp-folder cleanup,
+    which a late session-log write made fail on Node 20 after every test
+    had passed.
+- Tests: `tests/ported-skills.test.mjs` (7): Hermes tool names map to Omni's,
+  plain English words ("process", "memory") are not taken for tool names, a
+  missing tool is named, a non-Hermes skill gets no note, a real bundled port
+  (`baoyu-comic`) loads with the note while `code-review` loads unchanged, and
+  lean mode keeps the note.
+
 ## 3.5.45 — 2026-11-07
 
 - **Shipped:** this PR · TattooAI/update-finish-setup · session `2c4bcda9-c9f9-46c0-bbfe-02040beb6214`

@@ -101,7 +101,7 @@ Further guardrails, aimed at small local models:
 
 ## Storage
 
-Cards live in `<OMNI_HOME>/knowledge/` (default `C:\Users\ThePa\.omni\agent\knowledge\`).
+Cards live in `<OMNI_HOME>/knowledge/` (default `%USERPROFILE%\.omni\agent\knowledge\`).
 Override with the `OKF_DIR` environment variable.
 
 ## The MCP server
@@ -136,7 +136,7 @@ To use the same knowledge base from Claude Code, add to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "okf": { "command": "node", "args": ["C:\\Users\\ThePa\\.omni\\packages\\okf\\server.mjs"] }
+    "okf": { "command": "node", "args": ["C:\\Users\\<you>\\.omni\\packages\\okf\\server.mjs"] }
   }
 }
 ```

@@ -26,6 +26,37 @@ built-in `fetch`.
 The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
 `omni --version` tells you which one you have.
 
+**3.5.46**
+- **Ready to share:** the bundled skills that came from other projects are
+  credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and a skill
+  written for Hermes Agent now tells the model which Omni tool replaces each
+  Hermes tool it names. Three skills that didn't belong in a public install
+  are gone, and the shipped config no longer runs a startup hook from a fixed
+  folder on `C:\`.
+
+**3.5.42 – 3.5.45**
+- **Queued prompts you can edit:** what you send while Omni works shows above
+  the prompt box. ↑/↓ picks one to edit, send right away or delete.
+- **Several /commands and /skills in one prompt:** `/brainstorming /python
+  make a game` loads both skills.
+- **Updating just works:** `/update-omni` runs from any PowerShell, and an
+  update that stopped partway finishes on the next run.
+
+**3.5.38 – 3.5.41**
+- **Provider card:** `/addprovider` and `/connect` open one small window to
+  pick a provider, paste a key and choose a model by number. Omni checks that
+  the model answers before switching. New preset: TokenLab.
+- **Vision fallback:** images sent to a model that can't see them go to one
+  that can, for that step.
+- **Built-in sub-agents** (`explorer`, `reviewer`, `tester`) ship, and the
+  model you picked is kept after you quit.
+
+**3.5.34 – 3.5.37**
+- **Local AI is an install choice:** none, CPU, auto or CUDA, with Spark X2.6
+  4B as the default local model (`/llama start`).
+- **Security fixes:** a command injection through `git_clone`, API keys
+  reaching the model in tool results, and an XSS in the neural view.
+
 **3.5.32**
 - **Safer with repos you just cloned:** a project's `OMNI.md`, `AGENTS.md` or
   `CLAUDE.md` loads only once you trust its folder, its `@` imports can't
@@ -33,79 +64,9 @@ The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
   agent treats file contents, web pages and tool output as data, never as
   instructions.
 
-**3.5.31**
-- **`/update-omni`:** checks GitHub for a newer Omni and, on Windows,
-  installs it without leaving the app (elsewhere it prints the manual steps).
-  `/update-omni check` only reports. It says "updated" only
-  when the new version really landed, and asks you to restart.
-
-**3.5.30**
-- **Reflection works past the first turn:** its Beam models need the earlier
-  answers' reasoning sent back, and Omni used to drop it, so every second
-  message failed with a 400. Other providers never receive it. A conversation
-  from before this fix needs `/clear`.
-
-**3.5.29**
-- **Learned skills:** after a long task that passed review, Omni offers to
-  save how it was done as a `/command`. Skills you stop using fade.
-- **Scheduled runs:** `/schedule add weekdays 09:00 <prompt>` runs unattended
-  through Windows Task Scheduler; results land in `/inbox` with a
-  notification.
-- **RPC mode:** `omni --rpc` lets another program hold a conversation over
-  stdio, including answering tool approvals and the agent's questions.
-- **`/tree`** shows how your conversations forked and resumed.
-- **Extensions** can add slash commands and status-bar items.
-- **`/route learn`** trains the persona router on your own prompts.
-
-**3.5.28**
-- **Named sub-agents:** `explorer`, `reviewer` and `tester` ship with Omni;
-  add your own in `.omni/agents/`. Each has a role, a tool list, read-only or
-  not, and its own model. `/agents` lists them.
-- **Sub-agents on their own git branch:** a worktree agent works in a separate
-  checkout. `merge_agent` has the critic review its diff and merges only a
-  clean one.
-
-**3.5.27**
-- **Headless mode:** `omni -p "…" --output json` (or `stream-json`) prints
-  only JSON on stdout, reads the prompt from stdin, stops at `--max-turns`,
-  and exits 0, 1 or 3 so scripts and CI can tell what happened.
-- **Prompt templates:** Markdown files in `.omni/commands/` become slash
-  commands, with `$ARGUMENTS`, `$1`…`$9` and `@file`. `/templates` lists them.
-- **Fixed:** a one-shot run's `--model` was saved as your next session's
-  model, even when it had no API key.
-
-**3.5.26**
-- **Plan mode and permission modes:** Shift+Tab cycles default, accept
-  edits and plan. In plan mode the agent only reads, then shows you a plan to
-  approve, and your first prompt offers the brainstorming skill.
-- **Rewind:** Omni checkpoints the workspace before each turn changes
-  anything. `/rewind` puts files and/or the conversation back.
-- **Sessions:** every conversation has a code (`omni --resume <code>` from
-  any folder). `/fork` branches it and `/export` saves it as Markdown, HTML
-  or JSON.
-- **Fixed:** the agent's `ask_user` questions never reached you; it was
-  always told no one was there.
-
-**3.5.25**
-- **Project instructions:** Omni follows `OMNI.md` (or an existing
-  `AGENTS.md` / `CLAUDE.md`) from the repo root down to the folder you're
-  in, plus your own `~/.omni/agent/OMNI.md`. `/init` has the agent write
-  one, `/instructions` shows what's loaded, `/instructions add <rule>`
-  appends a rule.
-- **Hooks:** your own commands run at session start, prompt submit, before
-  and after each tool call, before compaction, and when the agent stops.
-  They can block, rewrite or add context. `/hooks` lists them.
-- **Compaction summaries:** when the context fills up, or on
-  `/compact [focus]`, a model writes a structured summary of the older turns
-  instead of only listing the tools used. Point it at a cheaper model with
-  `"compaction": { "model": "<provider/model>" }` in settings.
-- **Resume any conversation:** `/resume` opens a picker of this folder's
-  past conversations, and `/history <words>` (or the agent's
-  `session_search` tool) searches them. `/resume` and `--resume` used to
-  restore the session Omni had just started, which held nothing.
-
-Earlier releases (the pinned prompt box, the installer that never moves a
-dirty checkout, xKiro and the other providers, `self_review`, local
+Earlier releases (plan mode and `/rewind`, headless `omni -p`, hooks,
+prompt templates, named sub-agents on their own git branch, scheduled runs,
+`/update-omni`, the installer that never moves a dirty checkout, local
 llama.cpp, video understanding) are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
@@ -984,3 +945,6 @@ $env:RUN_LIVE = "1"; npm test     # + live suites (need Python / real providers)
 ## License
 
 MIT — © Erik Boivin / Global Warning Networks
+
+Bundled skills from other projects keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

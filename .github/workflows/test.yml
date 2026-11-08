@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Omni is a Windows app: the installer and several suites drive PowerShell.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json promises Node >= 20; 24 is what most installs run.
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The search, find and secret-scan suites need ripgrep and fd. Install
+      # them the way users do, through Omni's own runtime pack (pinned
+      # versions, SHA-256 checked) into vendor/, with one retry for a flaky
+      # download.
+      - name: Runtime pack (ripgrep, fd)
+        shell: pwsh
+        run: |
+          node bin/omni.mjs runtime install ripgrep fd
+          if ($LASTEXITCODE -ne 0) { node bin/omni.mjs runtime install ripgrep fd }
+          if (-not (Test-Path vendor/rg.exe) -or -not (Test-Path vendor/fd.exe)) { throw "runtime pack did not install" }
+          "$PWD\vendor" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      # Zero npm dependencies, so there is nothing else to install.
+      - run: npm test

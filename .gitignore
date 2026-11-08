@@ -37,6 +37,7 @@ docs/*
 *.md
 !/README.md
 !/CHANGELOG.md
+!/THIRD_PARTY_NOTICES.md
 !/AGENTS.md
 !/CLAUDE.md
 !prompts/**/*.md

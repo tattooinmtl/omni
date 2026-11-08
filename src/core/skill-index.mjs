@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.mjs";
+import { portedToolNote } from "./ported-skills.mjs";
 
 // Reading N SKILL.md frontmatters costs N small reads. Do it once per
 // process, lazily — a session that never calls find_skill pays nothing.
@@ -84,6 +85,7 @@ function hydrate(entry) {
   try { raw = fs.readFileSync(file, "utf8"); } catch { return null; }
   const { meta, body } = parseFrontmatter(raw);
   const name = meta.name || entry.name || path.basename(dir);
+  const toolNote = portedToolNote(raw, body);
   return {
     name,
     // Namespaced so an external skill can never be confused with, or shadow,
@@ -93,7 +95,8 @@ function hydrate(entry) {
     category: entry.parentPack ? `External · ${entry.parentPack}` : "External",
     external: true,
     path: file,
-    body,
+    body: toolNote ? toolNote + "\n" + body : body,
+    toolNote,
   };
 }
 

@@ -20,7 +20,7 @@ too, even with no model key: the command runs the launcher directly and doesn't 
 
 ### 1. OmniBots is installed in your user folder, next to `.omni`
 
-The one-line installer puts it in `%USERPROFILE%\.omnibots` (for this PC: `C:\Users\ThePa\.omnibots`):
+The one-line installer puts it in `%USERPROFILE%\.omnibots` (for example `C:\Users\<you>\.omnibots`):
 
 ```powershell
 irm https://raw.githubusercontent.com/tattooinmtl/Omnibots/master/install.ps1 | iex
@@ -36,7 +36,7 @@ That folder then holds:
 It needs **Python 3.12 or newer** and **Git** on the PC. The installer offers to install both with winget if they're
 missing. Run the same line again to update OmniBots. The installer runs the OmniBots doctor at the end (section 5).
 
-**Check:** `C:\Users\ThePa\.omnibots\omnibots\__main__.py` and `C:\Users\ThePa\.omnibots\.venv\Scripts\python.exe` exist.
+**Check:** `%USERPROFILE%\.omnibots\omnibots\__main__.py` and `%USERPROFILE%\.omnibots\.venv\Scripts\python.exe` exist.
 
 **The only folders either app keeps config, keys or data in:**
 
@@ -73,7 +73,7 @@ The launcher looks in this order and uses the first folder that has the OmniBots
 3. `C:\omnibots` (an old developer copy)
 4. `%LOCALAPPDATA%\OmniBots` (the old install location)
 
-On this PC, `OMNIBOTS_DIR` is set to `C:\Users\ThePa\.omnibots` (a user environment variable). Omni only sees a
+If you set `OMNIBOTS_DIR` (a user environment variable), point it at `%USERPROFILE%\.omnibots`. Omni only sees a
 changed variable after it's **closed and opened again**.
 
 **Check (PowerShell):** `[Environment]::GetEnvironmentVariable("OMNIBOTS_DIR", "User")`
@@ -136,7 +136,7 @@ The last report is in `%USERPROFILE%\.omnibots\logs\doctor.json`. Omni's own `/d
 1. Close Omni fully and open it again.
 2. Run `/omnibots status`. Before the first start it should say **OmniBots is not running**.
 3. Run `/omnibots`. It should say **OmniBots started … version 0.3.0** (or newer) and name
-   `C:\Users\ThePa\.omnibots\.venv\Scripts\python.exe`. The OmniBots icon appears in the tray.
+   `%USERPROFILE%\.omnibots\.venv\Scripts\python.exe`. The OmniBots icon appears in the tray.
 4. Run `/omnibots status` for the short status, then `/omnibots stop`, which should say **OmniBots closed**.
 5. In OmniBots, open **Settings → Doctor** and press **Run doctor**. It should report no problems and say the
    providers come from Omni.
