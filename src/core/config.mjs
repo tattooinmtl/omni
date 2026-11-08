@@ -1244,6 +1244,7 @@ function knownKeyValues() {
   const add = (v) => { const s = String(v || "").trim(); if (s.length >= 12) vals.add(s); };
   for (const prov of Object.values(liveSettings?.providers || {})) {
     add(prov?.apiKey);
+    add(prov?.usageKey); // a separate key for a usage API (Reflection's spend gateway)
     for (const v of Object.values(prov?.accounts || {})) add(v);
   }
   for (const [k, v] of Object.entries(process.env)) if (/^OMNI_[A-Z0-9_]*KEY\d*$/.test(k)) add(v);

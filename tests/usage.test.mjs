@@ -184,6 +184,70 @@ await test("Kimi/Moonshot: available, cash and voucher balance", async () => {
   assert.match(out, /cash 3\.00 CNY, vouchers 46\.58 CNY/);
 });
 
+// A fetch stub for Reflection's spend gateway: logs paged by `page`, /key/info.
+function reflectionRoutes({ pages, keyInfo, status = 200 }) {
+  const calls = [];
+  const fn = async (url, opts = {}) => {
+    const u = new URL(String(url));
+    calls.push({ url: String(url), auth: opts.headers?.Authorization, query: Object.fromEntries(u.searchParams) });
+    if (status !== 200) return json({ error: { message: "Incorrect API key provided." } }, status);
+    if (u.pathname === "/spend/logs/v2") {
+      const p = Number(u.searchParams.get("page"));
+      return json({ data: pages[p - 1] || [], total_pages: pages.length, page: p });
+    }
+    if (u.pathname === "/key/info" && keyInfo) return json({ info: keyInfo });
+    return json({ error: { message: "not found" } }, 404);
+  };
+  fn.calls = calls;
+  return fn;
+}
+const REFL = { baseUrl: "https://api.reflection.ai/openai/v1", apiKey: "chat-jwt" };
+const REFL_NOW = Date.UTC(2026, 10, 8, 15, 30, 0); // 2026-11-08 15:30:00 UTC
+
+await test("Reflection: the account API is its spend gateway, picked from the address", () => {
+  assert.equal(usageApiFor({ baseUrl: "https://api.reflection.ai/openai/v1" }), "reflection");
+  assert.equal(usageApiFor({ baseUrl: "https://oapi.reflectionai.dev/v1" }), "reflection");
+});
+
+await test("Reflection: this month's total across every page, and the % left of the key's budget", async () => {
+  const f = reflectionRoutes({
+    pages: [[{ spend: 1.25, messages: "secret prompt" }, { spend: 0.5 }], [{ spend: 3.25 }]],
+    keyInfo: { spend: 99, max_budget: 20 },
+  });
+  const lines = await usageReport(model(REFL, { providerName: "reflection" }), { fetchImpl: f, now: REFL_NOW });
+  const acct = lines.slice(lines.indexOf("account:") + 1, lines.findIndex((l) => /^rate limits/.test(l)));
+  assert.deepEqual(acct, ["  spent this month: $5.00", "  left: 75% of $20.00"], lines.join("\n"));
+  assert.doesNotMatch(lines.join("\n"), /secret prompt/, "log rows are never printed");
+  const logs = f.calls.filter((c) => c.url.startsWith("https://oapi.reflectionai.dev/spend/logs/v2"));
+  assert.equal(logs.length, 2, "both pages read");
+  assert.deepEqual(logs[0].query, { start_date: "2026-11-01 00:00:00", end_date: "2026-11-08 15:30:00", page: "1", page_size: "1000" });
+  assert.ok(f.calls.every((c) => c.auth === "Bearer chat-jwt"), "the chat key is the fallback");
+});
+
+await test("Reflection: usageKey is sent instead of the chat key, and usageBudget skips /key/info", async () => {
+  const f = reflectionRoutes({ pages: [[{ spend: 9.5 }]] });
+  const out = (await usageReport(model({ ...REFL, usageKey: "sk-spend", usageBudget: 10 }), { fetchImpl: f, now: REFL_NOW })).join("\n");
+  assert.match(out, /spent this month: \$9\.50/);
+  assert.match(out, /left: 5\.0% of \$10\.00/);
+  assert.ok(f.calls.every((c) => c.auth === "Bearer sk-spend"));
+  assert.ok(!f.calls.some((c) => c.url.includes("/key/info")));
+});
+
+await test("Reflection: with no budget anywhere, the total stands and the % left says how to get it", async () => {
+  const f = reflectionRoutes({ pages: [[{ spend: 2 }]], keyInfo: { spend: 2, max_budget: null } });
+  const out = (await usageReport(model(REFL), { fetchImpl: f, now: REFL_NOW })).join("\n");
+  assert.match(out, /spent this month: \$2\.00/);
+  assert.match(out, /left: unknown — the key has no budget; set "usageBudget"/);
+});
+
+await test("Reflection: a key the spend gateway refuses points at usageKey, not /apikey", async () => {
+  const f = reflectionRoutes({ pages: [], status: 401 });
+  const out = (await usageReport(model(REFL), { fetchImpl: f, now: REFL_NOW })).join("\n");
+  assert.match(out, /account: couldn't read it — the spend API \(oapi\.reflectionai\.dev\) refused the key \(401.*Incorrect API key provided\.\)/);
+  assert.match(out, /"usageKey" under providers\.reflection/);
+  assert.doesNotMatch(out, /Check it with \/apikey/);
+});
+
 await test("a refused key is reported with the /apikey hint, not thrown", async () => {
   const provider = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "bad" };
   const f = routes({ "/api/v1/key": () => json({ error: { message: "No auth credentials found" } }, 401) });

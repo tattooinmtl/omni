@@ -95,6 +95,10 @@
     // "echoReasoning": Beam requires every earlier assistant message to carry
     // back the reasoning that produced it, or the request 400s. Other
     // providers must NOT set this — the field is not in the OpenAI chat spec.
+    // /usage shows this month's spend and the % left from Reflection's spend
+    // gateway (oapi.reflectionai.dev). Optional: "usageKey" if that gateway
+    // wants a different key than chat, "usageBudget" (in $) if the key has no
+    // budget of its own to measure the % against.
     "reflection": {
       "baseUrl": "https://api.reflection.ai/openai/v1",
       "apiKey": "",

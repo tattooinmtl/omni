@@ -8,13 +8,21 @@
 //   2. The rate-limit headers of the last reply (core/rate-limits.mjs), which
 //      most OpenAI-compatible providers send with every response.
 //
+// Reflection AI keeps spend on a separate gateway (oapi.reflectionai.dev,
+// LiteLLM-style): /spend/logs/v2 for this month's total and /key/info for the
+// key's budget. That gateway may want its own key, so /usage reads
+// `usageKey` (or OMNI_REFLECTION_USAGE_KEY) before falling back to the chat key,
+// and only ever prints the total and the share left, never the log rows.
+//
 // A provider can name its account API in settings.json with
-// `"usageApi": "openrouter" | "deepseek" | "moonshot" | "none"`, for a
-// gateway that copies one of them under its own address.
+// `"usageApi": "openrouter" | "deepseek" | "moonshot" | "reflection" | "none"`,
+// for a gateway that copies one of them under its own address.
 import { authHeaders } from "./provider.mjs";
 import { lastRateLimits, describeRateLimits, formatAge } from "./rate-limits.mjs";
 
 const TIMEOUT_MS = 10000;
+const REFLECTION_SPEND_URL = "https://oapi.reflectionai.dev";
+const REFLECTION_MAX_PAGES = 20; // 20,000 log rows — far past any month's use
 
 export function usageApiFor(provider = {}) {
   if (provider.usageApi) return String(provider.usageApi).toLowerCase();
@@ -23,6 +31,7 @@ export function usageApiFor(provider = {}) {
   if (host === "openrouter.ai" || host.endsWith(".openrouter.ai")) return "openrouter";
   if (host === "api.deepseek.com") return "deepseek";
   if (host === "api.moonshot.cn" || host === "api.moonshot.ai") return "moonshot";
+  if (host === "api.reflection.ai" || host === "oapi.reflectionai.dev") return "reflection";
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") return "local";
   return null;
 }
@@ -100,6 +109,47 @@ const ACCOUNT = {
     }
     return lines;
   },
+
+  async reflection(provider, fetchImpl, now) {
+    const key = String(provider.usageKey || process.env.OMNI_REFLECTION_USAGE_KEY || provider.apiKey || "");
+    const auth = { ...provider, apiKey: key };
+    const root = String(provider.usageBaseUrl || REFLECTION_SPEND_URL).replace(/\/+$/, "");
+    const d = new Date(now);
+    const stamp = (t) => t.toISOString().slice(0, 19).replace("T", " ");
+    const start = stamp(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)));
+    let spent = 0;
+    try {
+      for (let page = 1; page <= REFLECTION_MAX_PAGES; page++) {
+        const q = new URLSearchParams({ start_date: start, end_date: stamp(d), page: String(page), page_size: "1000" });
+        const j = await getJson(`${root}/spend/logs/v2?${q}`, auth, fetchImpl);
+        for (const row of j?.data || []) spent += Number(row?.spend) || 0;
+        if (!(page < Number(j?.total_pages))) break;
+      }
+    } catch (err) {
+      if (err?.status === 401 || err?.status === 403) {
+        err.hint = `the spend API (${new URL(root).host}) refused the key (${err.message}). It may want its own key: `
+          + `set "usageKey" under providers.reflection in settings.json, or OMNI_REFLECTION_USAGE_KEY.`;
+      }
+      throw err;
+    }
+
+    // The budget: the key's own (LiteLLM /key/info), else one set in settings.
+    let budget = Number(provider.usageBudget) || null;
+    if (!budget) {
+      try {
+        const k = await getJson(`${root}/key/info`, auth, fetchImpl);
+        budget = Number((k?.info || k)?.max_budget) || null;
+      } catch { /* not every key may read /key/info; the total still stands */ }
+    }
+    const lines = [`spent this month: ${money(spent)}`];
+    if (budget) {
+      const left = Math.max(0, Math.min(100, (1 - spent / budget) * 100));
+      lines.push(`left: ${left.toFixed(left < 10 ? 1 : 0)}% of ${money(budget)}`);
+    } else {
+      lines.push(`left: unknown — the key has no budget; set "usageBudget" (in $) under providers.reflection to see it`);
+    }
+    return lines;
+  },
 };
 
 // Everything /usage prints, as lines. `fetchImpl` and `now` are for tests.
@@ -114,11 +164,11 @@ export async function usageReport(model, { fetchImpl = fetch, now = Date.now() }
     lines.push("account: a local server — no account, no usage limits");
   } else if (api && ACCOUNT[api]) {
     try {
-      const acct = await ACCOUNT[api](provider, fetchImpl);
+      const acct = await ACCOUNT[api](provider, fetchImpl, now);
       lines.push(acct.length ? "account:" : "account: the provider answered but reported nothing");
       for (const l of acct) lines.push(`  ${l}`);
     } catch (err) {
-      const why = err?.status === 401 || err?.status === 403
+      const why = err?.hint ? err.hint : err?.status === 401 || err?.status === 403
         ? `the key was refused (${err.message}). Check it with /apikey.`
         : err?.name === "TimeoutError" ? "no answer within 10s" : (err?.message || String(err));
       lines.push(`account: couldn't read it — ${why}`);

@@ -92,6 +92,16 @@ await test("a configured key in a format no pattern knows is redacted too", asyn
   ok(!out.includes(odd), out);
 });
 
+await test("a provider's separate usageKey (Reflection's spend gateway) is redacted too", async () => {
+  const settings = await loadSettings();
+  const first = Object.keys(settings.providers)[0];
+  const spendKey = "rf9Wq3Lp7Zt2Vb6Nx4Mc";
+  settings.providers[first].usageKey = spendKey;
+  try {
+    ok(!redactForModel(`"usageKey": "${spendKey}"`).includes(spendKey), "usageKey leaked");
+  } finally { delete settings.providers[first].usageKey; }
+});
+
 await test("an OMNI_*_KEY variable's value is redacted", () => {
   process.env.OMNI_CUSTOMHOST_KEY = "plainvalue-with-no-known-prefix-42";
   try {
