@@ -476,6 +476,16 @@ the session log, and the model is told to re-run a tool if it needs the rest.
 `"pruneAtTokens": 30000` under `compaction` moves that point, and
 `"pruneToolResults": false` turns it off.
 
+Tool definitions are sent on every step too, so only the everyday ones are:
+reading, searching, editing, running commands and tests, git status/diff/commit,
+todos, review, memory and web search, about 30 of the 90-odd. The rest are
+listed by name in a `load_tools` tool, which loads the ones a task needs for
+the rest of the session; calling one directly also works. That cuts the tool
+definitions from ~14k to ~5k tokens per step. In `agent/settings.json`,
+`"alwaysLoadTools": ["git_log", "lsp"]` keeps chosen tools always loaded and
+`"deferTools": false` sends them all, as before. Tools from an MCP server set
+to `directTools` are always sent.
+
 ### Hooks
 
 Hooks run your own command at a point in the agent loop. Put them in

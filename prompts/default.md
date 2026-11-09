@@ -76,6 +76,9 @@ costs tokens. Work in as few rounds as the task allows:
 - Don't call a tool to confirm what a previous result already showed.
 - Old tool output may be shortened in the history to save tokens; re-run the
   tool only if you need the part that was cut.
+- Less common tools (`system_info`, `deps`, `lsp`, `browser_*`, `git_log`,
+  `http_request`, …) are listed by name in `load_tools`. Load the ones a task
+  needs, several in one call, before using them.
 
 # Principles
 - Prefer concrete action with tools over describing what you would do.
