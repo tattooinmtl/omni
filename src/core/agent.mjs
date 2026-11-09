@@ -29,6 +29,7 @@ import {
 import fs from "node:fs";
 import { runHooks, hasHooks } from "./hooks.mjs";
 import { forgeCompact, planCompaction, mechanicalDigest } from "./compaction.mjs";
+import { offeredTools, loadToolsDef, loadTools, LOAD_TOOLS } from "./tool-deferral.mjs";
 import {
   getPermissionMode, planModeAllows, PLAN_DENIED, EDIT_TOOLS, syncModeGuidance, isMutatingCall,
 } from "./permission-mode.mjs";
@@ -570,6 +571,7 @@ export function systemPrompt() {
     "- Search narrowly, and never repeat the same search, read, or command. Once a check passes, don't run it again.",
     "- Don't call a tool to confirm what a previous result already showed (e.g. re-reading a file right after edit_file succeeded).",
     "- Old tool output may be shortened in the history to save tokens; re-run the tool only if you actually need the part that was cut.",
+    "- Less common tools (system_info, deps, lsp, browser_*, git_log, http_request, …) are listed by name in load_tools. Load the ones a task needs, several in one call, before using them.",
     "7. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, what the review said, and anything left open.",
     "",
     "# Guidelines",
@@ -879,6 +881,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   // allowedTools: a Set of tool names a named sub-agent may use. Only those
   // are offered to the model; the permission gate refuses the rest anyway.
   const turnTools = allowedTools ? tools.filter((t) => allowedTools.has(t.function?.name)) : tools;
+  // Tool definitions sent each step: the core set plus what this session has
+  // loaded; the rest wait behind load_tools (core/tool-deferral.mjs). A named
+  // sub-agent's allowed list is already short, so it is sent whole.
+  const loadedTools = session ? (session.loadedTools ||= new Set()) : new Set();
+  const stepTools = () => (allowedTools ? { offered: turnTools, deferred: [] } : offeredTools(turnTools, { settings, loaded: loadedTools }));
   // beforeMutation: called once, right before the first call this turn that
   // changes something runs. The REPL takes its /rewind checkpoint there.
   // turnLimit: a hard cap (headless --max-turns) that wins over the routed
@@ -941,7 +948,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
 
   // Schema registry for the tolerant text-tool parser, and a budget of
   // corrective retries when the model emits a malformed/truncated tool call.
-  const paramRegistry = buildParamRegistry(turnTools);
+  // Every tool, loaded or not, so a direct call to a deferred one still parses.
+  const paramRegistry = buildParamRegistry([...turnTools, loadToolsDef([])]);
   const MAX_PARSE_RECOVERIES = 3;
   let parseRecoveries = 0;
   let wrapUpNudged = false;
@@ -999,6 +1007,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       ));
     }
 
+    const { offered: hopTools, deferred: hopDeferred } = stepTools();
     let resp;
     let streamedContent = false;
     let routerResult = { thinkStarted: false, answerStarted: false };
@@ -1049,7 +1058,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // placeholders with no pixel data, so the model would hallucinate.
         let prompt;
         try {
-          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages, model.key), turnTools);
+          prompt = await renderTemplate(model.chatTemplate, stripImageParts(messages, model.key), hopTools);
         } catch (e) {
           stopStatus();
           errorLine(`Template render failed: ${e.message}`);
@@ -1077,14 +1086,14 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         const quiet = !hasNewImages(messages);
         const visible = hopModel.vision === true ? shaped : stripImageParts(shaped, hopModel.key, { quiet });
         const providerMessages = hopTextTools
-          ? messagesWithTextTools(stripImageParts(visible, hopModel.key, { quiet: true }), turnTools)
+          ? messagesWithTextTools(stripImageParts(visible, hopModel.key, { quiet: true }), hopTools)
           : visible;
         resp = await chatStreamWithRetry({
           model: hopModel,
           settings,
           session,
           messages: providerMessages,
-          tools: hopTextTools ? null : turnTools,
+          tools: hopTextTools ? null : hopTools,
           allowFailover: hopModel === model,
           rateLimitFailFast,
           signal,
@@ -1354,7 +1363,12 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             // permissions=null (which defaults to "allow" — see
             // checkPermission and TODO #2).
             const lockKey = fileLockKey(name, args);
-            const run = () => runTool(name, args, { permissions, confirmTool, signal });
+            // A deferred tool called without load_tools still runs; its
+            // definition is sent from the next step on.
+            if (hopDeferred.some((t) => t.function?.name === name)) loadedTools.add(name);
+            const run = name === LOAD_TOOLS
+              ? async () => loadTools(args, hopDeferred, loadedTools)
+              : () => runTool(name, args, { permissions, confirmTool, signal });
             if (lockKey) {
               const prev = fileLocks.get(lockKey) || Promise.resolve();
               let release;

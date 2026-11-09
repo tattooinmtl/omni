@@ -70,7 +70,7 @@ export const READ_ONLY_TOOLS = new Set([
   "find_skill", "invoke_skill", "ask_user", "agent_status", "process_status",
   "read_media_file", "read_video_file", "self_review", "project_todo", "spawn_agent",
   "browser_navigate", "browser_get_text", "browser_get_html", "browser_screenshot", "browser_extract", "browser_status",
-  "exit_plan_mode", "goal_complete",
+  "exit_plan_mode", "goal_complete", "load_tools",
 ]);
 
 // Edits accept-edits mode lets through without asking.

@@ -8,9 +8,33 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.6 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/defer-tool-schemas · session bf959f63-0a14-426e-842f-0ac2356a247e
+- **Tool definitions: ~14k → ~5k tokens per step.** Every step sent the
+  definition of every tool, 93 of them with the bundled extensions. Now only
+  the everyday set is sent (reading, searching, editing, running commands
+  and tests, git status/diff/commit, todos, `self_review`, skills, memory,
+  web search and fetch, the `mcp` proxy). The rest (git_log/push/branch…,
+  browser_*, lsp, deps, system_info, the settings and memory-maintenance
+  tools, sub-agents, …) are listed by name in a new `load_tools` tool:
+  `load_tools({ names })` or `load_tools({ query })` loads them for the
+  rest of the session, from the next step. A hidden tool the model calls
+  directly still runs and is loaded the same way, so nothing stops working.
+  The prompt tells the model to load what a task needs in one call.
+- Settings: `"alwaysLoadTools": [...]` keeps chosen tools always sent;
+  `"deferTools": false` sends them all, as before. Tools from an MCP server
+  set to `directTools` and a named sub-agent's own tool list are always sent
+  whole. `load_tools` is allowed in plan mode.
+- Tests: `tool-deferral.test.mjs` covers which tools are sent, the
+  `load_tools` listing, loading by name and by query, unknown names, both
+  settings, MCP direct tools, plan mode, the real registry's split, and three
+  real `runTurn`s against the mock provider: loading then using a tool, a
+  direct call to a hidden tool, and `deferTools: false`.
+
 ## 3.6.5 — 2026-11-08
 
-- **Shipped:** this PR · TattooAI/token-usage-optimization-2a2f05 · session bf959f63-0a14-426e-842f-0ac2356a247e
+- **Shipped:** [#67](https://github.com/tattooinmtl/omni/pull/67) · 096c3d9 · TattooAI/token-usage-optimization-2a2f05 · session bf959f63-0a14-426e-842f-0ac2356a247e
 - **Fewer tokens per step: old tool output is trimmed.** Every step resends
   the whole conversation, so a large file read or command output was paid for
   again on every later step. Once the context passes 48k tokens (or half the
