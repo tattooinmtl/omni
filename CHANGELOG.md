@@ -8,6 +8,37 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.5 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/token-usage-optimization-2a2f05 · session bf959f63-0a14-426e-842f-0ac2356a247e
+- **Fewer tokens per step: old tool output is trimmed.** Every step resends
+  the whole conversation, so a large file read or command output was paid for
+  again on every later step. Once the context passes 48k tokens (or half the
+  window on a smaller model), each tool result older than the last four steps
+  that is over 2,000 characters is cut to its first 1,200 and last 400, with a
+  note telling the model to re-run the tool if it needs the rest. The trim
+  happens in one sweep and again only after the context has grown by a
+  quarter of that budget, so a provider's prompt cache keeps hitting in
+  between. A dim line says how much it saved. The full output stays in the
+  session log. `compaction.pruneAtTokens` in `settings.json` moves the
+  budget, `compaction.pruneToolResults: false` turns it off; lean mode is
+  unchanged (it already sends old results as stubs).
+- **Fewer tool rounds: the prompt asks for them.** The built-in prompt (and
+  `prompts/default.md`) has a new "Tool economy" section: request
+  independent calls together in one response (they already ran in parallel,
+  but the prompt never said so), don't re-read files or repeat searches and
+  commands, read line ranges instead of whole large files, and don't re-check
+  what a result already showed. The 7-step workflow now scales to the task
+  (a question gets only the reads that answer it), exploration is no longer
+  "free to use freely", `self_review` (a separate model call) is for
+  changes of substance rather than every non-trivial edit, and
+  `find_skill` is for multi-step workflows, not every request.
+- Tests: `tool-pruning.test.mjs` covers the head/tail cut, the last four
+  steps kept whole, short and image results untouched, idempotence, the
+  budget, the one-sweep-then-wait behaviour, both settings, small windows,
+  re-arming after compaction, the pruned history reaching the provider in a
+  real `runTurn`, and the prompt wording in both prompt files.
+
 ## 3.6.4 — 2026-11-08
 
 - **Shipped:** this PR · TattooAI/agents-merge-when-green · session 00ebccd9-1036-45bd-aa4e-54a41ef9f368

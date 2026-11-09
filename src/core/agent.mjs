@@ -551,9 +551,9 @@ export function systemPrompt() {
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
     "# Task workflow",
-    "Work through every task in these steps, in order. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
+    "Work through every task in these steps, in order, scaled to the size of the task: a question needs only the reads that answer it, a small fix needs read, edit, one check. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
     "1. UNDERSTAND — read the whole prompt as one piece, then silently categorize it: what kind of task is this (question / bug fix / new feature / refactor / investigation / config change / something else), what is it actually asking for, what parts of the codebase does it touch.",
-    "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Read-only tools are always fine to use freely at this stage — this step is what makes step 3 accurate instead of a guess.",
+    "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Use the fewest calls that answer what you need, and request independent ones together in one response — this step is what makes step 3 accurate instead of a guess.",
     "3. PLAN — state how you categorized the request and the concrete steps you intend to take. Whether you then stop depends on what the work would do:",
     "   STOP and wait for the user when the work is RISKY OR UNDERDETERMINED: it modifies or deletes existing code or data the user did not point you at; it is a large refactor or migration; it touches auth, payments, secrets, or production config; it is irreversible; or there is more than one reasonable approach and the right call depends on a preference you don't know (in which case list the options with their tradeoffs). In these cases reply in plain text ONLY — no edit_file, apply_patch, write_file, mutating run_shell, or git_commit yet.",
     "   PROCEED without stopping when the request is clear and ADDITIVE: building something new (a new project, app, file, feature, endpoint, component, test), or a small well-scoped fix. Say the plan in a couple of lines, then carry it out in the same turn. 'Build me X' is an instruction to build X, not a request for a proposal — stopping to ask permission to start is a failure to do the task.",
@@ -561,13 +561,21 @@ export function systemPrompt() {
     "3b. IF BLOCKED ON MISSING INFORMATION — at any point, if something you need to proceed correctly is missing or unclear (a file that should exist doesn't, a requirement could mean two different things, you need a credential/URL/decision only the user has), STOP and ask the user directly instead of guessing on anything consequential. Only proceed on your own judgment for genuinely low-stakes, easily-reversible details.",
     "4. IMPLEMENT — once the user has approved the plan (or the task was small enough to skip step 3), execute it start to finish without stopping to ask again — you already have what you need. Make changes in small increments, one file at a time. Use apply_patch for multi-hunk/multi-file edits, edit_file for tiny exact replacements, write_file only for new files or full rewrites. Match the conventions of the surrounding code. For multi-step work, track it in project_todo (add each task, mark the active one in_progress) as you go rather than re-asking the user anything already settled by the approved plan.",
     "5. VERIFY — this step is not optional and is not a formality. Prove the change actually works: run the relevant tests, build, or linter (run_test / run_shell); check git_diff to confirm the change is exactly what you intended. If verification fails OR you didn't actually run it, you are NOT done — fix it and re-verify, looping back to step 4/5 as many times as it takes, on your own, without waiting for the user to tell you to. Never report a task as finished, or that something \"should work,\" without having actually run something that proves it.",
-    "6. REVIEW — for any non-trivial change, call self_review before you report. It runs an independent critic that sees only the task and your diff, and returns findings with a VERDICT. Step 5 proves the code RUNS; this is what catches a requirement you skipped, a case you didn't handle, or behaviour you broke elsewhere — the things you are least able to spot in your own work, because you already believe it's right. Fix every BLOCKER and MAJOR, then re-verify. If you disagree with a finding, say so with a reason in your summary; do not silently drop it. Skip this only for genuinely trivial edits (a typo, a one-line config value).",
+    "6. REVIEW — for a change of substance (new behaviour, several files, or logic tests don't fully cover), call self_review once before you report. It runs an independent critic that sees only the task and your diff, and returns findings with a VERDICT. Step 5 proves the code RUNS; this is what catches a requirement you skipped, a case you didn't handle, or behaviour you broke elsewhere — the things you are least able to spot in your own work, because you already believe it's right. Fix every BLOCKER and MAJOR, then re-verify. If you disagree with a finding, say so with a reason in your summary; do not silently drop it. Skip it for small, well-tested edits (a typo, a config value, a one-function fix whose test passes) — it is a separate model call and costs as much as a step of your own.",
+    "",
+    "# Tool economy",
+    "Every step resends the whole conversation, so each extra round of tool calls costs tokens. Work in as few rounds as the task allows:",
+    "- Batch independent calls: when calls don't depend on each other's results (reading several files, git_status with git_diff, two searches), request them all in ONE response. They run in parallel.",
+    "- Read once. Don't re-read a file you already read unless it changed since; read the lines you need (offset/limit) or search for them instead of whole large files; use read_many_files for several files.",
+    "- Search narrowly, and never repeat the same search, read, or command. Once a check passes, don't run it again.",
+    "- Don't call a tool to confirm what a previous result already showed (e.g. re-reading a file right after edit_file succeeded).",
+    "- Old tool output may be shortened in the history to save tokens; re-run the tool only if you actually need the part that was cut.",
     "7. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, what the review said, and anything left open.",
     "",
     "# Guidelines",
     "- Always read a file before editing it so you know the exact content.",
     "- You have tools for a reason — use them. Don't describe a change in prose when you could make it with edit_file/apply_patch; don't guess at file contents when read_file would tell you; don't guess at project structure when project_inspect/rag_search would tell you. A turn that ends without having used any tool, on a task that needed one, is an incomplete turn.",
-    "- Check for and use relevant skills before improvising a workflow from scratch — a skill encodes a known-good procedure for exactly this kind of task.",
+    "- For a multi-step workflow of a known kind (a release, a migration, a review), check for a relevant skill before improvising one — a skill encodes a known-good procedure. Questions and small edits don't need a skill lookup.",
     "- Use rag_search to find relevant code across the workspace when you don't know where something lives; fall back to search for exact patterns.",
     "- Use git_status and git_diff before summarizing changes or committing.",
     "- Use git_commit only when the user explicitly asks you to commit.",
@@ -583,7 +591,7 @@ export function systemPrompt() {
     "- Keep prose concise. After finishing, briefly summarize what you did.",
     "",
     "# Skill invocation",
-    "Before improvising a workflow, call `find_skill(query)` to see if one fits — no bodies are ambient. Then `invoke_skill(command)` loads that skill's instructions for the current turn only (evicted after). Users can also type `/<command>`. Full enforcement: `/using-superpowers`.",
+    "Before improvising a multi-step workflow, call `find_skill(query)` once to see if one fits — no bodies are ambient. Then `invoke_skill(command)` loads that skill's instructions for the current turn only (evicted after). Users can also type `/<command>`. Full enforcement: `/using-superpowers`.",
   ].join("\n");
 }
 
@@ -686,6 +694,67 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
     return { ...m, content: stub };
   });
   return out;
+}
+
+// Old tool output is most of a long session's tokens: every step resends
+// the whole history, so a 30k-char file read twenty steps ago is paid for
+// twenty more times. pruneStaleToolResults cuts each tool result older than
+// the last `keepRecentTurns` steps down to its head and tail, in place. The
+// full output stays in the session log; the model is told it can re-run the
+// tool. Already-pruned and short results are left alone, so it is idempotent.
+export const PRUNED_MARKER = "…[older tool output pruned";
+export function pruneStaleToolResults(messages, { keepRecentTurns = 4, maxChars = 2000, head = 1200, tail = 400 } = {}) {
+  let assistantsAfter = 0;
+  let pruned = 0;
+  let savedChars = 0;
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "assistant") { assistantsAfter++; continue; }
+    if (m.role !== "tool" || assistantsAfter < keepRecentTurns) continue;
+    // Multipart content (images) is handled by the image-stripping path.
+    if (typeof m.content !== "string" || m.content.length <= maxChars) continue;
+    if (m.content.includes(PRUNED_MARKER)) continue;
+    const raw = m.content;
+    const cut = raw.length - head - tail;
+    m.content = `${raw.slice(0, head)}\n${PRUNED_MARKER}: ${cut} of ${raw.length} chars cut to save tokens — run the tool again if you need them]…\n${raw.slice(-tail)}`;
+    pruned++;
+    savedChars += raw.length - m.content.length;
+  }
+  return { pruned, savedChars };
+}
+
+// When to prune: once the conversation passes a soft budget (48k tokens, or
+// half the usable window on a smaller model), long before the 85% compaction.
+// It prunes in one sweep and then waits until the context has grown another
+// quarter of the budget, rather than trimming one result every step: each
+// rewrite of an old message invalidates a provider's prompt cache from that
+// point on, so batching the rewrites keeps the cache hitting in between.
+// settings.compaction.pruneToolResults: false turns it off;
+// settings.compaction.pruneAtTokens moves the budget.
+export const DEFAULT_PRUNE_AT_TOKENS = 48000;
+export function maybePruneToolResults({ model, settings, messages, session }) {
+  const cfg = settings?.compaction || {};
+  if (cfg.pruneToolResults === false) return null;
+  const window = model?.contextWindow || 0;
+  const usable = window ? Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5)) : 0;
+  const configured = Number(cfg.pruneAtTokens);
+  const budget = Number.isFinite(configured) && configured > 0
+    ? configured
+    : (usable ? Math.min(DEFAULT_PRUNE_AT_TOKENS, Math.floor(usable * 0.5)) : DEFAULT_PRUNE_AT_TOKENS);
+  const used = session?.contextTokens || estimateTokens(messages);
+  if (used < budget) return null;
+  // The provider's count includes tool schemas; the mark is a message-only
+  // estimate, so the regrowth check compares estimate with estimate.
+  const before = estimateTokens(messages);
+  // Smaller than at the last prune: compacted or cleared since, start over.
+  if (session?.toolPruneMark && before < session.toolPruneMark) session.toolPruneMark = 0;
+  if (session?.toolPruneMark && before < session.toolPruneMark + Math.floor(budget / 4)) return null;
+  const r = pruneStaleToolResults(messages);
+  const after = r.pruned ? estimateTokens(messages) : before;
+  if (session) session.toolPruneMark = after;
+  if (!r.pruned) return null;
+  session?.setContextTokens?.(after);
+  return { ...r, before, after };
 }
 
 // Auto-compact when the live conversation nears the context window. The
@@ -891,6 +960,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // point of lean is to send fewer tokens PER hop — waiting for 85% of
     // context defeats that purpose on long tool-heavy sessions.
     if (await maybeAutoCompact({ model, settings, messages, session, sessionGoal, signal })) compactionsRun++;
+    // Lean mode already sends old results as hash stubs.
+    if (!isLean) {
+      const pr = maybePruneToolResults({ model, settings, messages, session });
+      if (pr) console.log(`  ${c.dim(`▸ trimmed ${pr.pruned} old tool output(s): ~${pr.before.toLocaleString()} → ~${pr.after.toLocaleString()} tokens per step`)}`);
+    }
     if (isLean) {
       const turnsSince = countCompletedTurns(messages) - initialAssistantCount;
       if (turnsSince > 0 && turnsSince % 6 === 0) {
