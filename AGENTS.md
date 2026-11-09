@@ -8,8 +8,12 @@ changes here. `CLAUDE.md` points here, so there is one copy to keep current.
 Work does not count as delivered while it sits on a branch. Unless the user
 says otherwise, finish every change by landing it on `main`:
 
-1. Run the full suite, `npm test` (`node tests/run-all.mjs`). It must be green.
-2. **Bump the version, every time, without being asked.** Every PR that merges
+1. **Get the latest `main` first.** `git fetch origin`, then bring
+   `origin/main` into your branch (rebase or merge) before testing, so the
+   suite runs on exactly what will land. If `main` moved, check your version
+   bump still points at the next free number (step 3).
+2. Run the full suite, `npm test` (`node tests/run-all.mjs`). It must be green.
+3. **Bump the version, every time, without being asked.** Every PR that merges
    into `main` gets the next patch version on the current line (3.5.5 → 3.5.6).
    Change it in `package.json` and in `package-lock.json` (the top-level field
    and `packages[""]`), and update the website fallback (below). Bump once per
@@ -17,15 +21,17 @@ says otherwise, finish every change by landing it on `main`:
    `main` moved past your version while you worked, re-bump to the next free
    number. Move to a new minor or major line (3.6.0, 4.0.0) only when the user
    asks.
-3. **Add an entry to [CHANGELOG.md](CHANGELOG.md)** for that version in the
+4. **Add an entry to [CHANGELOG.md](CHANGELOG.md)** for that version in the
    same PR (see below). No change reaches `main` without one.
-4. Commit and push to a branch.
-5. Open a PR into `main` and **merge it**. Wait for the checks (GitGuardian,
-   Sourcery) to finish first; do not merge over a failing one.
+5. Commit and push to a branch.
+6. Open a PR into `main` and **merge it right away**. Don't wait for the
+   GitHub checks (GitGuardian, Sourcery, CI): the green local suite from
+   step 2 is the gate. Don't turn on auto-merge or poll the checks either,
+   just merge. If a check fails after the merge, fix it in a follow-up PR.
 
 Pushing and merging on this repo (`tattooinmtl/omni`) is pre-authorized, so do
-it without stopping to ask. Ask only when checks fail, the merge conflicts, or
-the change is something the user did not request.
+it without stopping to ask. Ask only when the local suite fails, the merge
+conflicts, or the change is something the user did not request.
 
 ## The changelog is the record of what shipped
 
