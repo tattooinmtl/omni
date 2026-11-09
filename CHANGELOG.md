@@ -8,9 +8,18 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.4 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/agents-merge-when-green · session 00ebccd9-1036-45bd-aa4e-54a41ef9f368
+- **Agents merge as soon as the local suite is green.** AGENTS.md no longer
+  says to wait for the GitHub checks before merging: a green `npm test` is
+  the gate, and a check that fails afterwards gets a follow-up PR. Agents
+  also fetch `origin/main` and bring it into their branch before testing, so
+  what they test is what lands.
+
 ## 3.6.3 — 2026-11-08
 
-- **Shipped:** this PR · TattooAI/mirror-cli-commands-a02dd8 · session 00ebccd9-1036-45bd-aa4e-54a41ef9f368
+- **Shipped:** [#65](https://github.com/tattooinmtl/omni/pull/65) · a4bbf46 · TattooAI/mirror-cli-commands-a02dd8 · session 00ebccd9-1036-45bd-aa4e-54a41ef9f368
 - **Connected services.** Three new commands manage MCP servers as services,
   each defined by its own file in `<home>/mcp/<name>.json` (`agent/mcp/` by
   default):
