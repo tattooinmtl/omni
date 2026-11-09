@@ -217,7 +217,7 @@ export function buildChatBody({ model, messages, tools }) {
 function ensureValidBaseUrl(provider, context = "provider") {
   const base = provider?.baseUrl || "";
   if (!base || !/^https?:\/\//i.test(base)) {
-    throw new Error(`Invalid ${context} baseUrl: "${base}" (must be a valid URL starting with https:// or http:// — reconfigure with /connect or /addprovider)`);
+    throw new Error(`Invalid ${context} baseUrl: "${base}" (must be a valid URL starting with https:// or http:// — reconfigure with /login or /addprovider)`);
   }
   return base.replace(/\/$/, "");
 }

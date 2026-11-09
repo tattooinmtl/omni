@@ -20,6 +20,7 @@ import { HOME } from "../core/config.mjs";
 import { tools, impl } from "../tools/index.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
 import { atomicWriteFileSync } from "../core/atomic-write.mjs";
+import { authHeaderFor, authHeaderSync, refreshSignIn } from "./mcp-auth.mjs";
 
 const CACHE_PATH = path.join(HOME, "mcp-cache.json");
 const TRUST_PATH = path.join(HOME, "mcp-trust.json");
@@ -28,6 +29,11 @@ const RPC_TIMEOUT = 30000;
 let servers = {}; // { name: def }
 let settings = { idleTimeout: 10, directTools: false };
 let untrustedNames = new Set(); // names sourced from a project-local .mcp.json
+// Names defined by a file in <HOME>/mcp/ (services.mjs, /connect). Only these
+// get a saved sign-in attached, and only when the URL matches the one the
+// sign-in was made for (mcp-auth.mjs).
+let serviceNames = new Set();
+let sources = {}; // name -> "config" | "service" | "project"
 let confirmServer = null; // (name, target) => Promise<boolean> — set by the REPL
 const connections = new Map(); // name -> conn
 
@@ -118,6 +124,17 @@ function cacheTools(name, toolList) {
 
 function cachedTools(name) {
   return readCache()[name]?.tools || null;
+}
+
+function dropCachedTools(name) {
+  const cache = readCache();
+  if (!(name in cache)) return;
+  delete cache[name];
+  try {
+    atomicWriteFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
+  } catch {
+    /* cache is best-effort */
+  }
 }
 
 // ---- transports ------------------------------------------------------------
@@ -245,9 +262,37 @@ function connectHttp(name, def) {
     transport: "http",
     url: def.url,
     headers: def.headers || {},
+    service: serviceNames.has(name),
     nextId: 1,
     tools: [],
   };
+}
+
+// The connection's headers plus its saved sign-in, if it has one. A header
+// the definition sets itself wins, so a hand-written Authorization isn't
+// overridden.
+async function httpHeaders(conn, extra) {
+  const headers = { ...extra, ...conn.headers };
+  if (conn.service && !hasHeader(headers, "authorization")) {
+    const auth = await authHeaderFor(conn.name, conn.url);
+    if (auth) headers.Authorization = auth;
+  }
+  if (conn.sessionId) headers["Mcp-Session-Id"] = conn.sessionId;
+  return headers;
+}
+
+function httpHeadersSync(conn, extra) {
+  const headers = { ...extra, ...conn.headers };
+  if (conn.service && !hasHeader(headers, "authorization")) {
+    const auth = authHeaderSync(conn.name, conn.url);
+    if (auth) headers.Authorization = auth;
+  }
+  if (conn.sessionId) headers["Mcp-Session-Id"] = conn.sessionId;
+  return headers;
+}
+
+function hasHeader(headers, name) {
+  return Object.keys(headers).some((k) => k.toLowerCase() === name);
 }
 
 // Parse a StreamableHTTP SSE body, returning the JSON-RPC payload for `id`.
@@ -296,14 +341,12 @@ function rpc(conn, method, params) {
   });
 }
 
-async function rpcHttp(conn, method, params) {
+async function rpcHttp(conn, method, params, retried = false) {
   const id = conn.nextId++;
-  const headers = {
+  const headers = await httpHeaders(conn, {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
-    ...conn.headers,
-  };
-  if (conn.sessionId) headers["Mcp-Session-Id"] = conn.sessionId;
+  });
   const res = await fetch(conn.url, {
     method: "POST",
     headers,
@@ -311,6 +354,18 @@ async function rpcHttp(conn, method, params) {
   });
   const sid = res.headers.get("mcp-session-id");
   if (sid) conn.sessionId = sid;
+  if (res.status === 401) {
+    // An access token can be revoked or expire early: one refresh, one retry.
+    if (conn.service && !retried && (await refreshSignIn(conn.name))) return rpcHttp(conn, method, params, true);
+    const err = new Error(
+      conn.service
+        ? `MCP HTTP 401: "${conn.name}" needs you to sign in. Run /connect ${conn.name}`
+        : `MCP HTTP 401: "${conn.name}" needs a sign-in`
+    );
+    err.authRequired = true;
+    err.wwwAuthenticate = res.headers.get("www-authenticate") || "";
+    throw err;
+  }
   if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("text/event-stream") ? parseSse(await res.text(), id) : await res.json();
@@ -322,8 +377,7 @@ async function rpcHttp(conn, method, params) {
 async function notify(conn, method, params) {
   const body = JSON.stringify({ jsonrpc: "2.0", method, params });
   if (conn.transport === "http") {
-    const headers = { "Content-Type": "application/json", ...conn.headers };
-    if (conn.sessionId) headers["Mcp-Session-Id"] = conn.sessionId;
+    const headers = await httpHeaders(conn, { "Content-Type": "application/json" });
     await fetch(conn.url, { method: "POST", headers, body }).catch(() => {});
   } else if (!conn.dead) {
     conn.proc.stdin.write(body + "\n");
@@ -399,8 +453,10 @@ async function openConnection(name) {
     // connection object that would be reused by the next caller. Tear both
     // down so the next attempt starts clean.
     disconnect(name);
+    lastConnectError.set(name, e.message);
     throw e;
   }
+  lastConnectError.delete(name);
   conn.ready = true;
   cacheTools(name, conn.tools);
   touch(conn);
@@ -437,7 +493,7 @@ function endHttpSession(conn) {
   if (conn.transport !== "http" || !conn.sessionId) return;
   fetch(conn.url, {
     method: "DELETE",
-    headers: { ...conn.headers, "Mcp-Session-Id": conn.sessionId },
+    headers: httpHeadersSync(conn, {}),
   }).catch(() => { /* best effort — we're tearing down either way */ });
 }
 
@@ -581,7 +637,7 @@ const proxyToolDef = {
 async function mcpProxy(a = {}) {
   const names = Object.keys(servers);
   if (names.length === 0) {
-    return "No MCP servers configured. Add one to omni.config.json `mcpServers`, a project .mcp.json, or `omni install` an mcp package.";
+    return "No MCP servers configured. Connect a service with /connect, add one to omni.config.json `mcpServers` or a project .mcp.json, or `omni install` an mcp package.";
   }
 
   // call a tool
@@ -686,18 +742,24 @@ function registerDirectTool(server, t) {
 
 // Register the proxy tool (and any cached direct tools). Does NOT connect any
 // server — connections are lazy. Returns counts for the startup banner.
-export function registerMcpProxy(mcpCfg) {
-  servers = mcpCfg.servers || {};
-  settings = mcpCfg.settings || { idleTimeout: 10, directTools: false };
-  untrustedNames = mcpCfg.untrusted || new Set();
-
-  const names = Object.keys(servers);
-  if (names.length === 0) return { servers: 0, directTools: 0, names: [], untrusted: [] };
-
+function ensureProxyRegistered() {
   if (!tools.find((t) => t.function?.name === "mcp")) {
     tools.push(proxyToolDef);
     impl.mcp = mcpProxy;
   }
+}
+
+export function registerMcpProxy(mcpCfg) {
+  servers = mcpCfg.servers || {};
+  settings = mcpCfg.settings || { idleTimeout: 10, directTools: false };
+  untrustedNames = mcpCfg.untrusted || new Set();
+  serviceNames = mcpCfg.services || new Set();
+  sources = mcpCfg.sources || {};
+
+  const names = Object.keys(servers);
+  if (names.length === 0) return { servers: 0, directTools: 0, names: [], untrusted: [] };
+
+  ensureProxyRegistered();
 
   let direct = 0;
   for (const [name, def] of Object.entries(servers)) {
@@ -714,4 +776,65 @@ export function registerMcpProxy(mcpCfg) {
   }
 
   return { servers: names.length, directTools: direct, names, untrusted: names.filter((n) => untrustedNames.has(n)) };
+}
+
+// ---- services added and removed while running (/connect, /disconnect) ------
+
+// Make a service from <HOME>/mcp/ usable in this session without a restart.
+// Replaces any server of the same name (and drops its old connection).
+export function addServer(name, def, { service = true } = {}) {
+  disconnect(name);
+  servers[name] = def;
+  untrustedNames.delete(name);
+  if (service) serviceNames.add(name);
+  else serviceNames.delete(name);
+  sources[name] = service ? "service" : sources[name] || "config";
+  lastConnectError.delete(name);
+  ensureProxyRegistered();
+}
+
+// Forget a server for this session: close it, drop its cached tool list and
+// any direct tools registered from it.
+export function removeServer(name) {
+  disconnect(name);
+  delete servers[name];
+  serviceNames.delete(name);
+  delete sources[name];
+  lastConnectError.delete(name);
+  dropCachedTools(name);
+  const prefix = `mcp__${name}__`;
+  for (let i = tools.length - 1; i >= 0; i--) {
+    const n = tools[i].function?.name || "";
+    if (n.startsWith(prefix)) {
+      tools.splice(i, 1);
+      delete impl[n];
+    }
+  }
+}
+
+// Connect (or reconnect) one server and return its live connection.
+export function connectServer(name) {
+  return reconnectServer(name);
+}
+
+export function serverDef(name) {
+  return servers[name] || null;
+}
+
+// One row per configured server for /connections: where it's defined, and
+// whether it's connected, idle with a cached tool list, or failing.
+export function serverStatuses() {
+  return Object.keys(servers).map((name) => {
+    const conn = liveConn(name);
+    const cached = cachedTools(name);
+    return {
+      name,
+      def: servers[name],
+      source: sources[name] || (serviceNames.has(name) ? "service" : untrustedNames.has(name) ? "project" : "config"),
+      service: serviceNames.has(name),
+      state: conn ? "connected" : lastConnectError.has(name) ? "error" : cached ? "idle" : "not connected",
+      toolCount: conn ? conn.tools.length : cached ? cached.length : null,
+      error: lastConnectError.get(name) || null,
+    };
+  });
 }

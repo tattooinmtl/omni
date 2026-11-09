@@ -8,9 +8,47 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.3 — 2026-11-08
+
+- **Shipped:** this PR · TattooAI/mirror-cli-commands-a02dd8 · session 00ebccd9-1036-45bd-aa4e-54a41ef9f368
+- **Connected services.** Three new commands manage MCP servers as services,
+  each defined by its own file in `<home>/mcp/<name>.json` (`agent/mcp/` by
+  default):
+  - `/connections` shows every service and its status (connected, idle with
+    a cached tool list, or why it failed) and its sign-in (token saved,
+    signed in and for how long, expired). Servers from `omni.config.json` and
+    `.mcp.json` are listed under them, with where they're defined.
+  - `/connect [service]` connects a service, or signs in to one again. Known
+    services connect by name (`github`, `linear`, `notion`, `sentry`,
+    `vercel`, `supabase`, `stripe`, `huggingface`, `context7`,
+    `cloudflare-docs`); `/connect <name> <url | command>` adds any other.
+    With no name it opens a list. The service is usable straight away, no
+    restart.
+  - `/disconnect [service]` deletes the service's definition file and its
+    saved sign-in, and drops its cached tools. Without a name, choose from a
+    list. It won't touch servers defined in `omni.config.json` or `.mcp.json`.
+- **Sign-in.** A service that answers 401 and publishes OAuth details gets a
+  browser sign-in (protected-resource and authorization-server discovery,
+  dynamic client registration, PKCE, a one-shot `127.0.0.1` callback). One
+  that doesn't asks you to paste a token. Sign-ins are saved in
+  `<home>/mcp-auth.json`; an expiring OAuth token is refreshed on its own,
+  and a 401 mid-session tries one refresh before asking you to `/connect`
+  again.
+- A sign-in is only sent to the exact URL it was made for, and a service
+  wins a name clash with a project's `.mcp.json`, so a cloned repo can't
+  borrow a service's name to have your token sent elsewhere.
+- **Provider setup moved to `/login` and `/logout`.** `/login` opens the
+  provider card that `/connect` used to; `/logout [provider]` clears a key or
+  removes a provider, as `/disconnect` did.
+- Tests: `mcp-services.test.mjs` runs the commands against an in-process MCP
+  and OAuth server: the definition file, OAuth sign-in with a PKCE check,
+  refresh of an expired token, the token fallback, re-sign-in, the URL check,
+  the `.mcp.json` name clash, cleanup after a failed connect, bad names, and
+  `/disconnect`. `all-commands.test.mjs` covers `/login` and `/logout`.
+
 ## 3.6.2 — 2026-11-08
 
-- **Shipped:** this PR · TattooAI/reflection-ai-usage-calls-a2513f · session —
+- **Shipped:** [#64](https://github.com/tattooinmtl/omni/pull/64) · 51ecfc8 · TattooAI/reflection-ai-usage-calls-a2513f · session —
 - **`/usage` now shows Reflection AI spend.** It reads this month's total from
   Reflection's spend gateway (`oapi.reflectionai.dev/spend/logs/v2`, every
   page added up) and prints just two lines: `spent this month: $X` and

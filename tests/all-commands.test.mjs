@@ -81,6 +81,9 @@ await test("commandNames() returns all slash-prefixed names", () => {
   assert.ok(names.includes("/help"));
   assert.ok(names.includes("/connect"));
   assert.ok(names.includes("/disconnect"));
+  assert.ok(names.includes("/connections"));
+  assert.ok(names.includes("/login"));
+  assert.ok(names.includes("/logout"));
   assert.ok(names.includes("/apikey"));
   assert.ok(names.includes("/model"));
 });
@@ -120,7 +123,7 @@ for (const [cmd, arg] of safeCommands) {
   });
 }
 
-console.log("\nTesting /disconnect & /connect flows:");
+console.log("\nTesting /logout & /login flows:");
 
 await test("buildDisconnectRows: lists providers with keys", () => {
   const testSettings = {
@@ -148,13 +151,13 @@ await test("buildConnectRows: lists configured, presets, and custom", () => {
   assert.ok(rows.find(r => r.id === "preset:minimax.io"));
 });
 
-await test("Direct /disconnect clears provider apiKey", async () => {
+await test("Direct /logout clears provider apiKey", async () => {
   const ctx = createCtx();
   ctx.settings.providers.testProv = {
     baseUrl: "https://api.example.com",
     apiKey: "sk-test-to-clear",
   };
-  await dispatchCommand(ctx, "disconnect", "testProv", ["disconnect", "testProv"]);
+  await dispatchCommand(ctx, "logout", "testProv", ["logout", "testProv"]);
   assert.equal(ctx.settings.providers.testProv.apiKey, "", "apiKey should be cleared");
 });
 

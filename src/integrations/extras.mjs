@@ -14,6 +14,7 @@ import { HOME } from "../core/config.mjs";
 import { wrapSessionContext } from "../core/session-context.mjs";
 import { parseFrontmatter } from "../core/frontmatter.mjs";
 import { portedToolNote } from "../core/ported-skills.mjs";
+import { listServiceDefs } from "./services.mjs";
 
 export { INSTALL_ROOT } from "../paths.mjs";
 
@@ -80,19 +81,35 @@ function registryInstalledMcpNames() {
 // either (see setMcpConfirm / the trust-fingerprint cache), so neither can
 // silently spawn a process or call out to an attacker-controlled endpoint
 // using this machine's credentials.
+//
+// Services from <HOME>/mcp/ (services.mjs, written by /connect) are merged
+// last and win any clash: the user set them up at their own prompt, and a
+// saved sign-in belongs to them. `services` names them; `sources` says where
+// each server came from, for /connections.
 export function loadMcpConfig(config = loadProjectConfig()) {
   const servers = { ...(config.mcpServers || {}) };
   const settings = { idleTimeout: 10, directTools: false, ...(config.mcp || {}) };
   const untrusted = registryInstalledMcpNames();
+  const sources = Object.fromEntries(Object.keys(servers).map((n) => [n, "config"]));
   try {
     const dotMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".mcp.json"), "utf8"));
-    for (const name of Object.keys(dotMcp.mcpServers || {})) untrusted.add(name);
+    for (const name of Object.keys(dotMcp.mcpServers || {})) {
+      untrusted.add(name);
+      sources[name] = "project";
+    }
     Object.assign(servers, dotMcp.mcpServers || {});
     if (dotMcp.settings) Object.assign(settings, dotMcp.settings);
   } catch {
     /* no .mcp.json in cwd — fine */
   }
-  return { servers, settings, untrusted };
+  const services = new Set();
+  for (const [name, def] of Object.entries(listServiceDefs())) {
+    servers[name] = def;
+    services.add(name);
+    untrusted.delete(name);
+    sources[name] = "service";
+  }
+  return { servers, settings, untrusted, services, sources };
 }
 
 function readPromptText(config) {
