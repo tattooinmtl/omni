@@ -29,6 +29,8 @@ import { INSTALL_ROOT } from "../integrations/extras.mjs";
 import { installPackage, uninstallPackage, listInstalled, DEFAULT_REGISTRY } from "../integrations/registry.mjs";
 import { mcpStatus, reconnectServer } from "../integrations/mcp.mjs";
 import { bridgeStatus } from "../integrations/bridge.mjs";
+import { connectionsCommand, connectCommand, disconnectCommand } from "./services-cmd.mjs";
+import { SERVICES_DIR, displayPath } from "../integrations/services.mjs";
 import { PERSONAS } from "../integrations/router.mjs";
 import { maskKey, restoreSessionMessages, getFullSkillBody } from "./helpers.mjs";
 import { writeProjectContextMode, readMetrics, toolBodyPath } from "../core/context-mode.mjs";
@@ -1243,13 +1245,13 @@ export const COMMANDS = [
     },
   },
   {
-    name: "connect", aliases: [], usage: "/connect", category: "Models & Providers",
+    name: "login", aliases: [], usage: "/login", category: "Models & Providers",
     summary: "open the provider card: pick a provider, enter endpoint and key, pick a model by number",
     handler: async (ctx) => connectInteractive(ctx),
   },
   {
-    name: "disconnect", aliases: [], usage: "/disconnect [provider]", category: "Models & Providers",
-    summary: "clear a provider's API key or remove it entirely — lets you reconnect with a different key via /connect",
+    name: "logout", aliases: [], usage: "/logout [provider]", category: "Models & Providers",
+    summary: "clear a provider's API key or remove it entirely — lets you log in again with a different key via /login",
     handler: async (ctx, arg) => disconnectInteractive(ctx, arg),
   },
   {
@@ -1348,6 +1350,21 @@ export const COMMANDS = [
         console.log("  " + (await mcpStatus()).replace(/\n/g, "\n  "));
       }
     },
+  },
+  {
+    name: "connections", aliases: [], usage: "/connections", category: "Packages & Integrations",
+    summary: "Show connected services and their status.",
+    handler: () => connectionsCommand(),
+  },
+  {
+    name: "connect", aliases: [], usage: "/connect [service]", category: "Packages & Integrations",
+    summary: "Connect a service, or sign in to one again.",
+    handler: async (ctx, arg) => connectCommand(ctx, arg),
+  },
+  {
+    name: "disconnect", aliases: [], usage: "/disconnect [service]", category: "Packages & Integrations",
+    summary: `Disconnect a service. This deletes its definition file in ${displayPath(SERVICES_DIR)}/ and its saved sign-in. Without a name, choose from a list.`,
+    handler: async (ctx, arg) => disconnectCommand(ctx, arg),
   },
   {
     name: "bridge", aliases: [], usage: "/bridge", category: "Packages & Integrations",

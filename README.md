@@ -26,6 +26,12 @@ built-in `fetch`.
 The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
 `omni --version` tells you which one you have.
 
+**3.6.3**
+- **Connected services:** `/connections`, `/connect [service]` and
+  `/disconnect [service]` add MCP servers as services with a saved sign-in
+  (browser OAuth or a pasted token). Provider setup moved to `/login` and
+  `/logout`.
+
 **3.5.46**
 - **Ready to share:** the bundled skills that came from other projects are
   credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and a skill
@@ -183,7 +189,7 @@ Omni ships **with no API keys**; supply your own. The first run writes a clean
 ```powershell
 node bin\omni.mjs --set-key nvidia nvapi-xxxxxxxx   # save a key, then exit
 # …or inside the REPL:  /apikey nvidia nvapi-xxxxxxxx
-# …or /addprovider (or /connect): endpoint, key, then pick a model by number
+# …or /addprovider (or /login): endpoint, key, then pick a model by number
 ```
 
 Keys can also come from environment variables or a `.env` file
@@ -227,14 +233,14 @@ refuses `max_tokens` and names its limit is retried with it.
 
 ```text
 /addprovider                  the provider card: endpoint + key → numbered model list
-/connect                      the same card
+/login                        the same card
 /model                        arrow-key model picker
 /getmodel minimax             fetch a provider's live model list and save it
 /addprovider myhost https://api.example.com/v1 sk-xxxx
 /addmodel mykey myhost some-model-id 32768
 /doctor                       probe the active model and save its health
 /probe-contexts               detect every model's real context window
-/disconnect nvidia            clear a key so you can reconnect with another
+/logout nvidia                clear a key so you can log in with another
 /usage                        the active provider's usage, balance and rate limits
 ```
 
@@ -349,9 +355,9 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
-| Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/connect` `/disconnect` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
+| Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
-| Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/bridge` |
+| Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
 
@@ -924,6 +930,21 @@ Three extension points and one package format. The full guide is
   `/slash-command`.
 - **MCP servers:** add to `mcpServers` in the config or a project-local
   `.mcp.json`. `/mcp` shows status and reconnects.
+- **Connected services:** `/connect` sets up an MCP server as a service, one
+  definition file each in `agent/mcp/`, with its sign-in saved beside it.
+
+  | Command | Effect |
+  |---|---|
+  | `/connections` | Show connected services and their status. |
+  | `/connect [service]` | Connect a service, or sign in to one again. |
+  | `/disconnect [service]` | Disconnect a service. This deletes its definition file in `agent/mcp/` and its saved sign-in. Without a name, choose from a list. |
+
+  `/connect linear` sets up a known service by name (also `github`, `notion`,
+  `sentry`, `vercel`, `supabase`, `stripe`, `huggingface`, `context7`,
+  `cloudflare-docs`); `/connect <name> <url | command>` adds any other.
+  Services that use OAuth open your browser to sign in; ones that take a token
+  ask you to paste it. Tokens renew on their own, and a sign-in is only ever
+  sent to the URL it was made for.
 - **Packages:** zip any of the above with an `omni-pkg.json` and host it behind
   a static `registry.json` for `/install`.
 

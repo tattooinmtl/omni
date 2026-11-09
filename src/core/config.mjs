@@ -706,7 +706,7 @@ const SECRET_SHAPED_KEY = /^(sk-|nvapi-|gsk_|xai-|hf_)|^[A-Za-z0-9_-]{48,}$/;
 // Fold the legacy "minimax" provider into the canonical "minimax.io".
 //
 // They were the same https://api.minimax.io/v1 endpoint under two names: two
-// identical rows in /connect, /providers and /disconnect, two places to paste
+// identical rows in /login, /providers and /logout, two places to paste
 // the same key, and models bound to whichever one happened to be selected.
 // Everything moves to "minimax.io" and the alias is deleted.
 function migrateMiniMax(settings) {

@@ -881,7 +881,7 @@ export async function addProviderInteractive(ctx, arg = "") {
 }
 
 // ---------------------------------------------------------------------------
-// /connect — unified provider + model picker (opencode / pi-style)
+// /login — unified provider + model picker (opencode / pi-style)
 // ---------------------------------------------------------------------------
 
 // True when a provider has a real key (not empty, not the "not-needed"
@@ -900,7 +900,7 @@ export function providerNeedsKeyPrompt(p) {
   return !(typeof p.apiKey === "string" && p.apiKey.length > 0);
 }
 
-// Build the ordered row list for /connect:
+// Build the ordered row list for /login:
 //   1. configured providers with keys        (● first, alphabetical)
 //   2. configured providers still missing a key  (○, alphabetical)
 //   3. preset providers not yet installed        (·, alphabetical)
@@ -951,11 +951,11 @@ export function buildConnectRows(settings) {
   return rows;
 }
 
-// The /connect flow: the same provider card as /addprovider. Interactive
+// The /login flow: the same provider card as /addprovider. Interactive
 // only; other terminals get a hint to use the typed commands.
 export async function connectInteractive(ctx) {
   if (!ctx.canRaw) {
-    infoLine("/connect needs an interactive terminal.");
+    infoLine("/login needs an interactive terminal.");
     infoLine("Use /addprovider <name> <baseUrl> [key], /apikey <name> <key>, /model to switch.");
     return;
   }
@@ -999,7 +999,7 @@ function providerCardRow(settings, name) {
   };
 }
 
-// The card's first list, in /connect's order: providers with a key, then
+// The card's first list, in /login's order: providers with a key, then
 // ones missing a key, then presets not set up yet, then a custom one.
 export function providerCardRows(settings) {
   const rows = buildConnectRows(settings)
@@ -1104,17 +1104,17 @@ export async function openProviderCard(ctx, start = null, io = {}) {
   }
   if (!result) { infoLine("provider setup closed — nothing changed"); return null; }
   ctx.model = resolveModel(ctx.settings, result.model.key);
-  setLastProvider(ctx.model.key, "/connect");
+  setLastProvider(ctx.model.key, "/login");
   await saveSettings(ctx.settings);
   infoLine(`switched to ${ctx.model.providerLabel} — model: ${ctx.model.key} (ctx=${formatContextSize(ctx.model.contextWindow)}, max output ${ctx.model.maxTokens})`);
   return ctx.model.key;
 }
 
 // ---------------------------------------------------------------------------
-// /disconnect — clear a provider's API key or remove it entirely
+// /logout — clear a provider's API key or remove it entirely
 // ---------------------------------------------------------------------------
 
-// Build the row list for /disconnect: only providers that have a key set.
+// Build the row list for /logout: only providers that have a key set.
 export function buildDisconnectRows(settings) {
   const providers = settings?.providers || {};
   const rows = [];
@@ -1131,7 +1131,7 @@ export function buildDisconnectRows(settings) {
 }
 
 export async function disconnectInteractive(ctx, arg) {
-  // Non-interactive fast path: /disconnect <provider>
+  // Non-interactive fast path: /logout <provider>
   const directName = (arg || "").trim();
   if (directName) {
     const p = ctx.settings.providers[directName];
@@ -1142,29 +1142,29 @@ export async function disconnectInteractive(ctx, arg) {
       for (const acct of Object.keys(p.accounts)) p.accounts[acct] = "";
     }
     await saveSettings(ctx.settings);
-    infoLine(`cleared API key for ${directName}. Use /connect or /apikey to set a new one.`);
+    infoLine(`cleared API key for ${directName}. Use /login or /apikey to set a new one.`);
     return;
   }
 
   // Interactive arrow picker
   if (!ctx.canRaw) {
-    infoLine("/disconnect needs an interactive terminal (or pass a provider name: /disconnect <provider>).");
+    infoLine("/logout needs an interactive terminal (or pass a provider name: /logout <provider>).");
     return;
   }
 
   const rows = buildDisconnectRows(ctx.settings);
   if (rows.length === 0) {
-    infoLine("no providers with API keys configured. Nothing to disconnect.");
+    infoLine("no providers with API keys configured. Nothing to log out of.");
     return;
   }
 
   const picked = await runArrowPicker(rows, {
     ctx,
-    title: "Disconnect — pick a provider to clear its API key",
+    title: "Log out — pick a provider to clear its API key",
     hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
     initial: 0,
   });
-  if (!picked) { infoLine("disconnect canceled"); return; }
+  if (!picked) { infoLine("logout canceled"); return; }
 
   // Ask whether to clear just the key or fully remove the provider
   const actionRows = [
@@ -1177,7 +1177,7 @@ export async function disconnectInteractive(ctx, arg) {
     hint: "↑/↓ to move, Enter to select, Esc/q to cancel",
     initial: 0,
   });
-  if (!action) { infoLine("disconnect canceled"); return; }
+  if (!action) { infoLine("logout canceled"); return; }
 
   if (action === "remove") {
     delete ctx.settings.providers[picked];
@@ -1185,7 +1185,7 @@ export async function disconnectInteractive(ctx, arg) {
     infoLine(`removed provider ${picked} from settings.`);
     // If the current model belonged to this provider, warn the user.
     if (ctx.model?.provider?.label && ctx.model.key?.startsWith(picked + "/")) {
-      warnLine(`your active model was on ${picked} — switch with /model or /connect.`);
+      warnLine(`your active model was on ${picked} — switch with /model or /login.`);
     }
   } else {
     const p = ctx.settings.providers[picked];
@@ -1194,6 +1194,6 @@ export async function disconnectInteractive(ctx, arg) {
       for (const acct of Object.keys(p.accounts)) p.accounts[acct] = "";
     }
     await saveSettings(ctx.settings);
-    infoLine(`cleared API key for ${picked}. Use /connect or /apikey to set a new one.`);
+    infoLine(`cleared API key for ${picked}. Use /login or /apikey to set a new one.`);
   }
 }
