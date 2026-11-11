@@ -176,7 +176,9 @@ export const PAGE = `<!doctype html>
     atom_active: "#6ee7b7",
     atom_superseded: "#c084fc",
     atom_deprecated: "#f87171",
-    memory: "#fbbf24"
+    memory: "#fbbf24",
+    brain: "#5afff9",
+    brain_type: "#2ec4c0"
   };
   var EDGE_COLORS = {
     system: "rgba(148,163,255,0.28)",
@@ -187,7 +189,7 @@ export const PAGE = `<!doctype html>
     supersedes: "rgba(192,132,252,0.45)"
   };
 
-  var SYSTEM_COLOR = { "sys-l0": COLORS.l0, "sys-chatmem": COLORS.chatmem, "sys-skills": COLORS.skills, "sys-wiki": COLORS.wiki, "sys-feedback": COLORS.feedback };
+  var SYSTEM_COLOR = { "sys-l0": COLORS.l0, "sys-chatmem": COLORS.chatmem, "sys-skills": COLORS.skills, "sys-wiki": COLORS.wiki, "sys-feedback": COLORS.feedback, "sys-omnibrains": COLORS.brain };
 
   function hashHue(s) {
     var h = 0;
@@ -209,6 +211,8 @@ export const PAGE = `<!doctype html>
     }
     if (n.kind === "atom") return COLORS["atom_" + n.status] || COLORS.card;
     if (n.kind === "memory") return COLORS.memory;
+    if (n.kind === "brain-type") return COLORS.brain_type;
+    if (n.kind === "brain-page") return "hsl(" + (165 + hashHue(n.pageType || "page") % 50) + ", 85%, 66%)";
     return "#888";
   }
 
@@ -217,13 +221,14 @@ export const PAGE = `<!doctype html>
     if (n.kind === "system" || n.kind === "system-inactive") return 10;
     if (n.kind === "hub") return 9;
     if (n.kind === "folder") return 3 + Math.sqrt(n.degree || 0) * 1.3;
+    if (n.kind === "brain-type") return 6;
     var base = n.kind === "atom" ? 3 + (n.confidence || 0) * 4 : 4.5;
     return Math.min(14, base + Math.sqrt(n.degree || 0) * 1.6);
   }
 
   // ---- data ---------------------------------------------------------------
   var nodes = [], edges = [], byId = new Map();
-  var filters = { hub: true, folder: true, card: true, atom_active: true, atom_superseded: true, atom_deprecated: true, memory: true };
+  var filters = { hub: true, folder: true, card: true, atom_active: true, atom_superseded: true, atom_deprecated: true, memory: true, "brain-type": true, "brain-page": true };
   var searchTerm = "";
 
   function visible(n) {
@@ -609,7 +614,9 @@ export const PAGE = `<!doctype html>
           n.kind === "hub" ? "OKF taxonomy root" :
           n.kind === "folder" ? "OKF folder · " + n.folder :
           n.kind === "atom" ? ("atom · " + n.atomType + " · " + n.status + " · weight " + (n.confidence != null ? n.confidence.toFixed(2) : "?")) :
-          n.kind === "card" ? ("card · " + n.cardType) : "memory";
+          n.kind === "card" ? ("card · " + n.cardType) :
+          n.kind === "brain-type" ? "omni.brains · page type" :
+          n.kind === "brain-page" ? ("omni.brains page · " + n.pageType + " · " + n.slug) : "memory";
         tip.innerHTML = "<b>" + escapeHtml(n.label) + "</b><br><span style=\\"color:#8b93b8\\">" + escapeHtml(kindLabel) + "</span>";
       } else {
         tip.style.display = "none";
@@ -652,7 +659,9 @@ export const PAGE = `<!doctype html>
       n.kind === "hub" ? "OKF taxonomy root" :
       n.kind === "folder" ? ("OKF folder · " + n.folder) :
       n.kind === "atom" ? (n.atomType + " · " + n.status) :
-      n.kind === "card" ? (n.cardType + (n.folder ? " · " + n.folder : "")) : "memory";
+      n.kind === "card" ? (n.cardType + (n.folder ? " · " + n.folder : "")) :
+      n.kind === "brain-type" ? "omni.brains · page type" :
+      n.kind === "brain-page" ? ("omni.brains page · " + n.pageType) : "memory";
     var html = "<h2>" + escapeHtml(n.label) + "</h2><div class=\\"meta\\">" + escapeHtml(kindLabel) + (n.confidence != null ? " · weight " + escapeHtml(n.confidence) : "") + "</div>";
     html += "<div class=\\"body\\">" + escapeHtml(n.detail || "") + "</div>";
     if (n.tags && n.tags.length) html += "<div class=\\"tags\\">" + n.tags.map(function (t) { return "<span class=\\"tag\\">" + escapeHtml(t) + "</span>"; }).join("") + "</div>";
@@ -682,7 +691,9 @@ export const PAGE = `<!doctype html>
     { key: "atom_active", label: "Atoms · active", color: COLORS.atom_active },
     { key: "atom_superseded", label: "Atoms · superseded", color: COLORS.atom_superseded },
     { key: "atom_deprecated", label: "Atoms · deprecated", color: COLORS.atom_deprecated },
-    { key: "memory", label: "Legacy memories", color: COLORS.memory }
+    { key: "memory", label: "Legacy memories", color: COLORS.memory },
+    { key: "brain-type", label: "omni.brains · page types", color: COLORS.brain_type },
+    { key: "brain-page", label: "omni.brains · pages", color: COLORS.brain }
   ];
   function buildLegend() {
     var el = document.getElementById("legend");
@@ -700,7 +711,8 @@ export const PAGE = `<!doctype html>
     var statsEl = document.getElementById("stats");
     var c = graph.counts;
     var num = function (v) { return Number(v) || 0; };
-    statsEl.innerHTML = num(c.folders) + " OKF folders · " + num(c.cards) + " cards · " + num(c.atoms) + " atoms (" + num(c.activeAtoms) + " active) · " + num(c.memories) + " memories<br>" +
+    statsEl.innerHTML = num(c.folders) + " OKF folders · " + num(c.cards) + " cards · " + num(c.atoms) + " atoms (" + num(c.activeAtoms) + " active) · " + num(c.memories) + " memories" +
+      (num(c.brainPages) ? " · " + num(c.brainPages) + " brain pages · " + num(c.brainLinks) + " brain links" : "") + "<br>" +
       num(c.nodes) + " nodes · " + num(c.edges) + " edges" + (c.truncated ? " · (truncated)" : "") +
       "<br><span style=\\"color:#5b6289\\">drag to rotate · shift/right-drag to pan · scroll to zoom · drag a node to pin</span>";
   }
@@ -725,7 +737,7 @@ export const PAGE = `<!doctype html>
           existing.label = n.label; existing.detail = n.detail; existing.status = n.status;
           existing.tags = n.tags; existing.degree = n.degree; existing.confidence = n.confidence;
           existing.atomType = n.atomType; existing.cardType = n.cardType; existing.folder = n.folder;
-          existing.sources = n.sources;
+          existing.sources = n.sources; existing.pageType = n.pageType; existing.slug = n.slug;
         } else {
           var a = Math.random() * Math.PI * 2, b = Math.acos(Math.random() * 2 - 1), r = 40 + Math.random() * 40;
           n.x = r * Math.sin(b) * Math.cos(a); n.y = r * Math.sin(b) * Math.sin(a); n.z = r * Math.cos(b);
@@ -772,6 +784,16 @@ export const PAGE = `<!doctype html>
       // different graph — start over from a clean page.
       if (offline) { location.reload(); return; }
       refreshGraph();
+      return;
+    }
+    // omni.brains: a fresh page/link snapshot (/brain view) or a /brain action.
+    if (data.kind === "brain_graph") {
+      if (!data.replay) logActivity("omni.brains · " + (Number(data.pages) || 0) + " pages, " + (Number(data.links) || 0) + " links", "brain");
+      refreshGraph();
+      return;
+    }
+    if (data.kind === "brain_op") {
+      logActivity("omni.brains · " + String(data.op || "call") + (data.detail ? " " + String(data.detail).slice(0, 46) : ""), "brain");
       return;
     }
 

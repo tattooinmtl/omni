@@ -23,6 +23,7 @@ import {
   extractAtomsFromMessages, explainAtomText, formatMemoryRecord,
 } from "../core/memory-provider.mjs";
 import { neuralViewCommand } from "./neuralview.mjs";
+import { brainCommand, BRAIN_USAGE } from "./brain.mjs";
 import { detectContextWindow, parseContextSize, formatContextSize, probeAllContextWindows } from "../core/context.mjs";
 import { buildIndex, searchIndex, indexStatus, clearIndex } from "../integrations/rag.mjs";
 import { INSTALL_ROOT } from "../integrations/extras.mjs";
@@ -862,6 +863,11 @@ export const COMMANDS = [
     name: "neuralview", aliases: ["neural", "galaxy"], usage: "/neuralview [open|restart|stop|status]", category: "Agent",
     summary: "live galaxy view of the knowledge base + memory (runs while Omi is open; restart/stop/status)",
     handler: (_ctx, arg) => neuralViewCommand(arg),
+  },
+  {
+    name: "brain", aliases: ["omnibrains"], usage: BRAIN_USAGE, category: "Agent",
+    summary: "omni.brains shared memory: search, ask, recall, remember, forget, pages, links, and a 3D view in /neuralview",
+    handler: (ctx, arg) => brainCommand(ctx, arg),
   },
   {
     name: "rag", aliases: [], usage: "/rag [index|search <q>|status|clear]", category: "Agent",

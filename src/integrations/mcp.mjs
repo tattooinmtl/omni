@@ -821,6 +821,24 @@ export function serverDef(name) {
   return servers[name] || null;
 }
 
+// Call one tool on one named server from code (a slash command, not the
+// model), through the same connection, trust check and idle timer the `mcp`
+// proxy uses. Returns the raw MCP result ({content, isError}); throws when
+// the server is unknown, refuses to connect, or the call fails.
+export async function callServerTool(name, toolName, args = {}) {
+  if (!servers[name]) throw new Error(`unknown MCP server: ${name}`);
+  const conn = await ensureConnected(name);
+  const result = await rpc(conn, "tools/call", { name: toolName, arguments: args });
+  touch(conn);
+  return result;
+}
+
+// The text parts of an MCP tool result, joined (unclipped: callers that
+// print it decide how much to show).
+export function toolResultText(result) {
+  return result ? extractText(result) : "";
+}
+
 // One row per configured server for /connections: where it's defined, and
 // whether it's connected, idle with a cached tool list, or failing.
 export function serverStatuses() {
