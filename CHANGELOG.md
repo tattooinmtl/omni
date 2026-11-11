@@ -8,9 +8,25 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.8 — 2026-11-11
+
+- **Shipped:** this PR · TattooAI/neuralview-loads-brain · session b8e3e066-edb3-4371-a58f-26a208d750ef
+- **The neural view opens with the brain in it.** While omni.brains is
+  connected, `/neuralview` (open or restart) reads the brain's pages and
+  links in the background, and open tabs draw the omni.brains region as soon
+  as it lands. A tab that connects any other way (a bookmark, the reload
+  after Omi restarts) loads it too when there is no snapshot yet, so the
+  brain process starts only when someone looks. Reads run one at a time; a
+  failed background read is reported by `/brain` instead of interrupting the
+  view. `/brain view` still re-reads on demand without a second fetch.
+- `neuralview-server.mjs` exports `onNeuralViewClient(fn)`, called each time
+  a tab connects to the live event stream.
+- Tests (`tests/omnibrains.test.mjs`): background reads are single-flight and
+  skip when a snapshot exists; a tab connecting loads the brain.
+
 ## 3.6.7 — 2026-11-11
 
-- **Shipped:** this PR · TattooAI/omni-brains-bridge · session b8e3e066-edb3-4371-a58f-26a208d750ef
+- **Shipped:** [#69](https://github.com/tattooinmtl/omni/pull/69) · 2a692ef · TattooAI/omni-brains-bridge · session b8e3e066-edb3-4371-a58f-26a208d750ef
 - **`/brain`: use and control omni.brains from Omi.** `/brain connect [path]
   [--home dir]` saves omni.brains (a gbrain build serving its memory over MCP)
   as the `omnibrains` service in `<HOME>/mcp/omnibrains.json`, the file

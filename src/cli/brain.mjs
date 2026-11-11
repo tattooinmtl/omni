@@ -14,7 +14,8 @@
 //   /brain get <slug>            read a page
 //   /brain pages [prefix]        newest pages, optionally under a slug prefix
 //   /brain links <slug>          a page's outgoing links and backlinks
-//   /brain view                  draw the brain in the /neuralview 3D galaxy
+//   /brain view                  re-read the brain and open the /neuralview 3D galaxy
+//                                (/neuralview loads it too while the brain is connected)
 //
 // Every command calls the brain directly over its MCP server; none of them
 // spends a model turn. The model reaches the same brain through the `mcp`
@@ -23,7 +24,7 @@
 import { infoLine, errorLine, warnLine, c } from "../ui.mjs";
 import {
   BRAIN_SERVER, PROVENANCE, brainConfigured, brainStatusRow, brainTool, connectBrain, disconnectBrain,
-  refreshBrainGraph, brainGraph, rowsOf, noteBrainOp,
+  refreshBrainGraph, brainGraph, rowsOf, noteBrainOp, brainBackgroundError,
 } from "../integrations/omnibrains.mjs";
 import { neuralViewCommand } from "./neuralview.mjs";
 
@@ -92,6 +93,8 @@ async function status() {
     errorLine(`omni.brains is configured but didn't answer: ${e.message}`);
   }
   const g = brainGraph();
+  const bgErr = brainBackgroundError();
+  if (bgErr) warnLine(`the neural view couldn't load the brain last time: ${bgErr}`);
   infoLine(`service "${BRAIN_SERVER}" · ${row?.state ?? "unknown"}${g ? ` · 3D snapshot ${g.pages.length} pages / ${g.links.length} links (${g.fetchedAt})` : " · no 3D snapshot yet (/brain view)"}`);
 }
 
@@ -207,7 +210,7 @@ export async function brainCommand(_ctx, arg = "") {
         const g = await refreshBrainGraph();
         infoLine(`omni.brains: ${g.pages.length} page(s)${g.truncated ? ` of ${g.totalPages ?? "more"} (newest first)` : ""}, ${g.links.length} link(s) — opening the neural view`);
         if (g.pages.length && !g.links.length) warnLine("no links yet: pages written over MCP get their [[links]] when the brain server sweeps (at start and when idle)");
-        await neuralViewCommand("");
+        await neuralViewCommand("", { brainFresh: true });
         return;
       }
 

@@ -225,6 +225,35 @@ await test("buildGraph draws the omni.brains region: hub, type clusters, pages, 
   assert.equal(graph.counts.brainLinks, 3);
 });
 
+await test("background refresh: one fetch at a time, skipped when a snapshot exists and ifMissing", async () => {
+  clearCalls();
+  const a = bridge.refreshBrainGraphInBackground();
+  const b = bridge.refreshBrainGraphInBackground();
+  assert.equal(a, b, "a second call while one is running reuses it");
+  await a;
+  assert.equal(calls().filter((c) => c.name === "list_pages").length, 1);
+  clearCalls();
+  assert.equal(bridge.refreshBrainGraphInBackground({ ifMissing: true }), null);
+  assert.equal(calls().length, 0);
+});
+
+await test("a tab connecting to the neural view loads the brain when there is no snapshot", async () => {
+  const { setBrainGraph } = await import("../src/local/brain-graph-store.mjs");
+  const { startNeuralView, stopNeuralView } = await import("../src/local/neuralview-server.mjs");
+  setBrainGraph(null);
+  const st = await startNeuralView({ port: 6040 });
+  const ctrl = new AbortController();
+  try {
+    const res = await fetch(`${st.url}api/events`, { signal: ctrl.signal, headers: { Host: new URL(st.url).host } });
+    assert.equal(res.status, 200);
+    for (let i = 0; i < 50 && !bridge.brainGraph(); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(bridge.brainGraph()?.pages.length, 3, "the snapshot was loaded by the tab connecting");
+  } finally {
+    ctrl.abort();
+    stopNeuralView({ reason: "stopped" });
+  }
+});
+
 await test("/brain disconnect removes the service file and the 3D snapshot", async () => {
   const outText = await captured(() => brainCommand({}, "disconnect"));
   assert.match(outText, /omni\.brains disconnected/);
