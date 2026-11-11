@@ -26,6 +26,11 @@ built-in `fetch`.
 The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
 `omni --version` tells you which one you have.
 
+**3.6.9**
+- **One brain server, one login:** `/brain connect` starts omni.brains's
+  shared server and signs Omi in with your OmniOne account. `/brain view`
+  opens the brain's own 3D Neural view. Omi's `/neuralview` is gone.
+
 **3.6.8**
 - **The brain opens with the neural view:** while omni.brains is connected,
   `/neuralview` (or any tab opening the view) loads the brain's pages and
@@ -365,7 +370,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Category | Commands |
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/brain` `/rag` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
@@ -712,24 +717,6 @@ link escapes). Where that root lands depends on how you launch:
 the cache, and `/workspace scope system` (extra confirmation) lifts the sandbox
 machine-wide. `/workspace scope folder` puts the walls back up.
 
-### Neural view
-
-`/neuralview` opens a live map of the knowledge base and memory in your
-browser. It pulses as the agent works. It runs only while Omi is open: when Omi
-closes, the tab says so, and it reloads by itself the next time Omi starts. If
-a tab is already open, `/neuralview` brings that tab forward instead of opening
-another one.
-
-| | |
-|---|---|
-| `/neuralview open` | open another tab |
-| `/neuralview restart` | restart it on the same port (open tabs reconnect) |
-| `/neuralview stop` | stop it for this session |
-| `/neuralview status` | port, open tabs, graph size |
-
-It uses port 5678, bound to localhost with a Host check. A second Omi window
-uses the next free port, and `/neuralview` tells you which Omi holds 5678.
-
 ### omni.brains
 
 `/brain` connects Omi to [omni.brains](https://github.com/tattooinmtl/Omni.Brains),
@@ -738,10 +725,22 @@ every `/brain` command calls the brain itself, without a model turn. Once
 connected, the model also reaches the brain through the `mcp` tool (server
 `omnibrains`).
 
+One brain server runs per computer (`omni-brains serve --http`, on
+`localhost:3131`) and every app connects to it with its own sign-in: the brain's
+database can be open in only one process, so apps share the server instead of
+each starting their own. `/brain connect` starts the server in the background
+if it isn't running and signs Omi in: your browser opens the brain's login
+(your OmniOne account, the same login as every Omni product) and asks you to
+approve Omi. The sign-in is saved like any `/connect` service and refreshed
+automatically.
+
 | | |
 |---|---|
-| `/brain connect [path] [--home <dir>]` | save omni.brains as the `omnibrains` service (finds `omni-brains` or `gbrain` on PATH, or `OMNI_BRAINS_BIN`); `--home` picks a brain other than `~/.gbrain` |
-| `/brain` | status: version, engine, page count, 3D snapshot |
+| `/brain connect [path] [--url <url>] [--home <dir>]` | start the brain server if needed (finds `omni-brains` or `gbrain` on PATH, or `OMNI_BRAINS_BIN`), save it as the `omnibrains` service and sign Omi in |
+| `/brain` | status: server, sign-in, version, page count |
+| `/brain view` | open the brain's 3D **Neural view** in your browser |
+| `/brain dashboard` | open the brain's dashboard |
+| `/brain start` | start the brain server without connecting |
 | `/brain search <words>` | top matching pages |
 | `/brain ask <question>` | hybrid query for concepts, people and projects |
 | `/brain recall <entity> [question]` | facts saved about an entity |
@@ -750,23 +749,14 @@ connected, the model also reaches the brain through the `mcp` tool (server
 | `/brain get <slug>` | read a page |
 | `/brain pages [prefix]` | newest pages, optionally under a slug prefix |
 | `/brain links <slug>` | a page's outgoing links and backlinks |
-| `/brain view` | re-read the brain now and open the `/neuralview` galaxy |
-| `/brain disconnect` | remove the service |
+| `/brain disconnect` | remove the service and Omi's sign-in (the server keeps running for other apps) |
 
-While the brain is connected, `/neuralview` loads it by itself, and so does a
-tab that opens the view any other way (a bookmark, or the reload after Omi
-restarts): the brain is read only when someone looks. The view reads the
-newest 1000 pages and their links and draws them as an **omni.brains** region on the Memory Coordinator: one cluster per page
-type, links between pages, and an `omni.brains` legend toggle. Open tabs
-update by themselves, and every `/brain` action shows in the view's activity
-log. Use the full page name for an entity that has a page
-(`/brain remember projects/omnicode: …`). A page the brain just saved can take
-a moment to show up in search, and its `[[links]]` appear after the brain
-server's next link sweep (at start and when idle).
-
-The brain runs as a local child process with Omi's safe environment, so your
-provider keys are not passed to it; a brain that should embed uses the keys in
-its own config.
+The Neural view is part of the brain, not of Omi: every app connected to the
+brain sees the same view at `http://localhost:3131/admin/#neural`. Use the full
+page name for an entity that has a page (`/brain remember projects/omnicode: …`).
+The brain server runs with your environment, like running `omni-brains` from a
+terminal; it calls paid providers only if embeddings are turned on in the
+brain's own config.
 
 ## Tools the agent can use
 

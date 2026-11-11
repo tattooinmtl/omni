@@ -1,9 +1,13 @@
 // /brain — use and control omni.brains (the shared memory brain) from Omni.
 //
-//   /brain                       status: connection, brain version, page count
-//   /brain connect [path] [--home <dir>]
-//                                save omni.brains as the "omnibrains" service
-//   /brain disconnect            remove that service
+//   /brain                       status: server, sign-in, version, page count
+//   /brain connect [path] [--url <url>] [--home <dir>]
+//                                start the brain server if needed, save it as
+//                                the "omnibrains" service and sign Omni in
+//   /brain start                 start the brain server (localhost:3131)
+//   /brain view                  open the brain's 3D Neural view
+//   /brain dashboard             open the brain's dashboard
+//   /brain disconnect            remove the service and Omni's sign-in
 //   /brain search <words>        keyword + hybrid search, top hits
 //   /brain ask <question>        hybrid query (concepts, people, projects)
 //   /brain recall <entity> [question]
@@ -14,26 +18,31 @@
 //   /brain get <slug>            read a page
 //   /brain pages [prefix]        newest pages, optionally under a slug prefix
 //   /brain links <slug>          a page's outgoing links and backlinks
-//   /brain view                  re-read the brain and open the /neuralview 3D galaxy
-//                                (/neuralview loads it too while the brain is connected)
 //
-// Every command calls the brain directly over its MCP server; none of them
-// spends a model turn. The model reaches the same brain through the `mcp`
-// proxy (server "omnibrains").
+// Every command calls the brain directly (no model turn). The model reaches
+// the same brain through the `mcp` proxy (server "omnibrains").
 
+import { spawn } from "node:child_process";
 import { infoLine, errorLine, warnLine, c } from "../ui.mjs";
 import {
   BRAIN_SERVER, PROVENANCE, brainConfigured, brainStatusRow, brainTool, connectBrain, disconnectBrain,
-  refreshBrainGraph, brainGraph, rowsOf, noteBrainOp, brainBackgroundError,
+  ensureBrainServer, brainBaseUrl, brainHealthy, dashboardUrl, rowsOf,
 } from "../integrations/omnibrains.mjs";
-import { neuralViewCommand } from "./neuralview.mjs";
 
 export const BRAIN_USAGE =
-  "/brain [status|connect [path] [--home dir]|disconnect|search <q>|ask <q>|recall <entity> [q]|remember <entity>: <fact>|forget <id>|get <slug>|pages [prefix]|links <slug>|view|help]";
+  "/brain [status|connect [path] [--url u] [--home dir]|start|view|dashboard|disconnect|search <q>|ask <q>|recall <entity> [q]|remember <entity>: <fact>|forget <id>|get <slug>|pages [prefix]|links <slug>|help]";
 
 const out = (s = "") => console.log(s);
 const dim = (s) => c.gray(String(s));
 const cy = (s) => c.cyan(String(s));
+
+export function openInBrowser(url) {
+  try {
+    if (process.platform === "win32") spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true, windowsHide: true }).unref();
+    else if (process.platform === "darwin") spawn("open", [url], { stdio: "ignore", detached: true }).unref();
+    else spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
+  } catch { /* the printed URL is the fallback */ }
+}
 
 // The brain wraps retrieved text it didn't author in a quoting envelope
 // ("[quoted … excerpt …]" + a ```text fence) so models don't obey it. A
@@ -62,12 +71,13 @@ export function parseRemember(rest) {
 
 export function parseConnectArgs(rest) {
   const parts = rest.match(/"[^"]*"|\S+/g)?.map((p) => p.replace(/^"|"$/g, "")) || [];
-  let bin, home;
+  let bin, home, url;
   for (let i = 0; i < parts.length; i++) {
     if (parts[i] === "--home") home = parts[++i];
+    else if (parts[i] === "--url") url = parts[++i];
     else if (!bin) bin = parts[i];
   }
-  return { bin, home };
+  return { bin, home, url };
 }
 
 function printHits(rows, { empty }) {
@@ -81,21 +91,35 @@ function printHits(rows, { empty }) {
 }
 
 async function status() {
+  const base = brainBaseUrl();
+  const up = await brainHealthy(base);
   if (!brainConfigured()) {
-    infoLine("omni.brains isn't connected. /brain connect finds `omni-brains` or `gbrain` on PATH, or pass its path.");
+    infoLine(`omni.brains isn't connected${up ? ` (a brain server is running at ${base})` : ""}. Run /brain connect.`);
     return;
   }
-  const row = brainStatusRow();
+  if (!up) { warnLine(`the brain server at ${base} isn't running — /brain start (or /brain connect) starts it`); return; }
   try {
     const { json } = await brainTool("get_brain_identity", {});
     infoLine(`omni.brains ${json?.version ?? "?"} · ${json?.engine ?? "?"} · ${json?.page_count ?? "?"} pages · ${json?.chunk_count ?? "?"} chunks`);
   } catch (e) {
+    if (e.authRequired) { warnLine("Omni isn't signed in to the brain (or its sign-in was revoked) — run /brain connect"); return; }
     errorLine(`omni.brains is configured but didn't answer: ${e.message}`);
+    return;
   }
-  const g = brainGraph();
-  const bgErr = brainBackgroundError();
-  if (bgErr) warnLine(`the neural view couldn't load the brain last time: ${bgErr}`);
-  infoLine(`service "${BRAIN_SERVER}" · ${row?.state ?? "unknown"}${g ? ` · 3D snapshot ${g.pages.length} pages / ${g.links.length} links (${g.fetchedAt})` : " · no 3D snapshot yet (/brain view)"}`);
+  const row = brainStatusRow();
+  infoLine(`server ${base} · service "${BRAIN_SERVER}" · ${row?.state ?? "unknown"} · 3D view: /brain view`);
+}
+
+async function openPage(page, label) {
+  const base = brainBaseUrl();
+  if (!(await brainHealthy(base))) {
+    infoLine("starting the brain server…");
+    await ensureBrainServer({ base });
+  }
+  const url = dashboardUrl(page);
+  infoLine(`opening ${label}: ${url}`);
+  infoLine("sign in with your OmniOne account if the page asks");
+  openInBrowser(url);
 }
 
 export async function brainCommand(_ctx, arg = "") {
@@ -114,17 +138,32 @@ export async function brainCommand(_ctx, arg = "") {
         return;
 
       case "connect": {
-        const { bin, home } = parseConnectArgs(rest);
-        const { file, def, identity } = await connectBrain({ bin, home });
-        infoLine(`connected omni.brains ${identity.json?.version ?? ""} (${identity.json?.page_count ?? "?"} pages) — saved to ${file}`);
-        infoLine(`runs: ${def.command} ${(def.args || []).join(" ")}${def.env?.GBRAIN_HOME ? ` (GBRAIN_HOME=${def.env.GBRAIN_HOME})` : ""}`);
-        infoLine("the model can now use the brain through the mcp tool (server \"omnibrains\"); /brain view draws it in 3D");
+        const { bin, home, url } = parseConnectArgs(rest);
+        const r = await connectBrain({ bin, home, url, log: (m) => infoLine(m) });
+        if (r.started) infoLine(`started the brain server at ${r.base}`);
+        infoLine(`connected omni.brains ${r.identity.json?.version ?? ""} (${r.identity.json?.page_count ?? "?"} pages) at ${r.base} — saved to ${r.file}`);
+        infoLine("the model can now use the brain through the mcp tool (server \"omnibrains\"); /brain view opens the 3D Neural view");
         return;
       }
 
+      case "start": {
+        const r = await ensureBrainServer({ base: brainBaseUrl() });
+        infoLine(r.started ? `started the brain server at ${r.base}` : `the brain server is already running at ${r.base}`);
+        return;
+      }
+
+      case "view":
+      case "3d":
+      case "neural":
+        return await openPage("neural", "the Neural view");
+
+      case "dashboard":
+      case "admin":
+        return await openPage("", "the brain dashboard");
+
       case "disconnect": {
         const { removed, file } = disconnectBrain();
-        infoLine(removed ? `omni.brains disconnected — removed ${file}` : "omni.brains wasn't saved as a service; nothing to remove");
+        infoLine(removed ? `omni.brains disconnected — removed ${file} and Omni's sign-in (the brain server keeps running for other apps)` : "omni.brains wasn't saved as a service; nothing to remove");
         return;
       }
 
@@ -132,7 +171,6 @@ export async function brainCommand(_ctx, arg = "") {
         if (!rest) { errorLine("usage: /brain search <words>"); return; }
         const { json } = await brainTool("search", { query: rest, limit: 10 });
         printHits(rowsOf(json), { empty: `no pages match "${rest}"` });
-        noteBrainOp("search", rest);
         return;
       }
 
@@ -141,7 +179,6 @@ export async function brainCommand(_ctx, arg = "") {
         if (!rest) { errorLine("usage: /brain ask <question>"); return; }
         const { json } = await brainTool("query", { query: rest, limit: 8 });
         printHits(rowsOf(json), { empty: `nothing in the brain for "${rest}"` });
-        noteBrainOp("ask", rest);
         return;
       }
 
@@ -154,7 +191,6 @@ export async function brainCommand(_ctx, arg = "") {
         const facts = Array.isArray(json?.facts) ? json.facts : rowsOf(json);
         if (!facts.length) { infoLine(`no facts saved about ${entity}`); return; }
         for (const f of facts) out(`  ${dim(`#${f.id}`)} ${unquote(f.fact ?? f.text ?? "")}`);
-        noteBrainOp("recall", entity);
         return;
       }
 
@@ -163,7 +199,6 @@ export async function brainCommand(_ctx, arg = "") {
         if (!parsed) { errorLine("usage: /brain remember <entity>: <fact>   e.g. /brain remember projects/omnicode: launches claw-core as its agent (use the full page name when that page exists)"); return; }
         const { json } = await brainTool("remember", { ...parsed, provenance: PROVENANCE });
         infoLine(json?.status_text || `remembered (${json?.status ?? "ok"})`);
-        noteBrainOp("remember", `${parsed.entity}: ${parsed.fact}`);
         return;
       }
 
@@ -171,7 +206,6 @@ export async function brainCommand(_ctx, arg = "") {
         if (!rest) { errorLine("usage: /brain forget <fact-id>"); return; }
         const { json, text: t } = await brainTool("forget", { id: rest });
         infoLine(json?.status_text || json?.status || clip(t, 200) || "forgotten");
-        noteBrainOp("forget", rest);
         return;
       }
 
@@ -201,16 +235,6 @@ export async function brainCommand(_ctx, arg = "") {
         infoLine(`${rest}: ${outRows.length} outgoing, ${inRows.length} incoming`);
         for (const l of outRows) out(`  → ${l.to_slug}${l.link_type ? dim(` (${l.link_type})`) : ""}`);
         for (const l of inRows) out(`  ← ${l.from_slug ?? l.slug}${l.link_type ? dim(` (${l.link_type})`) : ""}`);
-        return;
-      }
-
-      case "view":
-      case "3d": {
-        infoLine("reading the brain's pages and links…");
-        const g = await refreshBrainGraph();
-        infoLine(`omni.brains: ${g.pages.length} page(s)${g.truncated ? ` of ${g.totalPages ?? "more"} (newest first)` : ""}, ${g.links.length} link(s) — opening the neural view`);
-        if (g.pages.length && !g.links.length) warnLine("no links yet: pages written over MCP get their [[links]] when the brain server sweeps (at start and when idle)");
-        await neuralViewCommand("", { brainFresh: true });
         return;
       }
 

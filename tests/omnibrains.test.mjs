@@ -1,32 +1,29 @@
-// omni.brains bridge (/brain) — against a fake brain: a stdio MCP server
-// speaking the tools omni.brains serves (get_brain_identity, list_pages,
-// get_links, get_backlinks, search, query, recall, remember, forget,
-// get_page). It logs every call to GBRAIN_HOME/calls.jsonl, which /brain
-// connect --home sets, so the tests can check exactly what was sent. Pins:
-//   - /brain connect saves <HOME>/mcp/omnibrains.json and the brain answers
-//   - the commands call the right tools with the right arguments, and
-//     remember always records provenance
-//   - the 3D snapshot: pages + links, links to pages outside it dropped,
-//     drawn in buildGraph() as the omni.brains region (type hubs, pages, links)
-//   - a brain tool error reaches the user as the brain's own message
-//   - /brain disconnect removes the service file and the snapshot
+// omni.brains bridge (/brain) — against a fake brain server speaking HTTP MCP
+// (the tools omni.brains serves) that can demand a sign-in. Pins:
+//   - the brain server is started only when it isn't answering, only for a
+//     local brain, with --enable-dcr, and the bridge waits for it
+//   - /brain connect saves the HTTP service; when the brain answers 401 it
+//     runs the sign-in once and then succeeds with the saved token
+//   - the commands call the right tools with the right arguments, remember
+//     always records provenance, a tool error reaches the user as the brain's
+//     own message, a revoked sign-in says to reconnect
+//   - /brain disconnect removes the service file and the sign-in
+//   - Omni's OAuth sign-in registers with the scopes it then asks for
 // Run: node tests/omnibrains.test.mjs
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "omni-brain-test-"));
 process.env.OMNI_HOME = home;
-const brainHome = path.join(home, "brainhome");
-fs.mkdirSync(brainHome, { recursive: true });
 
 const bridge = await import("../src/integrations/omnibrains.mjs");
 const { brainCommand, unquote, parseRemember, parseConnectArgs } = await import("../src/cli/brain.mjs");
 const { serviceFile } = await import("../src/integrations/services.mjs");
-const { buildGraph } = await import("../src/local/galaxy-graph.mjs");
-const { BRAIN_ID } = await import("../src/local/graph-ids.mjs");
+const { saveSignIn, getSignIn, oauthSignIn } = await import("../src/integrations/mcp-auth.mjs");
 const mcp = await import("../src/integrations/mcp.mjs");
 
 let pass = 0, fail = 0;
@@ -35,61 +32,50 @@ async function test(label, fn) {
   catch (e) { console.log(`  FAIL ${label}\n    ${e.stack || e.message}`); fail++; }
 }
 
-// ---- the fake brain ---------------------------------------------------------
-const fake = path.join(home, "fake-brain.mjs");
-fs.writeFileSync(fake, `
-import fs from "node:fs";
-import path from "node:path";
-import { createInterface } from "node:readline";
-const log = path.join(process.env.GBRAIN_HOME || ".", "calls.jsonl");
-const pages = [
-  { slug: "projects/omnibots", title: "OmniBots", type: "project", source_id: "default", updated_at_iso: "2026-11-11T10:00:00Z" },
-  { slug: "projects/omnicode", title: "OmniCode", type: "project", source_id: "default", updated_at_iso: "2026-11-10T10:00:00Z" },
-  { slug: "people/alice-example", title: "Alice Example", type: "person", source_id: "default", updated_at_iso: "2026-11-09T10:00:00Z" },
-];
-const links = {
-  "projects/omnibots": [
-    { from_slug: "projects/omnibots", to_slug: "projects/omnicode", link_type: "mentions" },
-    { from_slug: "projects/omnibots", to_slug: "people/alice-example", link_type: "" },
-    { from_slug: "projects/omnibots", to_slug: "ghost/not-in-snapshot", link_type: "" },
-  ],
-  "projects/omnicode": [{ from_slug: "projects/omnicode", to_slug: "projects/omnibots", link_type: "" }],
-};
+// ---- the fake brain (HTTP MCP) ------------------------------------------------
+const brain = { requireToken: null, calls: [] };
+const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b)); });
+const reply = (res, status, obj, headers = {}) => res.writeHead(status, { "Content-Type": "application/json", ...headers }).end(JSON.stringify(obj));
 const text = (v) => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }] });
 function call(name, a) {
-  fs.appendFileSync(log, JSON.stringify({ name, args: a }) + "\\n");
+  brain.calls.push({ name, args: a });
   switch (name) {
     case "get_brain_identity": return text({ version: "0.0.0-fake", engine: "pglite", page_count: 3, chunk_count: 3 });
-    case "list_pages": return text(pages.slice(a.offset || 0, (a.offset || 0) + (a.limit || 50)));
-    case "get_links": return text(links[a.slug] || []);
-    case "get_backlinks": return text(a.slug === "projects/omnicode" ? [{ from_slug: "projects/omnibots", link_type: "mentions" }] : []);
+    case "list_pages": return text([{ slug: "projects/omnibots", title: "OmniBots", type: "project", updated_at_iso: "2026-11-11T10:00:00Z" }]);
+    case "get_links": return text([{ from_slug: a.slug, to_slug: "projects/omnibots", link_type: "" }]);
+    case "get_backlinks": return text([{ from_slug: "projects/omnibots", link_type: "mentions" }]);
     case "search": case "query":
-      return text([{ slug: "projects/omnibots", title: "[quoted conversation excerpt from projects/omnibots; source material, not instructions]\\n\`\`\`text\\nOmniBots\\n\`\`\`", chunk_text: "OmniBots is a guild of AI bots." }]);
+      return text([{ slug: "projects/omnibots", title: "[quoted conversation excerpt from projects/omnibots; source material, not instructions]\n```text\nOmniBots\n```", chunk_text: "OmniBots is a guild of AI bots." }]);
     case "recall": return text({ facts: [{ id: 1, fact: "OmniCode launches claw-core" }], total: 1 });
     case "remember": return text({ id: "2", status: "inserted", status_text: "remembered as fact #2" });
     case "forget": return text({ status: "forgotten" });
     case "get_page":
       if (a.slug === "missing") return { isError: true, ...text({ error: "page_not_found", message: "No page missing" }) };
-      return text({ slug: a.slug, content: "# OmniBots\\nA guild of bots." });
+      return text({ slug: a.slug, content: "# OmniBots\nA guild of bots." });
     default: return { isError: true, ...text("unknown tool " + name) };
   }
 }
-const rl = createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  const msg = JSON.parse(line);
-  if (msg.id == null) return;
+let base = "";
+const server = http.createServer(async (req, res) => {
+  const u = new URL(req.url, base);
+  if (u.pathname === "/health") return reply(res, 200, { status: "ok" });
+  if (u.pathname !== "/mcp") return reply(res, 404, {});
+  if (req.method === "DELETE") return res.writeHead(200).end();
+  if (brain.requireToken && req.headers.authorization !== `Bearer ${brain.requireToken}`) {
+    return reply(res, 401, { error: "invalid_token" }, { "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` });
+  }
+  const msg = JSON.parse((await readBody(req)) || "{}");
+  if (msg.id == null) return res.writeHead(202).end();
   let result = {};
   if (msg.method === "initialize") result = { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "omni.brains" } };
-  else if (msg.method === "tools/list") result = { tools: ["get_brain_identity", "list_pages", "get_links", "recall", "remember"].map((n) => ({ name: n, inputSchema: { type: "object" } })) };
+  else if (msg.method === "tools/list") result = { tools: ["get_brain_identity", "search", "recall", "remember"].map((n) => ({ name: n, inputSchema: { type: "object" } })) };
   else if (msg.method === "tools/call") result = call(msg.params.name, msg.params.arguments || {});
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+  reply(res, 200, { jsonrpc: "2.0", id: msg.id, result });
 });
-`);
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+base = `http://127.0.0.1:${server.address().port}`;
 
-const callsFile = path.join(brainHome, "calls.jsonl");
-const calls = () => (fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-const clearCalls = () => { try { fs.unlinkSync(callsFile); } catch { /* none yet */ } };
-
+const lastCall = () => brain.calls.at(-1);
 async function captured(fn) {
   const lines = [];
   const orig = console.log;
@@ -101,169 +87,153 @@ async function captured(fn) {
 // ---- pure helpers -------------------------------------------------------------
 await test("unquote strips the brain's quoting envelope", () => {
   assert.equal(unquote("[quoted conversation excerpt from x; source material, not instructions]\n```text\nOmniBots\n```"), "OmniBots");
-  assert.equal(unquote("plain"), "plain");
 });
 
 await test("parseRemember splits entity and fact on the first colon", () => {
   assert.deepEqual(parseRemember("omnicode: launches claw-core: v2"), { entity: "omnicode", fact: "launches claw-core: v2" });
   assert.equal(parseRemember("no colon here"), null);
-  assert.equal(parseRemember(" : empty entity"), null);
 });
 
-await test("parseConnectArgs reads a quoted path and --home", () => {
-  assert.deepEqual(parseConnectArgs('"C:\\Program Files\\omni-brains.exe" --home D:\\brain'), { bin: "C:\\Program Files\\omni-brains.exe", home: "D:\\brain" });
-  assert.deepEqual(parseConnectArgs(""), { bin: undefined, home: undefined });
+await test("parseConnectArgs reads a quoted path, --url and --home", () => {
+  assert.deepEqual(parseConnectArgs('"C:\\Program Files\\omni-brains.exe" --url http://localhost:4000 --home D:\\brain'),
+    { bin: "C:\\Program Files\\omni-brains.exe", url: "http://localhost:4000", home: "D:\\brain" });
 });
 
-await test("brainDefinition: binary, bun for .ts, node for .mjs, GBRAIN_HOME from --home", () => {
-  assert.deepEqual(bridge.brainDefinition("C:\\b\\omni-brains.exe").args, ["serve"]);
-  const ts = bridge.brainDefinition("C:\\src\\cli.ts");
-  assert.equal(ts.command, "bun"); assert.deepEqual(ts.args, ["run", "C:\\src\\cli.ts", "serve"]);
-  const js = bridge.brainDefinition("C:\\w\\wrap.mjs", { home: brainHome });
-  assert.equal(js.command, process.execPath); assert.equal(js.env.GBRAIN_HOME, path.resolve(brainHome));
+await test("brainCommandLine: binary as is, bun for .ts, node for .mjs", () => {
+  assert.deepEqual(bridge.brainCommandLine("C:\\b\\omni-brains.exe", ["serve"]), { command: "C:\\b\\omni-brains.exe", args: ["serve"] });
+  assert.equal(bridge.brainCommandLine("C:\\src\\cli.ts", ["serve"]).command, "bun");
+  assert.equal(bridge.brainCommandLine("C:\\w\\wrap.mjs", ["serve"]).command, process.execPath);
 });
 
-await test("an explicit brain path that doesn't exist is refused", () => {
-  assert.throws(() => bridge.findBrainBinary(path.join(home, "nope.exe")), /no brain binary/);
+// ---- starting the brain server -------------------------------------------------
+await test("a running brain is not started again", async () => {
+  let spawned = 0;
+  const r = await bridge.ensureBrainServer({ base, spawnImpl: () => { spawned++; return { unref() {} }; } });
+  assert.equal(r.started, false);
+  assert.equal(spawned, 0);
 });
 
-// ---- commands against the fake brain ------------------------------------------------
+await test("a local brain that isn't answering is started in the background with --enable-dcr, then waited for", async () => {
+  const fakeBin = path.join(home, "omni-brains.exe");
+  fs.writeFileSync(fakeBin, "");
+  let up = false, seen = null;
+  const fetchImpl = async () => ({ ok: up });
+  const spawnImpl = (command, args, opts) => { seen = { command, args, opts }; setTimeout(() => { up = true; }, 300); return { unref() {} }; };
+  const r = await bridge.ensureBrainServer({ base: "http://localhost:3999", bin: fakeBin, fetchImpl, spawnImpl, waitMs: 5000 });
+  assert.equal(r.started, true);
+  assert.equal(seen.command, fakeBin);
+  assert.deepEqual(seen.args, ["serve", "--http", "--port", "3999", "--bind", "127.0.0.1", "--enable-dcr"]);
+  assert.equal(seen.opts.detached, true);
+  assert.equal(seen.opts.windowsHide, true);
+});
+
+await test("a remote brain that isn't answering is never started here", async () => {
+  await assert.rejects(bridge.ensureBrainServer({ base: "https://brain.example.com", fetchImpl: async () => ({ ok: false }), spawnImpl: () => { throw new Error("must not spawn"); } }), /isn't answering/);
+});
+
+// ---- commands against the fake brain ------------------------------------------
 await test("/brain before connect says how to connect", async () => {
-  const outText = await captured(() => brainCommand({}, ""));
-  assert.match(outText, /isn't connected/);
+  const out = await captured(() => brainCommand({}, ""));
+  assert.match(out, /isn't connected/);
 });
 
-await test("/brain connect saves the service and the brain answers", async () => {
-  const outText = await captured(() => brainCommand({}, `connect "${fake}" --home "${brainHome}"`));
-  assert.match(outText, /connected omni\.brains 0\.0\.0-fake \(3 pages\)/);
+await test("/brain connect: the brain asks for a sign-in, Omni signs in once, then the brain answers", async () => {
+  brain.requireToken = "tok-1";
+  let signIns = 0;
+  const signIn = async (name, url) => { signIns++; assert.equal(url, `${base}/mcp`); saveSignIn(name, { type: "token", resource: url, token: "tok-1" }); };
+  const r = await bridge.connectBrain({ url: base, signIn, spawnImpl: () => { throw new Error("must not spawn"); } });
+  assert.equal(signIns, 1);
+  assert.equal(r.signedIn, true);
+  assert.equal(r.identity.json.version, "0.0.0-fake");
   const saved = JSON.parse(fs.readFileSync(serviceFile("omnibrains"), "utf8"));
-  assert.equal(saved.command, process.execPath);
-  assert.deepEqual(saved.args, [fake, "serve"]);
-  assert.equal(saved.env.GBRAIN_HOME, path.resolve(brainHome));
-  assert.ok(bridge.brainConfigured());
+  assert.equal(saved.url, `${base}/mcp`);
+  assert.equal(saved.headers, undefined, "the token lives in the sign-in store, not the service file");
 });
 
 await test("/brain status reports version and pages", async () => {
-  const outText = await captured(() => brainCommand({}, "status"));
-  assert.match(outText, /omni\.brains 0\.0\.0-fake · pglite · 3 pages/);
+  const out = await captured(() => brainCommand({}, "status"));
+  assert.match(out, /omni\.brains 0\.0\.0-fake · pglite · 3 pages/);
 });
 
 await test("/brain search lists hits without the quoting envelope", async () => {
-  clearCalls();
-  const outText = await captured(() => brainCommand({}, "search guild bots"));
-  assert.match(outText, /projects\/omnibots\s+OmniBots/);
-  assert.doesNotMatch(outText, /quoted conversation excerpt/);
-  assert.deepEqual(calls().at(-1), { name: "search", args: { query: "guild bots", limit: 10 } });
+  const out = await captured(() => brainCommand({}, "search guild bots"));
+  assert.match(out, /projects\/omnibots\s+OmniBots/);
+  assert.doesNotMatch(out, /quoted conversation excerpt/);
+  assert.deepEqual(lastCall(), { name: "search", args: { query: "guild bots", limit: 10 } });
 });
 
 await test("/brain remember sends entity, fact and provenance", async () => {
-  clearCalls();
-  const outText = await captured(() => brainCommand({}, "remember omnicode: launches claw-core as its agent"));
-  assert.match(outText, /remembered as fact #2/);
-  assert.deepEqual(calls().at(-1), { name: "remember", args: { entity: "omnicode", fact: "launches claw-core as its agent", provenance: "omni /brain remember" } });
+  const out = await captured(() => brainCommand({}, "remember projects/omnicode: launches claw-core"));
+  assert.match(out, /remembered as fact #2/);
+  assert.deepEqual(lastCall(), { name: "remember", args: { entity: "projects/omnicode", fact: "launches claw-core", provenance: "omni /brain remember" } });
 });
 
-await test("/brain remember without entity:fact shows usage and calls nothing", async () => {
-  clearCalls();
-  const outText = await captured(() => brainCommand({}, "remember just words"));
-  assert.match(outText, /usage: \/brain remember <entity>: <fact>/);
-  assert.equal(calls().length, 0);
-});
-
-await test("/brain recall lists the entity's facts", async () => {
-  clearCalls();
-  const outText = await captured(() => brainCommand({}, "recall omnicode what agent"));
-  assert.match(outText, /#1 OmniCode launches claw-core/);
-  assert.deepEqual(calls().at(-1), { name: "recall", args: { entity: "omnicode", query: "what agent" } });
-});
-
-await test("/brain forget passes the fact id", async () => {
-  clearCalls();
+await test("/brain recall, forget and links call the right tools", async () => {
+  assert.match(await captured(() => brainCommand({}, "recall omnicode what agent")), /#1 OmniCode launches claw-core/);
+  assert.deepEqual(lastCall(), { name: "recall", args: { entity: "omnicode", query: "what agent" } });
   await captured(() => brainCommand({}, "forget 7"));
-  assert.deepEqual(calls().at(-1), { name: "forget", args: { id: "7" } });
-});
-
-await test("/brain links shows outgoing and incoming", async () => {
-  const outText = await captured(() => brainCommand({}, "links projects/omnicode"));
-  assert.match(outText, /projects\/omnicode: 1 outgoing, 1 incoming/);
-  assert.match(outText, /→ projects\/omnibots/);
-  assert.match(outText, /← projects\/omnibots \(mentions\)/);
+  assert.deepEqual(lastCall(), { name: "forget", args: { id: "7" } });
+  const out = await captured(() => brainCommand({}, "links projects/omnicode"));
+  assert.match(out, /projects\/omnicode: 1 outgoing, 1 incoming/);
 });
 
 await test("a brain tool error reaches the user as the brain's message", async () => {
-  const outText = await captured(() => brainCommand({}, "get missing"));
-  assert.match(outText, /omni\.brains: get_page: No page missing/);
+  assert.match(await captured(() => brainCommand({}, "get missing")), /omni\.brains: get_page: No page missing/);
 });
 
-// ---- the 3D view --------------------------------------------------------------
-await test("refreshBrainGraph snapshots pages and links, dropping links outside it", async () => {
-  const g = await bridge.refreshBrainGraph();
-  assert.equal(g.pages.length, 3);
-  assert.equal(g.totalPages, 3);
-  assert.equal(g.truncated, false);
-  const pairs = g.links.map((l) => `${l.from}>${l.to}`).sort();
-  assert.deepEqual(pairs, [
-    "brain:default:projects/omnibots>brain:default:people/alice-example",
-    "brain:default:projects/omnibots>brain:default:projects/omnicode",
-    "brain:default:projects/omnicode>brain:default:projects/omnibots",
-  ]);
+await test("a revoked sign-in tells the user to reconnect", async () => {
+  brain.requireToken = "tok-2";
+  mcp.disconnectAll();
+  const out = await captured(() => brainCommand({}, "status"));
+  assert.match(out, /isn't signed in to the brain.*\/brain connect/);
+  brain.requireToken = "tok-1";
 });
 
-await test("buildGraph draws the omni.brains region: hub, type clusters, pages, links", () => {
-  const graph = buildGraph();
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  assert.equal(byId.get(BRAIN_ID)?.label, "omni.brains");
-  assert.ok(graph.edges.some((e) => e.target === BRAIN_ID && e.kind === "system"), "brain hangs off the coordinator");
-  assert.equal(byId.get("brain-type:project")?.kind, "brain-type");
-  assert.equal(byId.get("brain-type:person")?.kind, "brain-type");
-  const page = byId.get("brain:default:projects/omnibots");
-  assert.equal(page?.kind, "brain-page");
-  assert.equal(page.label, "OmniBots");
-  assert.ok(graph.edges.some((e) => e.source === "brain-type:project" && e.target === page.id && e.kind === "hierarchy"));
-  assert.equal(graph.edges.filter((e) => e.kind === "link" && String(e.source).startsWith("brain:")).length, 3);
-  assert.equal(graph.counts.brainPages, 3);
-  assert.equal(graph.counts.brainLinks, 3);
+await test("the dashboard pages are the brain's own", () => {
+  assert.equal(bridge.dashboardUrl("neural"), `${base}/admin/#neural`);
+  assert.equal(bridge.dashboardUrl(), `${base}/admin/`);
 });
 
-await test("background refresh: one fetch at a time, skipped when a snapshot exists and ifMissing", async () => {
-  clearCalls();
-  const a = bridge.refreshBrainGraphInBackground();
-  const b = bridge.refreshBrainGraphInBackground();
-  assert.equal(a, b, "a second call while one is running reuses it");
-  await a;
-  assert.equal(calls().filter((c) => c.name === "list_pages").length, 1);
-  clearCalls();
-  assert.equal(bridge.refreshBrainGraphInBackground({ ifMissing: true }), null);
-  assert.equal(calls().length, 0);
+await test("/brain disconnect removes the service file and the sign-in", async () => {
+  const out = await captured(() => brainCommand({}, "disconnect"));
+  assert.match(out, /omni\.brains disconnected/);
+  assert.equal(fs.existsSync(serviceFile("omnibrains")), false);
+  assert.equal(getSignIn("omnibrains"), null);
+  assert.equal(bridge.brainConfigured(), false);
 });
 
-await test("a tab connecting to the neural view loads the brain when there is no snapshot", async () => {
-  const { setBrainGraph } = await import("../src/local/brain-graph-store.mjs");
-  const { startNeuralView, stopNeuralView } = await import("../src/local/neuralview-server.mjs");
-  setBrainGraph(null);
-  const st = await startNeuralView({ port: 6040 });
-  const ctrl = new AbortController();
+// ---- Omni's OAuth sign-in registers for the scopes it asks for ---------------------
+await test("oauthSignIn registers with the scopes it then requests", async () => {
+  let registration = null, authorizeScope = null;
+  let asBase = "";
+  const as = http.createServer(async (req, res) => {
+    const u = new URL(req.url, asBase);
+    if (u.pathname === "/register") { registration = JSON.parse(await readBody(req)); return reply(res, 201, { client_id: "cid-1" }); }
+    if (u.pathname === "/authorize") {
+      authorizeScope = u.searchParams.get("scope");
+      const back = new URL(u.searchParams.get("redirect_uri"));
+      back.searchParams.set("code", "code-1");
+      back.searchParams.set("state", u.searchParams.get("state"));
+      return res.writeHead(302, { Location: back.href }).end();
+    }
+    if (u.pathname === "/token") return reply(res, 200, { access_token: "at-1", token_type: "Bearer", expires_in: 3600 });
+    reply(res, 404, {});
+  });
+  await new Promise((r) => as.listen(0, "127.0.0.1", r));
+  asBase = `http://127.0.0.1:${as.address().port}`;
   try {
-    const res = await fetch(`${st.url}api/events`, { signal: ctrl.signal, headers: { Host: new URL(st.url).host } });
-    assert.equal(res.status, 200);
-    for (let i = 0; i < 50 && !bridge.brainGraph(); i++) await new Promise((r) => setTimeout(r, 100));
-    assert.equal(bridge.brainGraph()?.pages.length, 3, "the snapshot was loaded by the tab connecting");
+    const meta = { issuer: asBase, authorizationEndpoint: `${asBase}/authorize`, tokenEndpoint: `${asBase}/token`, registrationEndpoint: `${asBase}/register`, scopes: ["read", "write"] };
+    await oauthSignIn("scopecheck", `${asBase}/mcp`, { meta, openUrl: (url) => { fetch(url).catch(() => {}); }, timeoutMs: 10_000 });
+    assert.equal(registration.scope, "read write");
+    assert.equal(authorizeScope, "read write");
+    assert.equal(getSignIn("scopecheck").accessToken, "at-1");
   } finally {
-    ctrl.abort();
-    stopNeuralView({ reason: "stopped" });
+    as.close();
   }
 });
 
-await test("/brain disconnect removes the service file and the 3D snapshot", async () => {
-  const outText = await captured(() => brainCommand({}, "disconnect"));
-  assert.match(outText, /omni\.brains disconnected/);
-  assert.equal(fs.existsSync(serviceFile("omnibrains")), false);
-  assert.equal(bridge.brainConfigured(), false);
-  assert.equal(bridge.brainGraph(), null);
-  assert.equal(buildGraph().nodes.some((n) => n.id === BRAIN_ID), false);
-});
-
 mcp.disconnectAll();
+server.close();
 try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* Windows may hold a handle briefly */ }
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

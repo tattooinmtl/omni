@@ -86,41 +86,10 @@ ok("project_inspect top-level scan lists real/file.md exactly once (loop is skip
   assert.equal(occurrences, 1, `real/file.md appeared ${occurrences} times — symlink loop not skipped`);
 });
 
-// ---- galaxy-graph walk (local/galaxy-graph.mjs) ----
-// The galaxy walk reads OKF_DIR, falling back to <HOME>/knowledge. Set
-// OKF_DIR rather than OMNI_HOME: config.mjs resolves HOME into a module-level
-// const, and tools/index.mjs above already pulled it in, so OMNI_HOME set
-// here would arrive too late and the walk would scan the real knowledge dir —
-// finding no cards, and passing the timing assertion while testing nothing.
-// Both consts are read when galaxy-graph.mjs is imported, which is below.
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "omni-galaxy-home-"));
-const okfDir = path.join(tmpHome, "knowledge");
-process.env.OKF_DIR = okfDir;
-fs.mkdirSync(okfDir, { recursive: true });
-fs.mkdirSync(path.join(okfDir, "real"));
-fs.writeFileSync(path.join(okfDir, "real", "card.md"), "---\ntype: reference\n---\nbody\n");
-fs.symlinkSync("real", path.join(okfDir, "loop-to-sibling"), "dir");
-fs.symlinkSync(".", path.join(okfDir, "real", "loop-to-self"), "dir");
-
-const galaxyMod = await import(u("local/galaxy-graph.mjs"));
-const galaxyStart = Date.now();
-const graph = galaxyMod.buildGraph();
-const galaxyElapsed = Date.now() - galaxyStart;
-
-ok("galaxy-graph buildGraph completes in under 2s with symlink loops in OKF_DIR", () => {
-  assert.ok(galaxyElapsed < 2000, `buildGraph took ${galaxyElapsed}ms — likely an infinite loop`);
-});
-
-ok("galaxy-graph counts exactly one 'card' node (loop didn't duplicate it)", () => {
-  const cards = graph.nodes.filter((n) => n.kind === "card");
-  assert.equal(cards.length, 1, `expected 1 card node, got ${cards.length}: ${cards.map((c) => c.label).join(", ")}`);
-});
-
 // ---- cleanup ----
 
 process.chdir(origCwd);
 fs.rmSync(workspace, { recursive: true, force: true });
-fs.rmSync(tmpHome, { recursive: true, force: true });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

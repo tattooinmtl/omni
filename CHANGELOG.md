@@ -8,9 +8,37 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.9 — 2026-11-11
+
+- **Shipped:** this PR · TattooAI/brain-shared-server · session b8e3e066-edb3-4371-a58f-26a208d750ef
+- **One brain server, one login.** omni.brains's database can be open in only
+  one process, so Omi no longer starts its own brain: `/brain connect` starts
+  the shared `omni-brains serve --http` on localhost:3131 in the background if
+  it isn't running (with dynamic client registration, bound to localhost), saves
+  it as the `omnibrains` HTTP service, and, when the brain asks, signs Omi in:
+  the browser opens the brain's login (the OmniOne account) and an approval
+  page; the token is saved and refreshed like any `/connect` sign-in.
+  `/brain start` starts the server alone; `/brain disconnect` also deletes the
+  sign-in. A revoked sign-in says to run `/brain connect` again.
+- **The neural view moved into the brain.** `/neuralview` and its galaxy,
+  page and server are gone from Omi, along with the omni.brains region and its
+  snapshot. `/brain view` opens the brain's own 3D Neural view
+  (`/admin/#neural`) and `/brain dashboard` its dashboard, starting the server
+  first when needed.
+- **Fix: OAuth sign-in asks for its scopes when it registers.** Omi's dynamic
+  client registration now sends the `scope` it then requests at /authorize.
+  Servers that grant a dynamically registered client only what it registered
+  with (omni.brains does) issued a token with no permissions before.
+- Tests: `tests/omnibrains.test.mjs` runs `/brain` against a fake HTTP brain
+  that can demand a sign-in (server started only when down and only for a local
+  brain, with `--enable-dcr`; sign-in once then success; provenance; errors;
+  revoked sign-in; disconnect removes service and sign-in) and checks that
+  `oauthSignIn` registers with the scopes it requests. The neural view's tests
+  and their sections in `security-audit` and `symlink-loop` are removed.
+
 ## 3.6.8 — 2026-11-11
 
-- **Shipped:** this PR · TattooAI/neuralview-loads-brain · session b8e3e066-edb3-4371-a58f-26a208d750ef
+- **Shipped:** [#70](https://github.com/tattooinmtl/omni/pull/70) · b5dff33 · TattooAI/neuralview-loads-brain · session b8e3e066-edb3-4371-a58f-26a208d750ef
 - **The neural view opens with the brain in it.** While omni.brains is
   connected, `/neuralview` (open or restart) reads the brain's pages and
   links in the background, and open tabs draw the omni.brains region as soon

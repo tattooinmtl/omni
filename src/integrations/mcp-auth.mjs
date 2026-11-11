@@ -282,6 +282,11 @@ export async function oauthSignIn(name, resourceUrl, io = {}) {
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "none",
+          // Register for the scopes the sign-in will ask for: some servers
+          // grant a dynamically registered client only what it registered
+          // with, so a scopeless registration ends in a token that can't
+          // call anything.
+          ...(meta.scopes?.length ? { scope: meta.scopes.join(" ") } : {}),
         }),
       });
       const reg = await res.json().catch(() => ({}));
