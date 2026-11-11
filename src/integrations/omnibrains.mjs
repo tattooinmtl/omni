@@ -1,51 +1,51 @@
-// omni.brains bridge — the brain as an MCP service Omni can use and control.
+// omni.brains bridge — the shared memory brain, used and controlled from Omni.
 //
-// omni.brains (a gbrain build) serves its memory over MCP: `omni-brains serve`
-// (or `gbrain serve`) on stdio. This module:
-//   - finds the brain binary and saves it as the "omnibrains" service
-//     (<HOME>/mcp/omnibrains.json, the same file /connect writes), so the
-//     model reaches the brain's tools through the `mcp` proxy every session;
-//   - calls brain tools directly for the /brain commands (no model turn);
-//   - fetches the brain's pages and links into brain-graph-store.mjs, which
-//     the /neuralview galaxy draws as its own region.
+// One brain server per computer: `omni-brains serve --http` on localhost:3131.
+// Every app (Omni, the other Omni products, Claude Code, …) connects to that
+// one server over HTTP MCP, each with its own sign-in, because the brain's
+// embedded database can be open in only one process at a time.
 //
-// Nothing here talks to the network: the server is a local child process.
+// This module:
+//   - starts the server in the background when it isn't running,
+//   - saves it as the "omnibrains" service (<HOME>/mcp/omnibrains.json, the
+//     file /connect writes) so the model reaches it through the `mcp` proxy,
+//   - signs Omni in the first time: the browser opens the brain's own login
+//     (the OmniOne account) and an approval page; the token is saved like any
+//     /connect sign-in and refreshed by the MCP client,
+//   - calls brain tools directly for the /brain commands (no model turn).
+//
+// The 3D Neural view is the brain's own dashboard page (/admin/#neural).
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { addServer, removeServer, serverDef, callServerTool, toolResultText, serverStatuses } from "./mcp.mjs";
 import { writeServiceDef, deleteServiceDef, serviceFile } from "./services.mjs";
-import { setBrainGraph, brainGraph, brainPageId } from "../local/brain-graph-store.mjs";
-import { publishActivity } from "../local/activity-bus.mjs";
-import { onNeuralViewClient } from "../local/neuralview-server.mjs";
+import { oauthSignIn, deleteSignIn } from "./mcp-auth.mjs";
 
 export const BRAIN_SERVER = "omnibrains";
 export const PROVENANCE = "omni /brain remember";
+// localhost, not 127.0.0.1: the brain issues its sign-in for the host it was
+// reached on, and its dashboard cookie is tied to that host.
+export const DEFAULT_BRAIN_URL = "http://localhost:3131";
+const START_WAIT_MS = 30_000;
 
-const MAX_GRAPH_PAGES = 1000;
-const PAGE_BATCH = 100;
-const LINK_CONCURRENCY = 6;
-
-// ---- finding and saving the server ----------------------------------------
+// ---- the brain binary and server -------------------------------------------
 
 function onPath(name) {
   try {
     const cmd = process.platform === "win32" ? "where" : "which";
     const out = execFileSync(cmd, [name], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-    const first = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-    return first || null;
+    return out.split(/\r?\n/).map((s) => s.trim()).find(Boolean) || null;
   } catch {
     return null;
   }
 }
 
 // The brain binary: an explicit path, then OMNI_BRAINS_BIN, then
-// `omni-brains` or `gbrain` on PATH. A .ts entry (a source checkout's
-// src/cli.ts) runs through bun.
+// `omni-brains` or `gbrain` on PATH.
 export function findBrainBinary(explicit) {
-  const candidates = [explicit, process.env.OMNI_BRAINS_BIN].filter(Boolean);
-  for (const c of candidates) {
+  for (const c of [explicit, process.env.OMNI_BRAINS_BIN].filter(Boolean)) {
     const p = path.resolve(String(c));
     if (fs.existsSync(p)) return p;
     throw new Error(`no brain binary at ${p}`);
@@ -53,19 +53,71 @@ export function findBrainBinary(explicit) {
   return onPath("omni-brains") || onPath("gbrain");
 }
 
-// The MCP server definition for a brain binary. `home` pins GBRAIN_HOME (a
-// brain other than ~/.gbrain); the server inherits only Omni's safe env, so
-// provider keys stay out unless the brain's own config holds them.
-export function brainDefinition(bin, { home } = {}) {
-  // A source checkout's src/cli.ts runs through bun; a .mjs/.js entry (a
-  // wrapper script) through this Node; anything else is the binary itself.
-  const def = /\.ts$/i.test(bin) ? { command: "bun", args: ["run", bin, "serve"] }
-    : /\.(m?js)$/i.test(bin) ? { command: process.execPath, args: [bin, "serve"] }
-    : { command: bin, args: ["serve"] };
-  if (home) def.env = { GBRAIN_HOME: path.resolve(home) };
-  def.description = "omni.brains — shared memory (pages, facts, links)";
-  return def;
+// How to run a brain entry: a source checkout's .ts through bun, a .mjs/.js
+// wrapper through this Node, anything else as the binary itself.
+export function brainCommandLine(bin, args) {
+  if (/\.ts$/i.test(bin)) return { command: "bun", args: ["run", bin, ...args] };
+  if (/\.(m?js)$/i.test(bin)) return { command: process.execPath, args: [bin, ...args] };
+  return { command: bin, args };
 }
+
+export function originOf(url) {
+  const u = new URL(url || DEFAULT_BRAIN_URL);
+  if (!/^https?:$/.test(u.protocol)) throw new Error(`not an http(s) brain URL: ${url}`);
+  return u.origin;
+}
+
+// The brain this Omni uses: the saved service's origin, else OMNI_BRAINS_URL,
+// else localhost:3131.
+export function brainBaseUrl() {
+  const def = serverDef(BRAIN_SERVER);
+  if (def?.url) {
+    try { return originOf(def.url); } catch { /* fall through */ }
+  }
+  return originOf(process.env.OMNI_BRAINS_URL || DEFAULT_BRAIN_URL);
+}
+
+export function isLocalBrain(base) {
+  const h = new URL(base).hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+}
+
+export async function brainHealthy(base, { fetchImpl = fetch } = {}) {
+  try {
+    const res = await fetchImpl(`${base}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Start `omni-brains serve --http` for a local brain that isn't answering, in
+// the background (it outlives this Omi: other apps use it too), and wait for
+// it. Dynamic client registration is on so apps can sign themselves in; the
+// server is bound to localhost only, and every app still needs the owner's
+// approval in the browser.
+export async function ensureBrainServer({ base = brainBaseUrl(), bin, home, spawnImpl = spawn, fetchImpl = fetch, waitMs = START_WAIT_MS } = {}) {
+  if (await brainHealthy(base, { fetchImpl })) return { started: false, base };
+  if (!isLocalBrain(base)) throw new Error(`the brain at ${base} isn't answering`);
+  const found = findBrainBinary(bin);
+  if (!found) throw new Error("couldn't find omni.brains: install it, or pass its path (/brain connect <path-to-omni-brains.exe>), or set OMNI_BRAINS_BIN");
+  const port = new URL(base).port || "80";
+  const { command, args } = brainCommandLine(found, ["serve", "--http", "--port", port, "--bind", "127.0.0.1", "--enable-dcr"]);
+  // Update checks off: the brain's release channel is the upstream project's,
+  // and nothing in the Omni line should call outside it.
+  const env = { ...process.env, GBRAIN_SELF_UPGRADE_MODE: "off" };
+  if (home) env.GBRAIN_HOME = path.resolve(home);
+  const child = spawnImpl(command, args, { detached: true, stdio: "ignore", windowsHide: true, env });
+  child.unref?.();
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (await brainHealthy(base, { fetchImpl })) return { started: true, base, command: `${command} ${args.join(" ")}` };
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  throw new Error(`omni.brains didn't start on ${base} within ${Math.round(waitMs / 1000)} s`);
+}
+
+// ---- the service and sign-in -------------------------------------------------
 
 export function brainConfigured() {
   return !!serverDef(BRAIN_SERVER);
@@ -75,34 +127,57 @@ export function brainStatusRow() {
   return serverStatuses().find((s) => s.name === BRAIN_SERVER) || null;
 }
 
-// Save the service, register it for this session, and prove it answers.
-export async function connectBrain({ bin, home } = {}) {
-  const found = findBrainBinary(bin);
-  if (!found) {
-    throw new Error("couldn't find omni.brains: pass its path (/brain connect <path-to-omni-brains.exe>) or set OMNI_BRAINS_BIN");
-  }
-  const def = brainDefinition(found, { home });
+// Start the server if needed, save the service, and prove the brain answers.
+// The first time, the brain asks Omni to sign in: the browser opens the
+// brain's login (OmniOne account) and an approval page.
+export async function connectBrain({ url, bin, home, signIn = oauthSignIn, log = () => {}, openUrl, fetchImpl = fetch, spawnImpl = spawn } = {}) {
+  const base = originOf(url || process.env.OMNI_BRAINS_URL || DEFAULT_BRAIN_URL);
+  const server = await ensureBrainServer({ base, bin, home, fetchImpl, spawnImpl });
+  const def = { url: `${base}/mcp`, description: "omni.brains — shared memory (pages, facts, links)" };
   const file = writeServiceDef(BRAIN_SERVER, def);
   addServer(BRAIN_SERVER, def, { service: true });
-  const identity = await brainTool("get_brain_identity", {});
-  return { file, def, identity };
+  let signedIn = false;
+  let identity;
+  try {
+    identity = await brainTool("get_brain_identity", {});
+  } catch (e) {
+    if (!e.authRequired) throw e;
+    log("omni.brains needs you to sign in — your browser opens its login; approve Omni there");
+    await signIn(BRAIN_SERVER, def.url, { log, wwwAuthenticate: e.wwwAuthenticate, ...(openUrl ? { openUrl } : {}) });
+    signedIn = true;
+    addServer(BRAIN_SERVER, def, { service: true }); // reconnect with the new sign-in
+    identity = await brainTool("get_brain_identity", {});
+  }
+  return { file, def, identity, base, started: server.started, signedIn };
 }
 
 export function disconnectBrain() {
   removeServer(BRAIN_SERVER);
+  try { deleteSignIn(BRAIN_SERVER); } catch { /* no sign-in saved */ }
   const removed = deleteServiceDef(BRAIN_SERVER);
-  setBrainGraph(null);
   return { removed, file: serviceFile(BRAIN_SERVER) };
 }
 
-// ---- calling the brain -----------------------------------------------------
+// ---- calling the brain -------------------------------------------------------
 
 // One brain tool call. Returns { json, text }: json is the parsed reply when
 // the brain answered JSON (it does for nearly every tool), else null. A tool
-// error throws with the brain's own message.
+// error throws with the brain's own message; a missing sign-in throws with
+// `authRequired` set.
 export async function brainTool(tool, args = {}) {
   if (!brainConfigured()) throw new Error("omni.brains isn't connected — run /brain connect");
-  const result = await callServerTool(BRAIN_SERVER, tool, args);
+  let result;
+  try {
+    result = await callServerTool(BRAIN_SERVER, tool, args);
+  } catch (e) {
+    if (e.authRequired) {
+      const err = new Error("omni.brains needs you to sign in again — run /brain connect");
+      err.authRequired = true;
+      err.wwwAuthenticate = e.wwwAuthenticate;
+      throw err;
+    }
+    throw e;
+  }
   const text = toolResultText(result);
   if (result?.isError) {
     let msg = text;
@@ -127,104 +202,7 @@ export function rowsOf(json) {
   return [];
 }
 
-// ---- the 3D view snapshot --------------------------------------------------
-
-async function pool(items, n, fn) {
-  let i = 0;
-  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
-    while (i < items.length) {
-      const item = items[i++];
-      await fn(item);
-    }
-  });
-  await Promise.all(workers);
+// The brain's own dashboard pages.
+export function dashboardUrl(page = "") {
+  return `${brainBaseUrl()}/admin/${page ? `#${page}` : ""}`;
 }
-
-// Fetch pages (newest first, up to maxPages) and each page's outgoing links,
-// and store the snapshot the galaxy draws. Links to pages outside the
-// snapshot are dropped (the galaxy only draws edges between known nodes).
-export async function refreshBrainGraph({ maxPages = MAX_GRAPH_PAGES } = {}) {
-  const pages = [];
-  for (let offset = 0; pages.length < maxPages; offset += PAGE_BATCH) {
-    const limit = Math.min(PAGE_BATCH, maxPages - pages.length);
-    const { json } = await brainTool("list_pages", { limit, offset, sort: "updated_desc" });
-    const rows = rowsOf(json);
-    for (const r of rows) {
-      if (!r?.slug) continue;
-      pages.push({
-        slug: r.slug,
-        title: r.title || r.slug,
-        type: r.type || "page",
-        sourceId: r.source_id || "default",
-        updatedAt: r.updated_at_iso || r.updated_at || null,
-      });
-    }
-    if (rows.length < limit) break;
-  }
-
-  let totalPages = null;
-  try {
-    const { json } = await brainTool("get_brain_identity", {});
-    if (json && Number.isFinite(json.page_count)) totalPages = json.page_count;
-  } catch { /* counts are a nicety */ }
-
-  const known = new Set(pages.map((p) => brainPageId(p.sourceId, p.slug)));
-  const links = [];
-  const seen = new Set();
-  await pool(pages, LINK_CONCURRENCY, async (p) => {
-    let rows = [];
-    try {
-      rows = rowsOf((await brainTool("get_links", { slug: p.slug, source_id: p.sourceId })).json);
-    } catch { return; /* one unreadable page must not sink the view */ }
-    for (const l of rows) {
-      const from = brainPageId(l.from_source_id || p.sourceId, l.from_slug || p.slug);
-      const to = brainPageId(l.to_source_id || p.sourceId, l.to_slug);
-      if (!l.to_slug || !known.has(to) || from === to) continue;
-      const key = `${from}>${to}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      links.push({ from, to, type: l.link_type || "" });
-    }
-  });
-
-  const snapshot = {
-    pages,
-    links,
-    fetchedAt: new Date().toISOString(),
-    totalPages,
-    truncated: totalPages != null ? totalPages > pages.length : pages.length >= maxPages,
-  };
-  setBrainGraph(snapshot);
-  publishActivity({ kind: "brain_graph", pages: pages.length, links: links.length });
-  return snapshot;
-}
-
-// Refresh the snapshot without waiting for it, at most one fetch at a time.
-// Errors are kept for /brain status instead of interrupting the caller (the
-// neural view opening, a tab connecting). `ifMissing` skips the fetch when a
-// snapshot already exists.
-let inflight = null;
-let lastBackgroundError = null;
-export function refreshBrainGraphInBackground({ ifMissing = false } = {}) {
-  if (!brainConfigured()) return null;
-  if (ifMissing && brainGraph()) return null;
-  if (inflight) return inflight;
-  inflight = refreshBrainGraph()
-    .then((g) => { lastBackgroundError = null; return g; })
-    .catch((e) => { lastBackgroundError = e.message; return null; })
-    .finally(() => { inflight = null; });
-  return inflight;
-}
-export function brainBackgroundError() {
-  return lastBackgroundError;
-}
-
-// A tab opening the neural view by any route loads the brain region once.
-onNeuralViewClient(() => { refreshBrainGraphInBackground({ ifMissing: true }); });
-
-// Show a /brain action in the neural view's activity log (open tabs only).
-export function noteBrainOp(op, detail = "") {
-  publishActivity({ kind: "brain_op", op, detail: String(detail).slice(0, 120) });
-}
-
-export { brainGraph };

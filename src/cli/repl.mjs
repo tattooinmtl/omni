@@ -29,7 +29,6 @@ import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
 import { classifyIntent, killSidecar } from "../integrations/router.mjs";
 import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
-import { stopNeuralView } from "../local/neuralview-server.mjs";
 import { applySkill, applySkills, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, commandNames, commandMenu, slashKind, parseSlashLine, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
@@ -1082,10 +1081,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       process.stdin.pause();
     }
     // Each step on its own: one failing teardown used to skip everything
-    // after it — including shutdown() — and leave a half-closed Omi running
-    // with its neural view still holding the port.
+    // after it — including shutdown() — and leave a half-closed Omi running.
     const steps = [
-      () => stopNeuralView({ reason: "closed" }),
       disconnectAll,
       disconnectBridge,
       killSidecar,

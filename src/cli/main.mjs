@@ -24,7 +24,6 @@ import { registerGoalTool } from "./goal.mjs";
 import { initWorkspace } from "../core/workspace.mjs";
 import { startRepl } from "./repl.mjs";
 import { readContextMode } from "../core/context-mode.mjs";
-import { startNeuralView, stopNeuralView } from "../local/neuralview-server.mjs";
 import { loadMachineContext, applyMachineEnv } from "../local/hardware-profile.mjs";
 import { addVendorToPath } from "../local/runtime-pack.mjs";
 import { currentVersion } from "../integrations/update-check.mjs";
@@ -48,7 +47,6 @@ function stopBackgroundChildren() {
   try { disconnectBridge(); } catch { /* best effort */ }
   try { killSidecar(); } catch { /* best effort */ }
   try { shutdownLspServers(); } catch { /* best effort */ }
-  try { stopNeuralView(); } catch { /* best effort */ }
 }
 
 export async function main(args) {
@@ -474,11 +472,6 @@ export async function main(args) {
     // finish() does that, and errors were already printed by runTurn.
     return finish(outcome?.stop || "done", jsonOut ? outcome?.error || null : null);
   }
-
-  // The neural-view server is background infrastructure for the memory
-  // system, not a thing the user starts — bind it now, silently, and let
-  // /neuralview just open a browser onto whatever's already running.
-  startNeuralView().catch(() => { /* non-fatal — /neuralview retries on demand */ });
 
   if (rpcMode) {
     persistModelOnExit = false;

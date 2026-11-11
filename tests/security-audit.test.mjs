@@ -27,8 +27,6 @@ const u = (p) => pathToFileURL(path.join(root, p)).href;
 const { assertCloneUrl } = await import(u("extensions/git-ops.js"));
 const { permissionState, checkPermission } = await import(u("src/core/agent.mjs"));
 const { redactForModel, loadSettings } = await import(u("src/core/config.mjs"));
-const { PAGE } = await import(u("src/local/neuralview-page.mjs"));
-const { startNeuralView, stopNeuralView, PAGE_CSP } = await import(u("src/local/neuralview-server.mjs"));
 
 // ── git_clone ────────────────────────────────────────────────────────────
 await test("git_clone refuses a URL that git would read as an option", () => {
@@ -117,26 +115,6 @@ await test("ordinary tool output is left alone", () => {
 await test("the agent pushes tool results through redactForModel", () => {
   const src = fs.readFileSync(path.join(root, "src", "core", "agent.mjs"), "utf8");
   ok(/content: redactForModel\(/.test(src), "tool message content is not redacted");
-});
-
-// ── neural view ──────────────────────────────────────────────────────────
-await test("the tooltip escapes the node kind label (folder, card type, atom status)", () => {
-  ok(PAGE.includes('escapeHtml(kindLabel) + "</span>"'), "tooltip kindLabel not escaped");
-  ok(!/\+ kindLabel \+ "<\/span>"/.test(PAGE), "a raw kindLabel is still concatenated into HTML");
-  ok(PAGE.includes("escapeHtml(e.cls)"), "activity row class not escaped");
-});
-
-await test("the neural view page is served with a CSP that only allows this server", async () => {
-  const started = await startNeuralView({ port: 6031 });
-  try {
-    const res = await fetch(started.url);
-    const csp = res.headers.get("content-security-policy") || "";
-    ok(csp === PAGE_CSP, `CSP header: ${csp}`);
-    ok(/connect-src 'self'/.test(csp) && /default-src 'self'/.test(csp), csp);
-    ok(res.headers.get("x-content-type-options") === "nosniff", "nosniff missing");
-  } finally {
-    stopNeuralView();
-  }
 });
 
 fs.rmSync(tmpHome, { recursive: true, force: true });
