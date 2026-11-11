@@ -125,6 +125,7 @@ await test("a local brain that isn't answering is started in the background with
   assert.deepEqual(seen.args, ["serve", "--http", "--port", "3999", "--bind", "127.0.0.1", "--enable-dcr"]);
   assert.equal(seen.opts.detached, true);
   assert.equal(seen.opts.windowsHide, true);
+  assert.equal(seen.opts.env.GBRAIN_SELF_UPGRADE_MODE, "off", "the started brain never checks upstream for updates");
 });
 
 await test("a remote brain that isn't answering is never started here", async () => {

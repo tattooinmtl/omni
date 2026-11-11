@@ -19,7 +19,8 @@ entries were rebuilt from git history).
   the browser opens the brain's login (the OmniOne account) and an approval
   page; the token is saved and refreshed like any `/connect` sign-in.
   `/brain start` starts the server alone; `/brain disconnect` also deletes the
-  sign-in. A revoked sign-in says to run `/brain connect` again.
+  sign-in. The server Omi starts runs with update checks off
+  (`GBRAIN_SELF_UPGRADE_MODE=off`): it never contacts the upstream project. A revoked sign-in says to run `/brain connect` again.
 - **The neural view moved into the brain.** `/neuralview` and its galaxy,
   page and server are gone from Omi, along with the omni.brains region and its
   snapshot. `/brain view` opens the brain's own 3D Neural view

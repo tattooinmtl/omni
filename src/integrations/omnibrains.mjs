@@ -103,7 +103,9 @@ export async function ensureBrainServer({ base = brainBaseUrl(), bin, home, spaw
   if (!found) throw new Error("couldn't find omni.brains: install it, or pass its path (/brain connect <path-to-omni-brains.exe>), or set OMNI_BRAINS_BIN");
   const port = new URL(base).port || "80";
   const { command, args } = brainCommandLine(found, ["serve", "--http", "--port", port, "--bind", "127.0.0.1", "--enable-dcr"]);
-  const env = { ...process.env };
+  // Update checks off: the brain's release channel is the upstream project's,
+  // and nothing in the Omni line should call outside it.
+  const env = { ...process.env, GBRAIN_SELF_UPGRADE_MODE: "off" };
   if (home) env.GBRAIN_HOME = path.resolve(home);
   const child = spawnImpl(command, args, { detached: true, stdio: "ignore", windowsHide: true, env });
   child.unref?.();
