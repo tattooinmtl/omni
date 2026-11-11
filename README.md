@@ -26,6 +26,11 @@ built-in `fetch`.
 The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
 `omni --version` tells you which one you have.
 
+**3.6.8**
+- **The brain opens with the neural view:** while omni.brains is connected,
+  `/neuralview` (or any tab opening the view) loads the brain's pages and
+  links into the galaxy by itself. `/brain view` is no longer needed first.
+
 **3.6.7**
 - **omni.brains:** `/brain` connects Omi to omni.brains, the shared memory
   brain for the Omni line, and drives it without a model turn (search, ask,
@@ -745,11 +750,13 @@ connected, the model also reaches the brain through the `mcp` tool (server
 | `/brain get <slug>` | read a page |
 | `/brain pages [prefix]` | newest pages, optionally under a slug prefix |
 | `/brain links <slug>` | a page's outgoing links and backlinks |
-| `/brain view` | draw the brain in the `/neuralview` galaxy |
+| `/brain view` | re-read the brain now and open the `/neuralview` galaxy |
 | `/brain disconnect` | remove the service |
 
-`/brain view` reads the newest 1000 pages and their links and draws them as
-an **omni.brains** region on the Memory Coordinator: one cluster per page
+While the brain is connected, `/neuralview` loads it by itself, and so does a
+tab that opens the view any other way (a bookmark, or the reload after Omi
+restarts): the brain is read only when someone looks. The view reads the
+newest 1000 pages and their links and draws them as an **omni.brains** region on the Memory Coordinator: one cluster per page
 type, links between pages, and an `omni.brains` legend toggle. Open tabs
 update by themselves, and every `/brain` action shows in the view's activity
 log. Use the full page name for an entity that has a page

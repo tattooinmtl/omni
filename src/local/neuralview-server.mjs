@@ -114,6 +114,9 @@ function requestHandler(req, res) {
       sendJson(res, 200, { app: "omni-neuralview", pid: process.pid, cwd: process.cwd() });
     } else if (req.method === "GET" && url.pathname === "/api/events") {
       streamEvents(req, res);
+      // A tab is looking at the view (opened by /neuralview, a bookmark, or a
+      // reload after Omi restarted): let integrations load what they draw.
+      for (const fn of clientHooks) { try { fn(); } catch { /* a hook must not break the stream */ } }
     } else if (req.method === "GET" && url.pathname.startsWith("/api/explain/")) {
       const id = decodeURIComponent(url.pathname.slice("/api/explain/".length));
       try {
@@ -139,6 +142,15 @@ export function neuralViewStatus({ withCounts = true } = {}) {
 }
 
 // Browser tabs currently connected.
+// Called each time a browser tab connects to the live event stream. Used by
+// integrations whose data is fetched lazily, such as the omni.brains region
+// (integrations/omnibrains.mjs), so the brain is read only when someone looks.
+const clientHooks = new Set();
+export function onNeuralViewClient(fn) {
+  clientHooks.add(fn);
+  return () => clientHooks.delete(fn);
+}
+
 export function neuralViewClients() {
   return clients.size;
 }

@@ -16,6 +16,7 @@ import {
   startNeuralView, stopNeuralView, restartNeuralView, neuralViewStatus,
   focusNeuralView, probeNeuralView,
 } from "../local/neuralview-server.mjs";
+import { brainConfigured, refreshBrainGraphInBackground } from "../integrations/omnibrains.mjs";
 
 const DEFAULT_PORT = 5678;
 
@@ -54,7 +55,7 @@ async function ensureRunning() {
   return st;
 }
 
-export async function neuralViewCommand(arg = "") {
+export async function neuralViewCommand(arg = "", { brainFresh = false } = {}) {
   const sub = String(arg || "").trim().toLowerCase();
   try {
     if (sub === "stop") {
@@ -83,6 +84,12 @@ export async function neuralViewCommand(arg = "") {
 
     const st = await ensureRunning();
     infoLine(`neural view: ${describe(st)}`);
+    // omni.brains connected: (re)read its pages and links. Open tabs draw the
+    // region as soon as the snapshot lands; nothing here waits on the brain.
+    if (brainConfigured() && !brainFresh) {
+      refreshBrainGraphInBackground();
+      infoLine("loading omni.brains into the view (pages and links)…");
+    }
     // Don't pile up tabs: if one is already connected, bring it forward.
     if (sub !== "open" && st.clients > 0) {
       focusNeuralView();

@@ -18,6 +18,7 @@ import { addServer, removeServer, serverDef, callServerTool, toolResultText, ser
 import { writeServiceDef, deleteServiceDef, serviceFile } from "./services.mjs";
 import { setBrainGraph, brainGraph, brainPageId } from "../local/brain-graph-store.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
+import { onNeuralViewClient } from "../local/neuralview-server.mjs";
 
 export const BRAIN_SERVER = "omnibrains";
 export const PROVENANCE = "omni /brain remember";
@@ -197,6 +198,29 @@ export async function refreshBrainGraph({ maxPages = MAX_GRAPH_PAGES } = {}) {
   publishActivity({ kind: "brain_graph", pages: pages.length, links: links.length });
   return snapshot;
 }
+
+// Refresh the snapshot without waiting for it, at most one fetch at a time.
+// Errors are kept for /brain status instead of interrupting the caller (the
+// neural view opening, a tab connecting). `ifMissing` skips the fetch when a
+// snapshot already exists.
+let inflight = null;
+let lastBackgroundError = null;
+export function refreshBrainGraphInBackground({ ifMissing = false } = {}) {
+  if (!brainConfigured()) return null;
+  if (ifMissing && brainGraph()) return null;
+  if (inflight) return inflight;
+  inflight = refreshBrainGraph()
+    .then((g) => { lastBackgroundError = null; return g; })
+    .catch((e) => { lastBackgroundError = e.message; return null; })
+    .finally(() => { inflight = null; });
+  return inflight;
+}
+export function brainBackgroundError() {
+  return lastBackgroundError;
+}
+
+// A tab opening the neural view by any route loads the brain region once.
+onNeuralViewClient(() => { refreshBrainGraphInBackground({ ifMissing: true }); });
 
 // Show a /brain action in the neural view's activity log (open tabs only).
 export function noteBrainOp(op, detail = "") {
