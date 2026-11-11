@@ -15,6 +15,11 @@ export const CODEGRAPH_ID = "sys-codegraph";
 export const FEEDBACK_ID = "sys-feedback";
 export const OKF_ROOT_ID = "okf-root";
 
+// omni.brains: the connected brain's region (src/integrations/omnibrains.mjs
+// fetches it; local/brain-graph-store.mjs holds it). Present only while a
+// snapshot exists.
+export const BRAIN_ID = "sys-omnibrains";
+
 // Live-layer hubs — anchor nodes for the dynamic session/project/tool/file
 // nodes that get inserted at runtime. Without these, tool_call events with
 // no explicit route fall through to a barely-visible flash on the coordinator

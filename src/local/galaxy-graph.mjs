@@ -25,14 +25,16 @@ import path from "node:path";
 import { HOME } from "../core/config.mjs";
 import { currentAtoms, providers as memoryProviders } from "../core/memory-provider.mjs";
 import { liveGraph } from "./activity-bus.mjs";
+import { brainGraph } from "./brain-graph-store.mjs";
 import {
   COORDINATOR_ID, L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID, OKF_ROOT_ID,
-  SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID,
+  SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID, BRAIN_ID,
 } from "./graph-ids.mjs";
 
 const OKF_DIR = process.env.OKF_DIR || path.join(HOME, "knowledge");
 
 const MAX_NODES = 3000; // keep the client-side layout responsive
+const MAX_BRAIN_PAGES = 1000; // the brain region's own share, drawn before OKF/memory so it always shows
 const MAX_TAG_EDGES = 800;
 const COMMON_TAG_CEILING = 8; // tags shared by more nodes than this are too generic to draw
 
@@ -115,6 +117,41 @@ export function buildGraph() {
   addNode({ id: TOOLS_HUB_ID, kind: "system", label: "Tools", detail: "Live parent of every tool call the agent makes this session (list_dir, read_file, run_command…). Every invocation appears as a transient child node.", tags: [], degree: 0 });
   addNode({ id: FILES_HUB_ID, kind: "system", label: "Files", detail: "Live parent of every file the agent touches (read, wrote, edited) this session. New file → new node here, linked back to the tool call that created it.", tags: [], degree: 0 });
   for (const id of [L0_ID, CHAT_MEMORY_ID, SKILLS_ID, WIKI_ID, CODEGRAPH_ID, FEEDBACK_ID, SESSIONS_HUB_ID, TOOLS_HUB_ID, FILES_HUB_ID]) addEdge(COORDINATOR_ID, id, "system");
+
+  // ---- omni.brains: pages grouped by type, wired by the brain's own links ---
+  const brain = brainGraph();
+  let brainPages = 0, brainLinks = 0;
+  if (brain) {
+    addNode({
+      id: BRAIN_ID, kind: "system", label: "omni.brains",
+      detail: `Connected brain: ${brain.totalPages ?? brain.pages.length} page(s)` +
+        `${brain.truncated ? `, newest ${Math.min(brain.pages.length, MAX_BRAIN_PAGES)} drawn` : ""}, ` +
+        `${brain.links.length} link(s). Snapshot ${brain.fetchedAt}. Refresh with /brain view.`,
+      tags: [], degree: 0,
+    });
+    addEdge(COORDINATOR_ID, BRAIN_ID, "system");
+    const typeHubs = new Set();
+    for (const p of brain.pages.slice(0, MAX_BRAIN_PAGES)) {
+      const hub = `brain-type:${p.type}`;
+      if (!typeHubs.has(hub)) {
+        typeHubs.add(hub);
+        addNode({ id: hub, kind: "brain-type", label: p.type, detail: `omni.brains pages of type "${p.type}"`, tags: [], degree: 0 });
+        addEdge(BRAIN_ID, hub, "hierarchy");
+      }
+      const id = `brain:${p.sourceId}:${p.slug}`;
+      if (knownIds.has(id)) continue;
+      addNode({
+        id, kind: "brain-page", label: truncate(p.title, 80), pageType: p.type, slug: p.slug, sourceId: p.sourceId,
+        detail: `${p.slug}${p.sourceId !== "default" ? ` (source ${p.sourceId})` : ""}${p.updatedAt ? ` · updated ${p.updatedAt}` : ""}`,
+        tags: [], degree: 0,
+      });
+      addEdge(hub, id, "hierarchy");
+      brainPages++;
+    }
+    for (const l of brain.links) {
+      if (knownIds.has(l.from) && knownIds.has(l.to)) { addEdge(l.from, l.to, "link"); brainLinks++; }
+    }
+  }
 
   // ---- OKF taxonomy skeleton: root -> categories -> subcategories ----------
   const folderMeta = new Map(); // relPath -> { parent, label }
@@ -307,6 +344,8 @@ export function buildGraph() {
       atoms: atoms.length,
       activeAtoms: atoms.filter((a) => a.status === "active").length,
       memories: legacyMemories.length,
+      brainPages,
+      brainLinks,
       nodes: nodes.length,
       edges: edges.length,
       truncated: cards.length + atoms.length + legacyMemories.length > MAX_NODES,

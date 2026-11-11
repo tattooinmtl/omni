@@ -8,6 +8,34 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.7 — 2026-11-11
+
+- **Shipped:** this PR · TattooAI/omni-brains-bridge · session b8e3e066-edb3-4371-a58f-26a208d750ef
+- **`/brain`: use and control omni.brains from Omi.** `/brain connect [path]
+  [--home dir]` saves omni.brains (a gbrain build serving its memory over MCP)
+  as the `omnibrains` service in `<HOME>/mcp/omnibrains.json`, the file
+  `/connect` writes, and checks that it answers. The model then reaches the
+  brain through the `mcp` proxy. The commands call the brain directly, with
+  no model turn: status, `search`, `ask`, `recall`, `remember` (always with
+  provenance `omni /brain remember`), `forget`, `get`, `pages`, `links`,
+  `disconnect`. A brain error is shown as the brain's own message.
+- **The brain in the neural view.** `/brain view` reads the newest 1000 pages
+  and their links into a snapshot and opens `/neuralview`, which draws an
+  **omni.brains** node on the Memory Coordinator, one cluster per page type,
+  the pages, and the links between them (links to pages outside the snapshot
+  are dropped). The region has its own node budget so it always shows, cyan
+  colors, two legend toggles, tooltips, a detail panel and a count in the
+  stats line. Open tabs pick up a new snapshot by themselves, and `/brain`
+  actions show in the activity log.
+- `mcp.mjs` exports `callServerTool(server, tool, args)` so code can call a
+  configured server through the same connection, trust check and idle timer
+  as the `mcp` proxy.
+- Tests: `tests/omnibrains.test.mjs` drives `/brain` against a fake brain
+  server that logs every call: connect saves the service, each command sends
+  the right tool and arguments, remember carries provenance, the snapshot
+  drops links outside it, `buildGraph()` draws the region, a tool error
+  reaches the user, and disconnect removes the service and the region.
+
 ## 3.6.6 — 2026-11-08
 
 - **Shipped:** this PR · TattooAI/defer-tool-schemas · session bf959f63-0a14-426e-842f-0ac2356a247e

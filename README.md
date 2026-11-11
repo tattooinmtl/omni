@@ -26,6 +26,12 @@ built-in `fetch`.
 The full record of every release is in [CHANGELOG.md](CHANGELOG.md).
 `omni --version` tells you which one you have.
 
+**3.6.7**
+- **omni.brains:** `/brain` connects Omi to omni.brains, the shared memory
+  brain for the Omni line, and drives it without a model turn (search, ask,
+  recall, remember, forget, pages, links). `/brain view` draws the brain's
+  pages and links in the `/neuralview` galaxy. See [omni.brains](#omnibrains).
+
 **3.6.3**
 - **Connected services:** `/connections`, `/connect [service]` and
   `/disconnect [service]` add MCP servers as services with a saved sign-in
@@ -354,7 +360,7 @@ everything with usage strings. Unknown commands get a nearest-match suggestion.
 | Category | Commands |
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/rag` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/neuralview` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
@@ -718,6 +724,42 @@ another one.
 
 It uses port 5678, bound to localhost with a Host check. A second Omi window
 uses the next free port, and `/neuralview` tells you which Omi holds 5678.
+
+### omni.brains
+
+`/brain` connects Omi to [omni.brains](https://github.com/tattooinmtl/Omni.Brains),
+the shared memory brain for the Omni product line, and controls it directly:
+every `/brain` command calls the brain itself, without a model turn. Once
+connected, the model also reaches the brain through the `mcp` tool (server
+`omnibrains`).
+
+| | |
+|---|---|
+| `/brain connect [path] [--home <dir>]` | save omni.brains as the `omnibrains` service (finds `omni-brains` or `gbrain` on PATH, or `OMNI_BRAINS_BIN`); `--home` picks a brain other than `~/.gbrain` |
+| `/brain` | status: version, engine, page count, 3D snapshot |
+| `/brain search <words>` | top matching pages |
+| `/brain ask <question>` | hybrid query for concepts, people and projects |
+| `/brain recall <entity> [question]` | facts saved about an entity |
+| `/brain remember <entity>: <fact>` | save a fact (provenance `omni /brain remember`) |
+| `/brain forget <fact-id>` | expire a fact; the brain keeps the audit trail |
+| `/brain get <slug>` | read a page |
+| `/brain pages [prefix]` | newest pages, optionally under a slug prefix |
+| `/brain links <slug>` | a page's outgoing links and backlinks |
+| `/brain view` | draw the brain in the `/neuralview` galaxy |
+| `/brain disconnect` | remove the service |
+
+`/brain view` reads the newest 1000 pages and their links and draws them as
+an **omni.brains** region on the Memory Coordinator: one cluster per page
+type, links between pages, and an `omni.brains` legend toggle. Open tabs
+update by themselves, and every `/brain` action shows in the view's activity
+log. Use the full page name for an entity that has a page
+(`/brain remember projects/omnicode: …`). A page the brain just saved can take
+a moment to show up in search, and its `[[links]]` appear after the brain
+server's next link sweep (at start and when idle).
+
+The brain runs as a local child process with Omi's safe environment, so your
+provider keys are not passed to it; a brain that should embed uses the keys in
+its own config.
 
 ## Tools the agent can use
 
