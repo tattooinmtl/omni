@@ -484,7 +484,7 @@ limit. Local models use the plain tool list unless you set a model here, and
 `"mode": "mechanical"` always does.
 
 Before that, once the conversation passes 48k tokens (or half the window on a
-smaller model), tool output older than the last four steps is cut to its
+smaller model), tool output older than the last twelve steps is cut to its
 first and last lines, since every step resends the whole history. It runs in
 one sweep and again only after the context has grown by a quarter, so a
 provider's prompt cache keeps hitting in between. The full output stays in

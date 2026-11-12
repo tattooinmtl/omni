@@ -26,10 +26,12 @@ const u = (p) => pathToFileURL(path.join(root, p)).href;
 
 process.env.OMNI_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "omni-prune-home-"));
 
-const { pruneStaleToolResults, maybePruneToolResults, PRUNED_MARKER, DEFAULT_PRUNE_AT_TOKENS, estimateTokens, runTurn, systemPrompt } = await import(u("src/core/agent.mjs"));
+const { pruneStaleToolResults, maybePruneToolResults, PRUNED_MARKER, DEFAULT_PRUNE_AT_TOKENS, PRUNE_KEEP_RECENT_STEPS, estimateTokens, runTurn, systemPrompt } = await import(u("src/core/agent.mjs"));
 const { resolveModel } = await import(u("src/core/config.mjs"));
 const { startMockProvider, mockSettings, MockSession } = await import(u("tests/_mock-provider.mjs"));
 
+// Enough steps that exactly 4 are older than the kept window.
+const N = PRUNE_KEEP_RECENT_STEPS + 4;
 const big = (i, n = 6000) => `HEAD-${i} ` + "x".repeat(n) + ` TAIL-${i}`;
 
 // `turns` tool steps, each an assistant call + its result, then a final answer.
@@ -43,8 +45,12 @@ function history(turns, size = 6000) {
 }
 const toolMsgs = (msgs) => msgs.filter((m) => m.role === "tool");
 
-await ok("old tool results are cut to head + tail; the last 4 steps are untouched", () => {
-  const msgs = history(8);
+await ok("the kept window is 12 steps: wide enough to keep the files being worked on", () => {
+  assert.equal(PRUNE_KEEP_RECENT_STEPS, 12);
+});
+
+await ok("old tool results are cut to head + tail; the recent steps are untouched", () => {
+  const msgs = history(N);
   const r = pruneStaleToolResults(msgs);
   const tools = toolMsgs(msgs);
   assert.equal(r.pruned, 4);
@@ -60,7 +66,7 @@ await ok("old tool results are cut to head + tail; the last 4 steps are untouche
 });
 
 await ok("short results are kept, and pruning twice changes nothing", () => {
-  const msgs = history(8);
+  const msgs = history(N);
   msgs[3].content = "short output";
   pruneStaleToolResults(msgs);
   assert.equal(msgs[3].content, "short output");
@@ -70,7 +76,7 @@ await ok("short results are kept, and pruning twice changes nothing", () => {
 });
 
 await ok("image (multipart) tool results are left alone", () => {
-  const msgs = history(8);
+  const msgs = history(N);
   msgs[3].content = [{ type: "text", text: "x".repeat(5000) }];
   pruneStaleToolResults(msgs);
   assert.ok(Array.isArray(msgs[3].content));
@@ -79,7 +85,7 @@ await ok("image (multipart) tool results are left alone", () => {
 const model = { contextWindow: 200000, maxTokens: 8000 };
 
 await ok("nothing is pruned below the budget", () => {
-  const msgs = history(8);
+  const msgs = history(N);
   const session = new MockSession();
   session.contextTokens = DEFAULT_PRUNE_AT_TOKENS - 1;
   assert.equal(maybePruneToolResults({ model, settings: {}, messages: msgs, session }), null);
@@ -87,7 +93,7 @@ await ok("nothing is pruned below the budget", () => {
 });
 
 await ok("over the budget it prunes in one sweep, then waits for the context to regrow", () => {
-  const msgs = history(8);
+  const msgs = history(N);
   const session = new MockSession();
   session.contextTokens = DEFAULT_PRUNE_AT_TOKENS + 5000;
   const r = maybePruneToolResults({ model, settings: {}, messages: msgs, session });
@@ -95,13 +101,13 @@ await ok("over the budget it prunes in one sweep, then waits for the context to 
   assert.ok(r.after < r.before);
   assert.equal(session.contextTokens, r.after, "context count updated");
   // One more step ages another result, but the history barely grew: no rewrite.
-  msgs.push({ role: "assistant", content: "", tool_calls: [{ id: "c8", type: "function", function: { name: "read_file", arguments: "{}" } }] });
-  msgs.push({ role: "tool", tool_call_id: "c8", name: "read_file", content: big(8) });
+  msgs.push({ role: "assistant", content: "", tool_calls: [{ id: `c${N}`, type: "function", function: { name: "read_file", arguments: "{}" } }] });
+  msgs.push({ role: "tool", tool_call_id: `c${N}`, name: "read_file", content: big(N) });
   session.contextTokens = DEFAULT_PRUNE_AT_TOKENS + 6000;
   assert.equal(maybePruneToolResults({ model, settings: {}, messages: msgs, session }), null);
   assert.ok(!toolMsgs(msgs)[4].content.includes(PRUNED_MARKER), "the newly aged result waits for the next sweep");
   // Once it regrows by a quarter of the budget, the next sweep runs.
-  for (let i = 9; i < 20; i++) {
+  for (let i = N + 1; i < N + 12; i++) {
     msgs.push({ role: "assistant", content: "", tool_calls: [{ id: `c${i}`, type: "function", function: { name: "read_file", arguments: "{}" } }] });
     msgs.push({ role: "tool", tool_call_id: `c${i}`, name: "read_file", content: big(i) });
   }
@@ -114,23 +120,23 @@ await ok("over the budget it prunes in one sweep, then waits for the context to 
 await ok("settings: pruneToolResults false turns it off, pruneAtTokens moves the budget", () => {
   const session = new MockSession();
   session.contextTokens = 500000;
-  assert.equal(maybePruneToolResults({ model, settings: { compaction: { pruneToolResults: false } }, messages: history(8), session }), null);
+  assert.equal(maybePruneToolResults({ model, settings: { compaction: { pruneToolResults: false } }, messages: history(N), session }), null);
   const s2 = new MockSession();
   s2.contextTokens = 3000;
-  assert.ok(maybePruneToolResults({ model, settings: { compaction: { pruneAtTokens: 2000 } }, messages: history(8), session: s2 }));
+  assert.ok(maybePruneToolResults({ model, settings: { compaction: { pruneAtTokens: 2000 } }, messages: history(N), session: s2 }));
 });
 
 await ok("a small window prunes at half its usable size", () => {
   const session = new MockSession();
   session.contextTokens = 9000; // under 48k, over half of a 16k window
-  assert.ok(maybePruneToolResults({ model: { contextWindow: 16384, maxTokens: 512 }, settings: {}, messages: history(8), session }));
+  assert.ok(maybePruneToolResults({ model: { contextWindow: 16384, maxTokens: 512 }, settings: {}, messages: history(N), session }));
 });
 
 await ok("after a compaction shrinks the history, pruning re-arms", () => {
   const session = new MockSession();
   session.toolPruneMark = 999999;
   session.contextTokens = DEFAULT_PRUNE_AT_TOKENS + 1;
-  assert.ok(maybePruneToolResults({ model, settings: {}, messages: history(8), session }));
+  assert.ok(maybePruneToolResults({ model, settings: {}, messages: history(N), session }));
 });
 
 await ok("runTurn sends the pruned history to the provider", async () => {
@@ -138,14 +144,14 @@ await ok("runTurn sends the pruned history to the provider", async () => {
   try {
     const settings = mockSettings(mock.baseUrl, { compaction: { pruneAtTokens: 1000, mode: "mechanical" } });
     const m = resolveModel(settings, "mock/main");
-    const msgs = history(8, 3000);
+    const msgs = history(N, 3000);
     const session = new MockSession();
     const out = await runTurn({ model: m, settings, messages: msgs, session, maxIterations: 2, diffPreview: false });
     assert.ok(out.stop !== "error", out.error);
     const sent = mock.requests[0].messages.filter((x) => x.role === "tool");
-    assert.equal(sent.length, 8);
+    assert.equal(sent.length, N);
     assert.equal(sent.filter((x) => x.content.includes(PRUNED_MARKER)).length, 4);
-    assert.ok(estimateTokens(mock.requests[0].messages) < estimateTokens(history(8, 3000)));
+    assert.ok(estimateTokens(mock.requests[0].messages) < estimateTokens(history(N, 3000)));
   } finally {
     await mock.close();
   }
