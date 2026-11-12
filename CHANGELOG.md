@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.10 — 2026-11-12
 
-- **Shipped:** this PR · — · feature/coarena-provider · —
+- **Shipped:** #72 · cb444cc · feature/coarena-provider · —
 - **Coarena is a provider again.** "i want to add a new provider and it dosent
   show coarena.ai" — the provider was configured by hand in ONE install's
   settings.json, so it existed on that disk and nowhere else. Every other
