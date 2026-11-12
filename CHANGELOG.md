@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.11 — 2026-11-12
 
-- **Shipped:** this PR · TattooAI/omnis-loop-accuracy-df369d · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
+- **Shipped:** [#73](https://github.com/tattooinmtl/omni/pull/73) · 245cf03 · TattooAI/omnis-loop-accuracy-df369d · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
 - **Omni does the work again, in the project you're in.** It took fifteen
   prompts to get Omni to add the Coarena provider. In the first two sessions
   it wrote it into `agent/settings.json`, a file Omni doesn't read (the live
