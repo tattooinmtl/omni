@@ -8,6 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.12 — 2026-11-12
+
+- **Shipped:** this PR · TattooAI/omni-own-home · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
+- **Omni warns when its home is another program's install folder.**
+  `OMNI_HOME` pointed at OmniCode's install
+  (`AppData\Local\Programs\OMNI-CODE`), so Omni's settings, memories and
+  session logs sat among OmniCode's files, and Omni kept drifting into
+  OmniCode. Omni never puts a program in its home, so when `OMNI_HOME` is a
+  folder with an uninstaller (`Uninstall.exe`, `unins000.exe`) or an `.exe`
+  at its top or in `bin/`, startup now says so: which folder, why, and to
+  remove `OMNI_HOME` or point it at a folder of Omni's own. The default home
+  (`agent/` in the install) is never flagged. On the machine where this
+  happened, `OMNI_HOME` is removed and Omni's data moved back to
+  `~/.omni/agent` (outside the repo; `agent/` is git-ignored).
+- README: the `OMNI_HOME` paragraph says to give Omni a folder of its own.
+- Tests: `tests/foreign-home.test.mjs` checks Omni's own home, an install
+  folder with an uninstaller, a program at the top or in `bin/`, that only
+  an `OMNI_HOME` is checked, and starts the REPL in both kinds of home to see
+  the warning appear only in the foreign one.
+
 ## 3.6.11 — 2026-11-12
 
 - **Shipped:** [#73](https://github.com/tattooinmtl/omni/pull/73) · 245cf03 · TattooAI/omnis-loop-accuracy-df369d · session 8dd0ef5d-70f9-4f38-a514-d65322545c20

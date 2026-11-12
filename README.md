@@ -1028,7 +1028,10 @@ Omni/
 ```
 
 `agent/` can be moved by setting `OMNI_HOME` as a real environment variable
-(not in `.env`).
+(not in `.env`). Point it at a folder of Omni's own: if it is another
+program's install folder (one with an uninstaller or an `.exe` in it, or in its
+`bin/`), Omni warns at startup, since its settings, memories and sessions
+would mix with that program's.
 
 ## Tests
 
