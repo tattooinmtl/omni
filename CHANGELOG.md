@@ -8,6 +8,29 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.10 — 2026-11-12
+
+- **Shipped:** this PR · — · feature/coarena-provider · —
+- **Coarena is a provider again.** "i want to add a new provider and it dosent
+  show coarena.ai" — the provider was configured by hand in ONE install's
+  settings.json, so it existed on that disk and nowhere else. Every other
+  install had no `coarena` provider at all: `/model coarena/...` answered
+  "Unknown model", and the provider never showed up in `/providers`, `/login`
+  or the `/addprovider` picker.
+  Coarena now ships like every other provider — a preset (so `/addprovider`
+  and `/login` offer it), a default provider entry pointing at
+  `https://coarena.ai/api/v1`, and five models (Claude Haiku/Sonnet 5.5,
+  MiniMax M3.1 Flash, Gemini 3.8 Flash, DeepSeek V4.1 Flash) pinned to the
+  endpoint's own limits: a 16384-token output ceiling and a 128k window. The
+  endpoint takes `reasoning_effort`, so `/effort` works on it directly.
+- A fetched Coarena model now gets the endpoint's real 16384-token output
+  ceiling instead of the generic 8192 floor, which used to truncate long
+  replies.
+- `tests/coarena-provider.test.mjs` pins all of it: the preset, the default
+  provider, the reasoning parameter, the shipped models and their limits, the
+  `/v1/models` metadata parsing, and an end-to-end `/addprovider` + `/model`
+  flow against a local fake endpoint.
+
 ## 3.6.9 — 2026-11-11
 
 - **Shipped:** this PR · TattooAI/brain-shared-server · session b8e3e066-edb3-4371-a58f-26a208d750ef
