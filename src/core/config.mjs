@@ -820,6 +820,37 @@ function mergeProviders(savedProviders = {}) {
   return merged;
 }
 
+// Omni's home holds only its own data: settings, sessions, memories. An
+// OMNI_HOME pointing at another program's install folder mixes the two: on
+// one PC it pointed at OmniCode's install, so Omni's memories and settings
+// were shared with OmniCode's and Omni kept working on OmniCode instead of
+// the project it was in. Omni never puts a program in its home, so an
+// uninstaller or an .exe there (at the top or in bin/) means the folder
+// belongs to something else. Returns why, or null.
+export function foreignHomeReason(home = HOME) {
+  const exes = (dir) => {
+    try { return fs.readdirSync(dir).filter((n) => /\.exe$/i.test(n)); } catch { return []; }
+  };
+  const top = exes(home);
+  const uninstaller = top.find((n) => /^unins/i.test(n));
+  if (uninstaller) return `it has ${uninstaller}`;
+  if (top.length) return `it has ${top[0]}`;
+  const bin = exes(path.join(home, "bin"));
+  if (bin.length) return `it has bin${path.sep}${bin[0]}`;
+  return null;
+}
+
+// The startup warning for foreignHomeReason, or null. Only an OMNI_HOME can
+// point somewhere foreign: the default home is Omni's own agent/ folder.
+export function foreignHomeWarning(env = process.env, home = HOME) {
+  if (!env.OMNI_HOME) return null;
+  const why = foreignHomeReason(home);
+  if (!why) return null;
+  return `Omni's home ${home} (from OMNI_HOME) is another program's install folder (${why}). ` +
+    "Omni's settings, memories and sessions there mix with that program's. " +
+    "Remove OMNI_HOME, or point it at a folder of Omni's own.";
+}
+
 export function ensureHome() {
   fs.mkdirSync(HOME, { recursive: true });
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });

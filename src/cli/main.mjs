@@ -5,6 +5,7 @@ import { recordFor, promptMessage } from "../core/synthetic.mjs";
 import { c, infoLine, warnLine, errorLine, costLine, shutdown } from "../ui.mjs";
 import {
   loadSettings, saveSettings, resolveModel, setProviderKey, Session, turnMaxIterations,
+  foreignHomeWarning,
 } from "../core/config.mjs";
 import { runTurn } from "../core/agent.mjs";
 import { registerExtensions, memoryPreamble, setSessionCtx, refreshAgentCatalog } from "../tools/index.mjs";
@@ -275,6 +276,9 @@ export async function main(args) {
     onFail: (why) => warnLine(`hardware scan ${why} — continuing without machine info; /hardware rescan retries`),
   });
   applyMachineEnv(machine.settings);
+
+  const homeWarning = foreignHomeWarning();
+  if (homeWarning) warnLine(homeWarning);
 
   // A worktree sub-agent runs as its own headless Omni; its log is a sub-agent's.
   const session = new Session({ kind: process.env.OMNI_SESSION_KIND === "subagent" ? "subagent" : "main" });
