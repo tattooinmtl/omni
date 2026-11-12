@@ -2,7 +2,7 @@
 // feed results back, repeat until the model answers with plain text.
 
 import { chatStream, completionStream } from "./provider.mjs";
-import { rotateAccount, activateAccount, resolveModel, redactForModel, saveSettings } from "./config.mjs";
+import { rotateAccount, activateAccount, resolveModel, redactForModel, saveSettings, SETTINGS_PATH } from "./config.mjs";
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
@@ -545,6 +545,7 @@ export function systemPrompt() {
     "You work in the user's current working directory.",
     `Working directory: ${process.cwd()}`,
     `Platform: ${process.platform}`,
+    `Omni's live settings file (providers, models, API keys): ${SETTINGS_PATH}. This is the only settings.json Omni reads. Another settings.json on disk (agent/settings.json in a checkout of Omni, another app's folder) is not it, even when the names match. Change providers and models with Omni's own commands (/addprovider, /model, the settings_* tools) rather than hand-editing.`,
     "",
     "Use the provided tools to inspect projects, read files, patch code, manage project todos, inspect git, manage dev processes, run shell commands, and run tests.",
     "You can build complete applications end to end: scaffold with run_shell (raise timeout_ms — create-* and installs exceed the 120s default), write the code, install dependencies, start the dev server with start_process, then actually check your work — web_fetch or http_request with allow_internal:true to hit your own endpoints, browser_navigate with allow_internal:true plus browser_screenshot and read_media_file to see the page render.",
@@ -552,9 +553,9 @@ export function systemPrompt() {
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
     "# Task workflow",
-    "Work through every task in these steps, in order, scaled to the size of the task: a question needs only the reads that answer it, a small fix needs read, edit, one check. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
+    "Work through every task in these steps, in order, scaled to the size of the task: a question needs only the reads that answer it, a small fix needs read, edit, and one check that runs what the user asked for. Treat the user's entire message as one single request, however long or multi-line it is — never act on part of it before you've read all of it.",
     "1. UNDERSTAND — read the whole prompt as one piece, then silently categorize it: what kind of task is this (question / bug fix / new feature / refactor / investigation / config change / something else), what is it actually asking for, what parts of the codebase does it touch.",
-    "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Use the fewest calls that answer what you need, and request independent ones together in one response — this step is what makes step 3 accurate instead of a guess.",
+    "2. EXPLORE — gather context BEFORE proposing anything: project_inspect for the stack, rag_search to locate relevant code by keyword, find_symbol for definition/reference lookup, lsp for semantic answers (definition/references/hover/diagnostics) when a language server is installed, deps for dependency info, read_file to see exact content. Use the fewest calls that answer what you need, and request independent ones together in one response — this step is what makes step 3 accurate instead of a guess. Exploring ends when you know what to change: then change it.",
     "3. PLAN — state how you categorized the request and the concrete steps you intend to take. Whether you then stop depends on what the work would do:",
     "   STOP and wait for the user when the work is RISKY OR UNDERDETERMINED: it modifies or deletes existing code or data the user did not point you at; it is a large refactor or migration; it touches auth, payments, secrets, or production config; it is irreversible; or there is more than one reasonable approach and the right call depends on a preference you don't know (in which case list the options with their tradeoffs). In these cases reply in plain text ONLY — no edit_file, apply_patch, write_file, mutating run_shell, or git_commit yet.",
     "   PROCEED without stopping when the request is clear and ADDITIVE: building something new (a new project, app, file, feature, endpoint, component, test), or a small well-scoped fix. Say the plan in a couple of lines, then carry it out in the same turn. 'Build me X' is an instruction to build X, not a request for a proposal — stopping to ask permission to start is a failure to do the task.",
@@ -573,6 +574,12 @@ export function systemPrompt() {
     "- Old tool output may be shortened in the history to save tokens; re-run the tool only if you actually need the part that was cut.",
     "- Less common tools (system_info, deps, lsp, browser_*, git_log, http_request, …) are listed by name in load_tools. Load the ones a task needs, several in one call, before using them.",
     "7. REPORT — close finished project_todo tasks, then summarize concisely: what changed (files), how it was verified, what the review said, and anything left open.",
+    "",
+    "# Do the work",
+    "- Stay in this project. The working directory is the project the user means. Don't read, search, or change other projects on this machine (a sibling repo, another app's install folder, its settings, database, or UI), whether with file tools, run_shell, or a browser, unless the user names that project. A similarly named app is not the one the user is talking about. If you think another project is involved, ask first.",
+    "- Once you know the cause and the fix, your next call is the edit. Don't write \"I have the full picture, let me verify a few last details\" and keep reading: re-checking what you already found is the loop to avoid. Every round should either learn something new or change something.",
+    "- Done means you saw it work. A file that parses, or a setting written to disk, is not a working feature: run what the user will run (the command, the /command, the request, the test) and see the result before you say it works. If you could not check, say exactly what you did not check. Never report \"done\", \"all set\" or \"fixed\" on an unverified change.",
+    "- When the user says it still doesn't work, believe them: your last change didn't do it. Find out why (wrong file, wrong process, needs a restart, the code never reads that value) before you change anything again. Don't repeat the same fix or answer.",
     "",
     "# Guidelines",
     "- Always read a file before editing it so you know the exact content.",
@@ -705,7 +712,13 @@ function shrinkOldToolResults(messages, session, keepRecentToolTurns = 2) {
 // full output stays in the session log; the model is told it can re-run the
 // tool. Already-pruned and short results are left alone, so it is idempotent.
 export const PRUNED_MARKER = "…[older tool output pruned";
-export function pruneStaleToolResults(messages, { keepRecentTurns = 4, maxChars = 2000, head = 1200, tail = 400 } = {}) {
+// How many recent steps keep their tool output whole. It was 4, and that was
+// too few: in a long session the model lost the code it had read four steps
+// earlier, read it again, lost it again, and spent ~150 rounds "verifying the
+// last details" without ever making the edit. Twelve steps keep the working
+// set of files in view while the bulk of an old history is still cut.
+export const PRUNE_KEEP_RECENT_STEPS = 12;
+export function pruneStaleToolResults(messages, { keepRecentTurns = PRUNE_KEEP_RECENT_STEPS, maxChars = 2000, head = 1200, tail = 400 } = {}) {
   let assistantsAfter = 0;
   let pruned = 0;
   let savedChars = 0;
@@ -757,6 +770,24 @@ export function maybePruneToolResults({ model, settings, messages, session }) {
   if (!r.pruned) return null;
   session?.setContextTokens?.(after);
   return { ...r, before, after };
+}
+
+// Rounds of reading with nothing changed. A model that keeps reading after it
+// has found the answer ("let me verify the last details", again and again)
+// burns the user's tokens and never does the work. After this many steps in a
+// row whose calls changed nothing, the loop tells it to act or report. It
+// fires again after each further run of the same length, and never in plan
+// mode, where reading is the whole job.
+export const READ_STALL_STEPS = 10;
+export function readStallNote(steps) {
+  return `[system note] You have spent ${steps} steps in a row reading and checking without changing anything. ` +
+    "If you know the fix, make the edit now; don't re-verify what you already found. " +
+    "If the task is a question or an audit, answer it now with what you have. " +
+    "If something you need is missing, tell the user what it is. Read more only for a fact you don't have yet, and name it.";
+}
+// A step makes progress when one of its calls changed something.
+export function stepChangedSomething(parsed) {
+  return (parsed || []).some((p) => p?.permission?.allowed !== false && isMutatingCall(p.name, p.args));
 }
 
 // Auto-compact when the live conversation nears the context window. The
@@ -953,6 +984,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
   const MAX_PARSE_RECOVERIES = 3;
   let parseRecoveries = 0;
   let wrapUpNudged = false;
+  // Steps in a row whose calls changed nothing (see READ_STALL_STEPS).
+  let readOnlySteps = 0;
   const MAX_STOP_CONTINUATIONS = 3;
   let stopContinuations = 0;
   // Vision models already announced this turn (one note per model).
@@ -1005,6 +1038,11 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       messages.push(syntheticUser(
         "[system note] Only 3 tool iterations remain this turn. Finish the smallest complete unit of work, verify if possible, then summarize what is done and what remains.",
       ));
+    }
+
+    if (readOnlySteps >= READ_STALL_STEPS && getPermissionMode() !== "plan") {
+      messages.push(syntheticUser(readStallNote(readOnlySteps)));
+      readOnlySteps = 0;
     }
 
     const { offered: hopTools, deferred: hopDeferred } = stepTools();
@@ -1309,6 +1347,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       mutationSeen = true;
       try { await beforeMutation(); } catch (e) { warnLine(`checkpoint skipped: ${e.message}`); }
     }
+
+    readOnlySteps = stepChangedSomething(parsed) ? 0 : readOnlySteps + 1;
 
     const toolCategory = statusForTools(calls);
     startStatus(toolCategory);

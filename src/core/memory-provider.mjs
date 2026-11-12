@@ -48,6 +48,13 @@ function currentProjectScope() {
   const p = projectSlug();
   return p ? { project: p } : {};
 }
+// Legacy records keep their scope in a top-level `project`; records saved
+// before scoping have none and stay visible everywhere.
+function legacyMatchesCurrentProject(m) {
+  if (!m?.project) return true;
+  const cur = projectSlug();
+  return !cur || m.project === cur;
+}
 function atomMatchesCurrentProject(a) {
   const p = a?.scope?.project;
   if (!p) return true; // legacy atoms — visible everywhere
@@ -399,6 +406,12 @@ const legacyProvider = {
     text = String(text || "").trim();
     if (!text) throw new Error("text is required");
     const rec = { id: newId("m"), text, tags: tags.map(String), createdAt: new Date().toISOString() };
+    // Same project scope as the layered store: a fact learned in one project
+    // is not recalled into another. Without it, every session started with
+    // the latest memories of whatever project was worked on last — notes
+    // about another app's settings file sent the agent into that app.
+    const project = projectSlug();
+    if (project) rec.project = project;
     appendJsonl(legacyMemoryFile(), rec);
     publishActivity({ kind: "legacy_memory", action: "created", id: rec.id, text: rec.text.slice(0, 100) });
     return rec;
@@ -425,7 +438,7 @@ const legacyProvider = {
 
   search(query, context = {}, budget = {}) {
     const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
-    const all = readJsonl(legacyMemoryFile());
+    const all = readJsonl(legacyMemoryFile()).filter(legacyMatchesCurrentProject);
     if (!terms.length) return all.slice(-(budget.limit || 10)).reverse();
     return all
       .map((m) => {

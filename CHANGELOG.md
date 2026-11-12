@@ -8,6 +8,49 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.11 — 2026-11-12
+
+- **Shipped:** this PR · TattooAI/omnis-loop-accuracy-df369d · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
+- **Omni does the work again, in the project you're in.** It took fifteen
+  prompts to get Omni to add the Coarena provider. In the first two sessions
+  it wrote it into `agent/settings.json`, a file Omni doesn't read (the live
+  one is in `OMNI_HOME`), checked only that the JSON parsed, and said "Done"
+  / "All set" four times. The third session made 343 tool calls: about 150
+  were reads before its first edit ("Now I have the full picture. Let me
+  verify the last details…"), and 67 went into OmniCode, another app, even
+  after "in omni not in omnicode". The 3.6.5/3.6.6 token savings stay; what
+  they broke is fixed:
+  - **Tool output stays whole for the last 12 steps, not 4.** With 4, the
+    model lost the code it had read a few steps back, read it again, lost
+    it again: most of the paralysis. Older output is still cut the same way.
+  - **A read-stall nudge.** After 10 steps in a row that change nothing, the
+    loop tells the model to make the edit, answer, or say what it's missing.
+    It repeats after each further 10, and never fires in plan mode.
+  - **Memories belong to a project.** The legacy memory store (the default
+    `legacy-jsonl`) put the 15 newest memories into every project's prompt,
+    so sessions in `~/.omni` started with OmniCode's notes ("agent/settings.json
+    is the source of truth for providers"). New memories record their project
+    and are recalled only there; older ones without a project stay visible
+    everywhere, as with the layered store.
+  - **Prompt: a "Do the work" section** (built-in prompt and
+    `prompts/default.md`): stay in this project and ask before touching
+    another, including with `run_shell` or the browser; once the fix is
+    known, the next call is the edit; done means you saw it work (run what
+    the user will run; a parsed file isn't a working feature, so never say
+    "done" on an unverified change); when the user says it still doesn't
+    work, find out why before changing anything again. A small fix's one
+    check must run what the user asked for, and exploring ends when you know
+    what to change.
+  - **The prompt names Omni's live settings file** (`SETTINGS_PATH`) and says
+    it is the only one Omni reads, and to use `/addprovider`, `/model` and
+    the `settings_*` tools rather than hand-editing.
+- Tests: `tests/does-the-work.test.mjs` drives real `runTurn`s against the
+  mock provider (the note after 10 read-only steps, reset by an edit, once
+  per run, none in plan mode), checks the prompt rules and settings path in
+  both prompt files, and checks that legacy memories are scoped to their
+  project in search and in the prompt. `tests/tool-pruning.test.mjs` now
+  pins the 12-step window.
+
 ## 3.6.10 — 2026-11-12
 
 - **Shipped:** #72 · cb444cc · feature/coarena-provider · —
