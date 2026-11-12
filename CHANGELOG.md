@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.12 — 2026-11-12
 
-- **Shipped:** this PR · TattooAI/omni-own-home · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
+- **Shipped:** [#74](https://github.com/tattooinmtl/omni/pull/74) · 55498d9 · TattooAI/omni-own-home · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
 - **Omni warns when its home is another program's install folder.**
   `OMNI_HOME` pointed at OmniCode's install
   (`AppData\Local\Programs\OMNI-CODE`), so Omni's settings, memories and
