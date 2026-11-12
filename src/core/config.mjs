@@ -245,6 +245,17 @@ export const DEFAULT_SETTINGS = {
       label: "Local llama.cpp",
       reasoningParam: "none",
     },
+    coarena: {
+      // Coarena - OpenAI-compatible gateway to Claude, Gemini, Kimi, MiniMax,
+      // GLM, Grok and DeepSeek models behind one endpoint. /v1/models is
+      // public, so the model list loads without a key; chat needs one. The
+      // endpoint takes `reasoning_effort` and rejects any value outside
+      // none|minimal|low|medium|high|xhigh|max.
+      baseUrl: "https://coarena.ai/api/v1",
+      apiKey: "",
+      label: "Coarena",
+      reasoningParam: "reasoning_effort",
+    },
     // NOTE: no default third-party/community endpoint ships here on purpose —
     // a raw IP baked into every install is a standing risk if it ever changes
     // hands. Add your own via /addprovider if you want one.
@@ -344,6 +355,16 @@ export const DEFAULT_SETTINGS = {
     // from provider metadata on first use, see core/context.mjs) and maxTokens
     // stays conservative. Raise either with /context once you have a key.
     "atria/dawn-preview": { provider: "atria", id: "Atria-Dawn-Preview", maxTokens: 8192 },
+    // Coarena - one OpenAI-compatible endpoint in front of several vendors'
+    // models. Every model it lists advertises the same 128k window and a
+    // 16384-token output ceiling, so those are pinned here; the endpoint
+    // reports the same numbers in /v1/models, which keeps a re-fetch in
+    // agreement with the shipped values.
+    "coarena/claude-haiku-5-5": { provider: "coarena", id: "claude-haiku-5-5", maxTokens: 16384, contextWindow: 128000, vision: true, reasoning: true },
+    "coarena/claude-sonnet-5-5": { provider: "coarena", id: "claude-sonnet-5-5", maxTokens: 16384, contextWindow: 128000, vision: true, reasoning: true },
+    "coarena/minimax-m3-1-flash": { provider: "coarena", id: "minimax-m3-1-flash", maxTokens: 16384, contextWindow: 128000, vision: true, reasoning: true },
+    "coarena/gemini-3-8-flash": { provider: "coarena", id: "gemini-3-8-flash", maxTokens: 16384, contextWindow: 128000, vision: true, reasoning: true },
+    "coarena/deepseek-v4-1-flash-1017": { provider: "coarena", id: "deepseek-v4-1-flash-1017", maxTokens: 16384, contextWindow: 128000, vision: true, reasoning: true },
     // Reflection states Beam-1.0-501B-A23B's limits in its API reference:
     // 1,048,576 context tokens, 131,072 max output. maxTokens stays at the
     // provider's own default max_tokens (32,768) rather than its ceiling —

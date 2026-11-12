@@ -38,6 +38,13 @@ export const PROVIDER_PRESETS = {
   // TokenLab — OpenAI-compatible gateway to many vendors' models; its
   // /v1/models list is public, so models load as soon as the provider is added.
   tokenlab: { baseUrl: "https://api.tokenlab.sh/v1", label: "TokenLab", reasoningParam: "none" },
+  // Coarena — OpenAI-compatible gateway serving Claude, Gemini, GPT-family,
+  // Kimi, MiniMax, GLM, Grok and DeepSeek models behind one endpoint.
+  // /v1/models is public, so the model list loads as soon as the provider is
+  // added. The endpoint takes `reasoning_effort` and rejects any value
+  // outside none|minimal|low|medium|high|xhigh|max, so the effort tiers map
+  // onto it directly.
+  coarena: { baseUrl: "https://coarena.ai/api/v1", label: "Coarena", reasoningParam: "reasoning_effort" },
   nvidia: {
     baseUrl: "https://integrate.api.nvidia.com/v1",
     label: "NVIDIA NIM",
@@ -110,6 +117,8 @@ const PROVIDER_DEFAULT_MAX_TOKENS = {
   // Reflection's Beam models default to 32,768 output tokens of their own —
   // the 8192 floor would truncate long edits for nothing.
   reflection: 32768,
+  // Coarena advertises a 16384-token output ceiling on every model it lists.
+  coarena: 16384,
 };
 export const FALLBACK_MAX_TOKENS = 8192;
 
