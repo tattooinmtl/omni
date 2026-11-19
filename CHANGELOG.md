@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.13 — 2026-11-19
 
-- **Shipped:** this PR · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
+- **Shipped:** [#75](https://github.com/tattooinmtl/omni/pull/75) · 7cf596d · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
 - **The token meter is a conveyor belt.** On Omi's line while the model
   generates, the `▌ █▌ ██▌` bar is replaced by a 12-cell belt: a block with
   a dithered trail slides along a dotted track and loops
