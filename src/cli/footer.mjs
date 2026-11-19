@@ -1,7 +1,7 @@
 // The pinned bottom area of the interactive REPL: Omi's activity line, the
 // framed input box, the status bar, and (while typing "/…") the command menu.
 //
-//   (•‿•)⌨  Omi: Percolising…  ███▌ 312 tokens (41.2 tok/s)   ◷ 7.6s
+//   (•‿•)⌨  Omi: Percolising…  ⠿⠿⠿░▒▓██⠿⠿⠿ 312 tokens (41.2 tok/s)   ◷ 7.6s
 //   ╭─────────────────────────────────────────────────────── 1 queued ─╮
 //   │ › also check the tests folder [Pasted text #1 +14 lines]         │
 //   ╰──────────────────────────────────────────────────────────────────╯

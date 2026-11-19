@@ -167,8 +167,7 @@ const STATES = {
   coding:    { color: c.green,   frames: ["</> Writing code", "</> Writing code.", "</> Writing code..", "</> Writing code..."] },
   reading:   { color: c.blue,    frames: ["▤ Reading files", "▥ Reading files.", "▦ Reading files..", "▦ Reading files..."] },
   running:   { color: c.yellow,  frames: ["⚒ Running", "⚒ Running.", "⚒ Running..", "⚒ Running..."] },
-  tokens:    { color: c.magenta, frames: ["▌ Generating", "█▌ Generating", "██▌ Generating", "███▌ Generating", "████▌ Generating"] },
-  timer:     { color: c.gray,    frames: ["◷ Elapsed", "◶ Elapsed", "◵ Elapsed", "◴ Elapsed"] },
+  timer:    { color: c.gray,    frames: ["◷ Elapsed", "◶ Elapsed", "◵ Elapsed", "◴ Elapsed"] },
   ready:     { color: c.yellow,  frames: ["▰ OMNI-AGENT ready", "▱ OMNI-AGENT ready.", "▰ OMNI-AGENT ready..", "▱ OMNI-AGENT ready..."] },
 };
 
@@ -405,6 +404,49 @@ export function stopStatus() {
   }
 }
 
+// ── Token conveyor ───────────────────────────────────────────────────────
+// The belt in the token meter: a solid block slides along a dotted track with
+// a dithered trail, leaves on the right and comes back in on the left.
+//
+//   ⠿⠿⠿░▒▓██⠿⠿⠿ 312 tokens (41.2 tok/s)
+//
+// It moves with the stream, not the clock: one cell per tick while tokens
+// arrive, a slow crawl while waiting (before the first token or on a stall),
+// so a stuck stream shows up as a belt that slows down.
+const CONVEYOR_TRACK = "⠿";
+const CONVEYOR_BLOCK = "█";
+const CONVEYOR_TRAIL = ["░", "▒", "▓"];          // faintest → strongest
+// 256-color purple ramp: track, trail (faint → strong), block.
+const CONVEYOR_RAMP = [54, 91, 128, 165, 201];
+export const CONVEYOR_WIDTH = 12;
+export const CONVEYOR_CRAWL = 1 / 3;               // cells per tick with no new tokens
+
+// Every frame of one full loop, `width` cells each. `color` false gives the
+// plain characters (NO_COLOR / not a terminal).
+export function conveyorFrames(width = CONVEYOR_WIDTH, block = 2, color = useColor) {
+  const paint = (n, s) => (color ? `\x1b[38;5;${n}m${s}` : s);
+  const trail = CONVEYOR_TRAIL.length;
+  const out = [];
+  for (let pos = -block - trail; pos <= width; pos++) {
+    let row = "";
+    for (let x = 0; x < width; x++) {
+      if (x >= pos && x < pos + block) row += paint(CONVEYOR_RAMP[4], CONVEYOR_BLOCK);
+      else if (x >= pos - trail && x < pos) {
+        const i = x - (pos - trail);
+        row += paint(CONVEYOR_RAMP[1 + i], CONVEYOR_TRAIL[i]);
+      } else row += paint(CONVEYOR_RAMP[0], CONVEYOR_TRACK);
+    }
+    out.push(row + (color ? "\x1b[0m" : ""));
+  }
+  return out;
+}
+
+// How far the belt moves this tick: a full cell when tokens arrived since the
+// last tick, a crawl otherwise.
+export function conveyorStep(newTokens) {
+  return newTokens > 0 ? 1 : CONVEYOR_CRAWL;
+}
+
 // Live token-generation panel: the token info + animated icons housed inside a
 // bottom box bounded by two yellow lines — the same frame that brackets the
 // user's input. The middle line (token bar + elapsed timer) animates in place;
@@ -414,7 +456,10 @@ export function startGenerationStatus(getTokenCount, { interval = 120, contextWi
   if (statusTimer) stopStatus();
   const width = Math.max(1, (process.stdout.columns || 80) - 1);
   const rule = c.yellow("─".repeat(width));
-  const bar = STATES.tokens.frames;     // ▌ █▌ ██▌ ███▌ ████▌
+  const belt = conveyorFrames();        // ⠿⠿⠿░▒▓██⠿⠿⠿, moved by the token stream
+  // Start with the block just entering, not on the bare-track frames before it.
+  let beltPos = belt.findIndex((row) => row.replace(/\x1b\[[0-9;]*m/g, "")[0] !== CONVEYOR_TRACK);
+  let lastTokens = 0;
   const clock = STATES.timer.frames;    // ◷ ◶ ◵ ◴
   const funnyWord = pickFunnyWord();    // one word for the whole wait, not per-tick
   const impatientLine = pickLine(IMPATIENT); // in reserve, in case Omi's patience runs out
@@ -436,7 +481,9 @@ export function startGenerationStatus(getTokenCount, { interval = 120, contextWi
     const elapsed = (elapsedMs / 1000).toFixed(1);
     const tokens = typeof getTokenCount === "function" ? getTokenCount() : 0;
     const tps = elapsedMs > 300 ? (tokens / (elapsedMs / 1000)).toFixed(1) : "0.0";
-    const icon = bar[i % bar.length];
+    beltPos += conveyorStep(tokens - lastTokens);
+    lastTokens = tokens;
+    const icon = belt[Math.floor(beltPos) % belt.length];
     const spin = clock[i % clock.length].slice(0, 1);
     const impatient = tokens === 0 && elapsedMs > IMPATIENCE_MS;
     const bot = c.cyan(robotFrame(impatient ? "perplexed" : (tokens > 0 ? "working" : "wondering"), i));
@@ -446,7 +493,7 @@ export function startGenerationStatus(getTokenCount, { interval = 120, contextWi
     const content =
       "  " + bot +
       "  " + label +
-      "   " + c.magenta(`${icon} ${tokens} tokens (${tps} tok/s)`) +
+      "   " + icon + " " + c.magenta(`${tokens} tokens (${tps} tok/s)`) +
       "   " + c.gray(`${spin} ${elapsed}s${contextLabel}`);
     if (_statusSink) _statusSink(content + c.dim("   esc to interrupt"));
     // Save cursor → up to the content line → clear → write → restore.
