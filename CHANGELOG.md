@@ -8,6 +8,24 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.14 — 2026-11-19
+
+- **Shipped:** this PR · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
+- **`/update-omni` no longer refuses over edits the update doesn't touch.**
+  An MCP server added to `omni.config.json` (uncommitted) made the installer
+  print "1 uncommitted change(s) - NOT updating" and leave the install on
+  the old version, though the update never changed that file. The installer
+  now compares your edited files with the files the update changes: when
+  they don't overlap it says which edits it is keeping and fast-forwards
+  (still `--ff-only`, so git refuses rather than overwrite one); when they
+  do, it stops and names only the clashing files. `-Force` is unchanged.
+- README: the update paragraph says which edits block an update and which
+  are kept.
+- Tests: `tests/installer-local-edits.test.mjs` runs the real
+  `Update-FromGit` against throwaway git repos: an edit to an untouched file
+  is kept and the update applies, an edit to a file the update changes stops
+  it and names that file only, and a staged edit counts like an unstaged one.
+
 ## 3.6.13 — 2026-11-19
 
 - **Shipped:** [#75](https://github.com/tattooinmtl/omni/pull/75) · 7cf596d · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb

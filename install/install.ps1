@@ -267,9 +267,20 @@ function Update-FromGit([string]$Root) {
     # lose one anyway - git refuses to overwrite an untracked file.
     $dirty = @(git status --porcelain --untracked-files=no)
     if ($dirty.Count -gt 0 -and -not $Force) {
-      Write-Warning "$Root has $($dirty.Count) uncommitted change(s) - NOT updating."
-      Write-Warning "Commit or stash them, then re-run. (-Force updates anyway.)"
-      return
+      # An edit only blocks the update when the update changes that same file.
+      # A local tweak to omni.config.json (an MCP server of your own) used to
+      # block every update; the fast-forward carries untouched edits along,
+      # and --ff-only below still refuses rather than overwrite one.
+      $edited = @(git diff --name-only HEAD)
+      $incoming = @(git diff --name-only HEAD $remoteRef)
+      $clash = @($edited | Where-Object { $incoming -contains $_ })
+      if ($clash.Count -gt 0) {
+        Write-Warning "$Root has uncommitted change(s) to file(s) this update also changes - NOT updating:"
+        $clash | ForEach-Object { Write-Warning "  $_" }
+        Write-Warning "Commit or stash them, then re-run. (-Force updates anyway.)"
+        return
+      }
+      Info "Keeping your uncommitted change(s) - the update doesn't touch them: $($edited -join ', ')"
     }
 
     # Commits that exist here and nowhere on the remote branch. This is what

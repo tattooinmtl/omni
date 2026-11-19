@@ -4,7 +4,8 @@
 //
 // The installer (install/install.ps1) stays the one way Omni updates: it
 // fast-forwards a git install or refreshes a zip one, refuses to move a tree
-// with uncommitted work or unpushed commits, and re-runs setup. This command
+// whose uncommitted edits the update would change (or with unpushed commits),
+// and re-runs setup. This command
 // only decides whether to call it and reports what happened. Code already
 // loaded in this process stays the old version until Omni restarts.
 

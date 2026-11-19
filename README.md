@@ -124,9 +124,11 @@ safe: your `.env` and `agent/settings.json` are never overwritten.
 .\install\install.ps1 -Force       # resync every file from GitHub
 ```
 
-The installer refuses to move a checkout with uncommitted changes, or one with
-commits that exist nowhere on the remote. It names them and stops rather than
-losing work.
+The installer refuses to move a checkout with uncommitted changes to files the
+update also changes, or one with commits that exist nowhere on the remote. It
+names them and stops rather than losing work. Edits to files the update leaves
+alone (your own MCP server in `omni.config.json`, say) are kept and the update
+goes ahead.
 
 From inside Omni, `/update-omni` does the same thing: it asks GitHub for the
 latest version right away and, if `main` is newer, runs this installer and
