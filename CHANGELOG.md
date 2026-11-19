@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.14 — 2026-11-19
 
-- **Shipped:** this PR · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
+- **Shipped:** [#76](https://github.com/tattooinmtl/omni/pull/76) · 9b39534 · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
 - **`/update-omni` no longer refuses over edits the update doesn't touch.**
   An MCP server added to `omni.config.json` (uncommitted) made the installer
   print "1 uncommitted change(s) - NOT updating" and leave the install on
