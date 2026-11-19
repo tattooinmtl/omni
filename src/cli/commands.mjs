@@ -1285,6 +1285,22 @@ export const COMMANDS = [
     handler: (ctx, arg, parts) => hardwareCommand(ctx, parts.slice(1).join(" ")),
   },
   {
+    name: "search", aliases: ["find-pc", "locate"], usage: "/search <name>[|<other name>…] [--in <folder>] [--files|--dirs] [--all] [--max <n>]", category: "Tools",
+    summary: "find files or folders by name anywhere on this PC (every drive) — search only: lists paths, never opens, changes or runs anything",
+    handler: async (ctx, arg) => {
+      const opts = parseSearchArgs(arg || "");
+      if (!opts.query) {
+        console.log(infoLine("usage: /search <name>[|<other name>…] [--in <folder>] [--files|--dirs] [--all] [--max <n>]"));
+        console.log(c.dim("  e.g. /search flywire|drosophila    /search *.blend --in D:\\    /search omni --dirs"));
+        return;
+      }
+      const where = opts.roots?.length ? opts.roots.join(", ") : "every drive";
+      console.log(c.dim(`  searching ${where} for "${opts.query}"…`));
+      const out = await runTool("search_pc", opts);
+      console.log(out);
+    },
+  },
+  {
     name: "browser", aliases: [], usage: "/browser [status|close|navigate <url>|screenshot]", category: "Tools",
     summary: "inspect or control the headless browser session (browser_* tools)",
     handler: (ctx, arg) => runBrowserCommand(ctx, arg),
@@ -1664,4 +1680,26 @@ export function parseSlashLine(ctx, line) {
   // text ("use /python for this") still loads.
   if (n === 0 || (n === 1 && (commands.length || skillFirst))) return null;
   return { commands, skills, text };
+}
+
+// /search argument parsing. Flags may appear anywhere; everything else is the
+// query (spaces kept, so "/search my project" looks for "my project").
+export function parseSearchArgs(raw) {
+  const tokens = String(raw).match(/"[^"]*"|\S+/g) || [];
+  const unq = (t) => t.replace(/^"(.*)"$/, "$1");
+  const opts = { query: "", roots: [], kind: "any" };
+  const rest = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === "--in" && tokens[i + 1]) opts.roots.push(unq(tokens[++i]));
+    else if (t === "--files") opts.kind = "file";
+    else if (t === "--dirs" || t === "--folders") opts.kind = "dir";
+    else if (t === "--all") opts.include_system = true;
+    else if (t === "--max" && tokens[i + 1]) opts.max_results = Number.parseInt(tokens[++i], 10);
+    else rest.push(unq(t));
+  }
+  opts.query = rest.join(" ").trim();
+  opts.roots = opts.roots.map((r) => path.resolve(r));
+  if (!opts.roots.length) delete opts.roots;
+  return opts;
 }

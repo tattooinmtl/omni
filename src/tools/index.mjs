@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 import { rgPath, fdPath, jqPath, INSTALL_ROOT } from "../paths.mjs";
 import { grep as nodeGrep, findEntries as nodeFind } from "./node-search.mjs";
 import { jqLite, formatJqResult, JqLiteError } from "./jq-lite.mjs";
+import { searchPc, formatPcSearch } from "./pc-search.mjs";
 import { HOME, loadSettings, saveSettings, resolveModel, Session } from "../core/config.mjs";
 import { getWorkspaceScope } from "../core/workspace.mjs";
 import { atomicWriteFileSync } from "../core/atomic-write.mjs";
@@ -1441,6 +1442,25 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "search_pc",
+      description: "Find files or folders BY NAME anywhere on this PC — every drive, not just the workspace. Use it when the user asks where something is (a project, a file, a folder) and it isn't in the current workspace. Returns matching paths only: it cannot read file contents, write, or run anything, so the other file tools stay workspace-scoped. Skips OS/system and package-cache folders (Windows, AppData, node_modules, .git…) unless include_system is true. Searches shallow folders first.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Name to look for: a case-insensitive substring (\"flywire\"), a glob on the whole name (\"*.blend\"), or several alternatives separated by | (\"flywire|drosophila|connectome\")." },
+          roots: { type: "array", items: { type: "string" }, description: "Absolute folders to search instead of every drive, e.g. [\"C:\\Users\\me\"]." },
+          kind: { type: "string", enum: ["any", "file", "dir"], description: "Only files, only folders, or both (default)." },
+          max_results: { type: "integer", description: "Stop after this many matches (default 50, max 500)." },
+          time_limit_s: { type: "integer", description: "Give up after this many seconds (default 60, max 300)." },
+          include_system: { type: "boolean", description: "Also descend into Windows, AppData, node_modules, .git and similar folders (slow)." },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "where_is",
       description: "Locate an executable on PATH (like `where` on Windows / `which -a` on Unix). Returns every match or 'not found'.",
       parameters: {
@@ -2681,6 +2701,11 @@ export const impl = {
     return whereIs(name);
   },
 
+  async search_pc(args = {}) {
+    requireArg("search_pc", "query", args.query);
+    return formatPcSearch(args.query, await searchPc(args));
+  },
+
   create_markdown_report({ filename, title, content }) {
     requireArg("create_markdown_report", "filename", filename);
     requireArg("create_markdown_report", "title", title);
@@ -3142,6 +3167,7 @@ const CRITIC_PERMISSIONS = {
   diff_files: "allow",
   jq_query: "allow",
   where_is: "allow",
+  search_pc: "allow",
 };
 
 const CRITIC_PROMPT = [

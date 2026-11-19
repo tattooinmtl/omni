@@ -8,6 +8,31 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.15 — 2026-11-19
+
+- **Shipped:** this PR · TattooAI/flywire-project-location-7e82d2 · session 64bc4e3e-79cf-4298-a5ce-2205e28855d6
+- **Omni can now find things anywhere on the PC.** Asked for a project
+  outside the workspace, Omni answered that it was "scoped to that
+  workspace" and couldn't look. New `search_pc` tool: it searches every
+  drive (or the folders you name) for files or folders by name and returns
+  their paths. It is search-only by construction (it lists folders, never
+  opens a file, writes or runs anything), so it is allowed in every
+  permission mode, plan mode included. The other file tools stay
+  workspace-scoped. It searches shallow folders first, never follows
+  symlinks or junctions, skips Windows/AppData/node_modules/.git unless
+  asked, and stops at a result cap (50, max 500) and a time limit (60 s,
+  max 300 s). The system prompt tells the agent to search before saying it
+  can't look.
+- **`/search <name>`** (aliases `/locate`, `/find-pc`) runs the same search
+  directly, with no model involved: `|` for alternatives
+  (`/search flywire|drosophila`), globs (`/search *.blend`), `--in <folder>`,
+  `--files` / `--dirs`, `--all` to include system folders, `--max <n>`.
+- Tests: `tests/search-pc.test.mjs` covers substring, `|` and glob matching,
+  file/folder filters, skipped vs searched folders (a user's `dev` folder
+  is still searched), not following junctions, the result cap and
+  shallow-first order, output that never contains file contents, plan-mode
+  permission, and `/search` argument parsing.
+
 ## 3.6.14 — 2026-11-19
 
 - **Shipped:** [#76](https://github.com/tattooinmtl/omni/pull/76) · 9b39534 · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
