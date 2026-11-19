@@ -8,6 +8,27 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.13 — 2026-11-19
+
+- **Shipped:** this PR · TattooAI/token-animation-placement-74cc30 · session fbd72a96-b929-4fac-bdb3-0996c9c924cb
+- **The token meter is a conveyor belt.** On Omi's line while the model
+  generates, the `▌ █▌ ██▌` bar is replaced by a 12-cell belt: a block with
+  a dithered trail slides along a dotted track and loops
+  (`⠿⠿⠿░▒▓██⠿⠿⠿ 312 tokens (41.2 tok/s)`). Omi's face stays where it was
+  and keeps reacting. The belt moves with the stream, not the clock: one
+  cell per tick while tokens arrive, a slow crawl before the first token or
+  when the stream stalls, so a stuck stream shows as a belt slowing down.
+  It starts with the block already entering, colored in a purple ramp
+  matching the magenta token count, and falls back to plain characters
+  with `NO_COLOR` or outside a terminal. The footer still redraws every
+  120 ms, as before.
+- Tests: `tests/token-conveyor.test.mjs` checks the loop (enters left,
+  crosses, leaves right), the trail order, colored vs plain frames, the
+  step sizes, and drives the real generation line: Omi's face and the belt
+  before the token count, the old bar gone, the belt moving faster with
+  tokens than while waiting but never frozen, and the first frame showing
+  the block.
+
 ## 3.6.12 — 2026-11-12
 
 - **Shipped:** [#74](https://github.com/tattooinmtl/omni/pull/74) · 55498d9 · TattooAI/omni-own-home · session 8dd0ef5d-70f9-4f38-a514-d65322545c20
