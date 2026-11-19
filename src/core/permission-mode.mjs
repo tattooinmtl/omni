@@ -64,7 +64,7 @@ export function modeLabel(m = mode) {
 export const READ_ONLY_TOOLS = new Set([
   "read_file", "read_many_files", "list_dir", "find_files", "search", "find_symbol", "lsp",
   "git_status", "git_diff", "git_log", "project_inspect", "rag_search", "rag_index", "jq_query",
-  "diff_files", "where_is", "system_info", "dev_env_report", "security_scan",
+  "diff_files", "where_is", "search_pc", "system_info", "dev_env_report", "security_scan",
   "web_search", "web_fetch", "youtube_transcript",
   "memory_search", "memory_list", "memory_explain", "memory_atoms", "session_search",
   "find_skill", "invoke_skill", "ask_user", "agent_status", "process_status",

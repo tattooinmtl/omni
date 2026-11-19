@@ -14,7 +14,7 @@ export const LOAD_TOOLS = "load_tools";
 
 // The everyday coding loop: read, search, edit, run, git, plan, review.
 export const CORE_TOOLS = new Set([
-  "read_file", "read_many_files", "list_dir", "find_files", "search", "rag_search", "find_symbol",
+  "read_file", "read_many_files", "list_dir", "find_files", "search", "rag_search", "find_symbol", "search_pc",
   "write_file", "edit_file", "apply_patch",
   "run_shell", "run_test", "start_process", "process_status", "stop_process",
   "git_status", "git_diff", "git_commit",

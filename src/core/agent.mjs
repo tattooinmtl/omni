@@ -590,6 +590,7 @@ export function systemPrompt() {
     "- Use git_commit only when the user explicitly asks you to commit.",
     "- Use start_process for long-running dev servers, process_status for logs, and stop_process when done.",
     "- File tools are workspace-scoped. Do not try to work outside the current directory unless the user changes cwd before launching Omni Agent.",
+    "- To find where something is on the PC outside the workspace (a project, file or folder the user names), use search_pc: it searches every drive by name and returns paths. Don't tell the user you can't look elsewhere — search first, then give them the path (to work on it, they relaunch Omni from that folder).",
     "- Use run_shell with dry_run=true to inspect risk before uncertain commands.",
     "- run_shell blocks obviously destructive commands unless allow_unsafe=true; set that only when the user explicitly authorized the exact action.",
     "- When searching, prefer specific patterns over broad ones to reduce noise.",
@@ -1606,6 +1607,8 @@ function argSummary(name, args) {
       return Array.isArray(args.tools) && args.tools.length ? args.tools.join(", ") : "all toolchains";
     case "where_is":
       return args.name || "";
+    case "search_pc":
+      return (args.query || "") + (Array.isArray(args.roots) && args.roots.length ? ` in ${args.roots.join(", ")}` : " on this PC");
     case "create_markdown_report":
       return args.filename || "";
     case "move_file":
