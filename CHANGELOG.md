@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.15 — 2026-11-19
 
-- **Shipped:** this PR · TattooAI/flywire-project-location-7e82d2 · session 64bc4e3e-79cf-4298-a5ce-2205e28855d6
+- **Shipped:** [#77](https://github.com/tattooinmtl/omni/pull/77) · 7c3c14c · TattooAI/flywire-project-location-7e82d2 · session 64bc4e3e-79cf-4298-a5ce-2205e28855d6
 - **Omni can now find things anywhere on the PC.** Asked for a project
   outside the workspace, Omni answered that it was "scoped to that
   workspace" and couldn't look. New `search_pc` tool: it searches every
