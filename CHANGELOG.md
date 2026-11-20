@@ -8,6 +8,19 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.16 — 2026-11-20
+
+- **Shipped:** this PR · TattooAI/omni-running-animation-fb12e6 · session 7547e0a3-5b2d-4996-aeba-7b03223373f3
+- **"⚒ Running.." has a bouncing ball.** While a command runs, the status
+  line now reads `⚒ Running.. ⠉` with a braille ball right after the text,
+  replacing the cycling dots. The ball eases at the top of each bounce,
+  drops fast, flattens (`⣤`) when it hits the floor and floats back up. It
+  plays at 14 fps in green; the label stays yellow and never moves. Set
+  `OMNI_RUNNING_STYLE=travel` to have the ball hop across 6 cells and back
+  instead. The mascot still blinks at its usual pace.
+- Tests: `tests/running-ball.test.mjs` pins the bounce and travel frames,
+  the label staying put, the colors, and the status line ticking at 14 fps.
+
 ## 3.6.15 — 2026-11-19
 
 - **Shipped:** [#77](https://github.com/tattooinmtl/omni/pull/77) · 7c3c14c · TattooAI/flywire-project-location-7e82d2 · session 64bc4e3e-79cf-4298-a5ce-2205e28855d6

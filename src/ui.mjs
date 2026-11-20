@@ -159,14 +159,47 @@ const THINKING_FRAMES = [
   "⠏ Thinking.",
 ];
 
+// ── Bouncing ball for "⚒ Running.." ──────────────────────────────────────
+// A braille ball right after the label: it eases at the top of the bounce,
+// drops fast and flattens (squashes) when it hits the floor, then floats back
+// up. "bounce" keeps it in one cell; "travel" hops it across 6 cells and back
+// (OMNI_RUNNING_STYLE=travel). Played at 14 fps.
+const BALL_LEVELS = ["⠉", "⠒", "⠤", "⣀"];        // top → floor
+const BALL_SQUASH = "⣤";                           // flattened on impact
+const BALL_BOUNCE = [0, 0, 0, 1, 1, 2, 3, "s", 3, 2, 1, 1, 0];
+const BALL_HOP = [0, 1, 2, 3, "s", 3, 2, 1];
+export const RUNNING_LABEL = "⚒ Running..";
+export const RUNNING_INTERVAL = Math.round(1000 / 14);
+const ballChar = (s) => (s === "s" ? BALL_SQUASH : BALL_LEVELS[s]);
+
+// The ball frames alone (no label), plain characters.
+export function ballFrames(style = "bounce", width = 6) {
+  if (style !== "travel") return BALL_BOUNCE.map(ballChar);
+  const path = [...Array(width).keys(), ...Array.from({ length: width - 2 }, (_, i) => width - 2 - i)];
+  const out = [];
+  for (const cell of path) {
+    for (const s of BALL_HOP) {
+      out.push(Array.from({ length: width }, (_, x) => (x === cell ? ballChar(s) : " ")).join(""));
+    }
+  }
+  return out;
+}
+
+// Full "⚒ Running.. <ball>" frames: yellow label, green ball (256-color 46).
+export function runningFrames(style = process.env.OMNI_RUNNING_STYLE || "bounce", color = useColor) {
+  const label = color ? `[33m${RUNNING_LABEL}[0m ` : `${RUNNING_LABEL} `;
+  return ballFrames(style).map((b) => label + (color ? `[38;5;46m${b}[0m` : b));
+}
+
 // color: one of the `c.*` helpers (respects NO_COLOR / non-TTY).
+// interval (optional): ms per frame for that state, overriding the default.
 const STATES = {
   thinking:  { color: c.magenta, frames: THINKING_FRAMES },
   reasoning: { color: c.gray,    frames: ["▸ Reasoning", "▸ Reasoning.", "▸ Reasoning..", "▸ Reasoning..."] },
   searching: { color: c.cyan,    frames: ["⌕ Searching", "⌕ Searching.", "⌕ Searching..", "⌕ Searching..."] },
   coding:    { color: c.green,   frames: ["</> Writing code", "</> Writing code.", "</> Writing code..", "</> Writing code..."] },
   reading:   { color: c.blue,    frames: ["▤ Reading files", "▥ Reading files.", "▦ Reading files..", "▦ Reading files..."] },
-  running:   { color: c.yellow,  frames: ["⚒ Running", "⚒ Running.", "⚒ Running..", "⚒ Running..."] },
+  running:   { color: (s) => s,  frames: runningFrames(), interval: RUNNING_INTERVAL },
   timer:    { color: c.gray,    frames: ["◷ Elapsed", "◶ Elapsed", "◵ Elapsed", "◴ Elapsed"] },
   ready:     { color: c.yellow,  frames: ["▰ OMNI-AGENT ready", "▱ OMNI-AGENT ready.", "▰ OMNI-AGENT ready..", "▱ OMNI-AGENT ready..."] },
 };
@@ -369,17 +402,19 @@ export function startStatus(name = "thinking", interval = 120) {
   const state = STATES[name] || STATES.thinking;
   const robotState = STATE_ROBOT[name] || "idle";
   const hint = c.dim("  [ESC / Ctrl-C to stop]");
+  const every = state.interval || interval;
   let i = 0;
   const tick = () => {
     const frame = state.frames[i % state.frames.length];
-    const bot = c.cyan(robotFrame(robotState, i));
+    // The mascot blinks at the usual pace even when the state ticks faster.
+    const bot = c.cyan(robotFrame(robotState, Math.floor((i * every) / interval)));
     const content = "  " + bot + "  " + state.color(frame) + hint;
     if (_statusSink) _statusSink(content);
     else process.stdout.write("\r\x1b[2K" + content);
     i++;
   };
   if (_statusSink) tick();
-  statusTimer = setInterval(tick, interval);
+  statusTimer = setInterval(tick, every);
   // Don't let the spinner keep the event loop alive on exit.
   if (statusTimer.unref) statusTimer.unref();
 }
