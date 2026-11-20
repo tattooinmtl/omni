@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.16 — 2026-11-20
 
-- **Shipped:** this PR · TattooAI/omni-running-animation-fb12e6 · session 7547e0a3-5b2d-4996-aeba-7b03223373f3
+- **Shipped:** [#78](https://github.com/tattooinmtl/omni/pull/78) · 85b0735 · TattooAI/omni-running-animation-fb12e6 · session 7547e0a3-5b2d-4996-aeba-7b03223373f3
 - **"⚒ Running.." has a bouncing ball.** While a command runs, the status
   line now reads `⚒ Running.. ⠉` with a braille ball right after the text,
   replacing the cycling dots. The ball eases at the top of each bounce,
