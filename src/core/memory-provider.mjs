@@ -546,7 +546,7 @@ function messageText(content) {
 const LEGACY_SYNTHETIC_RE = /^\s*(?:\[(?:CONTEXT COMPACTED|system note|hook |image attached from |\d+ frames attached from |expanded tool body|resumed\])|SYSTEM: |GOAL CONTINUATION\b|Tool result\b|The user typed \/\S+ — the "|Save the procedure you just followed as a reusable skill)/;
 // A /btw note (agent.mjs steeringMessage) is the user's own words inside a
 // wrapper: keep the words, drop the wrapper.
-const STEERING_PREFIX_RE = /^\s*\(btw — [^)]*\):\s*/;
+const STEERING_PREFIX_RE = /^\s*\((?:btw — |the user sent this message while you were working\.)[^)]*\):\s*/;
 
 // The text of a message worth scanning for memory: the user's own words
 // only ("" when there are none).

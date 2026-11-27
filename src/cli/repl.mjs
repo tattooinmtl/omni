@@ -21,7 +21,7 @@ import {
   c, banner, infoLine, warnLine, shutdown,
   promptTop, promptBottom, statusBar, statusBarText, setPersonaIndicator, setStatusSink,
 } from "../ui.mjs";
-import { runTurn, steeringMessage } from "../core/agent.mjs";
+import { runTurn, steeringMessage, steeringText } from "../core/agent.mjs";
 import { Session, turnMaxIterations, resolveSessionCode, describeSession } from "../core/config.mjs";
 import { disconnectAll, setMcpConfirm } from "../integrations/mcp.mjs";
 import { disconnectBridge } from "../integrations/bridge.mjs";
@@ -31,7 +31,7 @@ import * as llama from "../local/llama.mjs";
 import { detectContextWindow } from "../core/context.mjs";
 import { applySkill, applySkills, resumeSessionInto, reportMissingKey, reportInsecureEndpoint, evictEphemeralSkillMessages } from "./helpers.mjs";
 import { activeModelBlockedByHealth } from "./models.mjs";
-import { dispatchCommand, commandNames, commandMenu, slashKind, parseSlashLine, recognizedSlashLength, skillLoadedLine } from "./commands.mjs";
+import { dispatchCommand, slashKind, parseSlashLine, recognizedSlashRanges, skillLoadedLine, slashTokenAt, slashMenuRows, acceptSlashRow } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
 import { submitPromptHooks } from "../core/hooks.mjs";
 import { expandTemplate } from "../core/templates.mjs";
@@ -91,8 +91,8 @@ export function formatMenuRows(rows, { width = 80, selected = 0, max = MENU_MAX 
   });
 
   const hint = rows.length > max
-    ? `  ${sel + 1}/${rows.length} — ↑/↓ select · Enter run · keep typing to filter`
-    : "  ↑/↓ select · Enter run · keep typing to filter";
+    ? `  ${sel + 1}/${rows.length} — ↑/↓ select · Tab pick · Enter run · keep typing to filter`
+    : "  ↑/↓ select · Tab pick · Enter run · keep typing to filter";
   lines.push(c.dim(hint.slice(0, rowWidth)));
   return lines;
 }
@@ -121,6 +121,33 @@ export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "usa
 export function parseBtw(line) {
   const m = /^\/btw(?:\s+([\s\S]*))?$/.exec(String(line || "").trim());
   return m ? (m[1] || "").trim() : null;
+}
+
+// What ↑ + Enter on a queued prompt does while Omi is working. Pure, so the
+// routing is testable without a terminal:
+//   btw      "/btw note"                      → a course correction
+//   message  text, or skills with text         → the running turn reads it as
+//            the user's latest message; skills ride along and are loaded
+//            with invoke_skill (they used to wait for the turn to end)
+//   instant  a read-only command (/status…)    → runs right away
+//   wait     other /commands, templates, typos → first in line for the next turn
+export function planSendNow(ctx, text) {
+  const t = String(text || "").trim();
+  const btw = parseBtw(t);
+  if (btw !== null) return btw ? { kind: "btw", note: btw } : { kind: "empty" };
+  if (!t) return { kind: "empty" };
+  const multi = parseSlashLine(ctx, t);
+  if (multi) {
+    if (multi.commands.length) return { kind: "wait", why: "that prompt runs commands - it runs next, when the turn ends" };
+    return { kind: "message", text: multi.text, skills: multi.skills.map((s) => s.command) };
+  }
+  if (!t.startsWith("/")) return { kind: "message", text: t, skills: [] };
+  const head = t.split(/\s+/)[0];
+  const kind = slashKind(ctx, head);
+  if (kind === "skill") return { kind: "message", text: t.slice(head.length).trim(), skills: [ctx.skillByCommand.get(head)?.command || head] };
+  const cmdName = head.slice(1).toLowerCase();
+  if (kind === "command" && INSTANT_WHILE_BUSY.has(cmdName)) return { kind: "instant", cmdName };
+  return { kind: "wait", why: `${head} waits for the turn to end - it runs next` };
 }
 
 // Only a lone Esc (or two, from a key-repeat) interrupts a running turn —
@@ -205,21 +232,23 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     ? Object.assign(new Writable({ write(_chunk, _enc, cb) { cb(); } }), { isTTY: true })
     : process.stdout;
 
-  // Tab completion: slash commands, then skills that don't reuse a command name.
-  const completions = () => {
-    const names = commandNames();
-    const taken = new Set(names.map((n) => n.toLowerCase()));
-    return [...names, ...[...(ctx.templates?.keys() || [])], ...(ctx.slashSkills || ctx.skills).map((s) => s.command).filter((cmd) => !taken.has(String(cmd).toLowerCase()))];
-  };
+  // Tab completes the "/word" at the caret, wherever it is in the line: the
+  // highlighted menu row (the top one unless you moved), then a space, so you
+  // can go straight on typing or name the next skill. readline passes the
+  // line up to the caret.
   const rl = readline.createInterface({
     input: rlInput,
     output: rlOutput,
     prompt: c.cyan(PROMPT),
     terminal: tty || undefined,
     completer: (line) => {
-      if (!line.startsWith("/")) return [[], line];
-      const hits = completions().filter((x) => x.startsWith(line));
-      return [hits.length ? hits : [], line];
+      const tok = slashTokenAt(line, line.length);
+      if (!tok) return [[], line];
+      const rows = slashMenuRows(ctx, line, line.length);
+      const row = rows[Math.min(menuSelected, rows.length - 1)];
+      if (!row) return [[], line];
+      menuSelected = 0;
+      return [[row.usage.split(/\s+/)[0] + " "], tok.word];
     },
   });
   ctx.rl = rl;
@@ -275,7 +304,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     getState: () => {
       const cols = process.stdout.columns || 80;
       const line = rl.line || "";
-      menuShown = !multiLine && queue.editing === null && line.startsWith("/") ? buildMenuRows(line) : [];
+      menuShown = !multiLine && queue.editing === null ? slashMenuRows(ctx, line, rl.cursor ?? line.length) : [];
       if (menuSelected >= menuShown.length) menuSelected = Math.max(0, menuShown.length - 1);
       const note = footerNote;
       return {
@@ -283,7 +312,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         prompt: multiLine ? "… " : stripAnsi(rl.getPrompt()),
         line,
         cursor: rl.cursor ?? line.length,
-        highlight: multiLine ? 0 : recognizedSlashLength(ctx, line),
+        highlight: multiLine ? [] : recognizedSlashRanges(ctx, line),
         statusText: statusBarText(ctx.model, ctx.session, cols - 1),
         menuLines: formatMenuRows(menuShown, { width: cols, selected: menuSelected, max: MENU_MAX }),
         note,
@@ -369,6 +398,10 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       // Shift+Tab cycles the permission mode, idle or mid-turn. Caught here,
       // before readline, which would also treat it as Tab and complete.
       if (s === "\x1b[Z") { announceMode(cyclePermissionMode()); return; }
+      // Tab on a "/word" (anywhere in the line) takes the highlighted name.
+      // Done here rather than in readline's completer, which pauses readline
+      // and would blink the whole box away.
+      if (s === "\t" && footer && !multiLine && queue.editing === null && !rl.paused && completeMenuWord()) { renderFooter(); return; }
       // readline raises Ctrl-C itself while it has the keyboard; when it's
       // paused (plain-mode generation) nobody would see it.
       if (rl.paused && ctx.currentAbort && s.includes("\x03")) { ctx.currentAbort.abort(); return; }
@@ -464,17 +497,19 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     // next Up/Down on this fresh, empty prompt think the menu is still
     // active and hijack normal history navigation.
     menuLastLine = "";
+    menuLastCursor = 0;
     menuSelected = 0;
+    menuMoved = false;
   }
 
   // ── Live "/" command menu ────────────────────────────────────────────────
-  // While the input line starts with "/", a filtered command list renders
-  // below the prompt and narrows as the user types (e.g. "/m" shows every
-  // command starting with m — an empty "/" shows all of them). Up/Down move
-  // a highlighted selection through it; Enter runs whichever row is
-  // highlighted (not literally whatever text was typed — see the "line"
-  // handler below, which substitutes the selected row's command). Cleared on
-  // submit or when the "/" is deleted.
+  // While the word at the caret starts with "/" (first word or any later one,
+  // see slashTokenAt), a filtered list renders and narrows as you type ("/m"
+  // shows every name starting with m; an empty "/" shows all of them).
+  // Up/Down move the highlight; Tab puts the highlighted name in place of the
+  // word and adds a space, so you can name another skill or keep typing;
+  // Enter does the same and sends. Only that word changes, never the rest of
+  // the prompt.
   let menuLines = 0;      // plain mode: rows the menu occupies below the input
   let menuSelected = 0;   // index into the current menu rows, highlighted row
   let menuLastLine = "";  // rl.line as of the last non-arrow keystroke — see
@@ -484,21 +519,37 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
                            // us restore the real filter text afterward.
   let promptActive = false;
 
-  function buildMenuRows(line) {
-    const body = line.slice(1);
-    if (/\s/.test(body)) return []; // arguments started — hide the menu
-    const prefix = body.toLowerCase();
-    const cmds = commandMenu(prefix).map((r) => ({ usage: r.usage, summary: r.summary }));
-    const taken = new Set(commandNames().map((n) => n.toLowerCase()));
-    const templates = [...(ctx.templates?.values() || [])]
-      .filter((t) => t.command.slice(1).startsWith(prefix) && !taken.has(t.command))
-      .map((t) => ({ usage: t.command + (t.argumentHint ? " " + t.argumentHint : ""), summary: `${t.description || "template"} (${t.scope} template)` }));
-    for (const t of templates) taken.add(t.usage.split(" ")[0]);
-    const skills = (ctx.slashSkills || ctx.skills)
-      .filter((s) => s.command.slice(1).toLowerCase().startsWith(prefix))
-      .filter((s) => !taken.has(s.command.toLowerCase()))
-      .map((s) => ({ usage: s.command, summary: s.description || "skill" }));
-    return [...cmds, ...templates, ...skills];
+  let menuLastCursor = 0; // rl.cursor at that same moment
+  let menuMoved = false;  // the highlight was moved with the arrows
+
+  const buildMenuRows = (line, cursor) => slashMenuRows(ctx, line, cursor);
+
+  // The name Enter / Tab should use for the "/word" at the caret: the
+  // highlighted row, or the word itself when it is already a full name and
+  // you never moved the highlight (so "/python" stays /python even when
+  // "/python-coding" sorts first).
+  function pickedMenuName(line, cursor) {
+    const tok = slashTokenAt(line, cursor);
+    const rows = tok ? buildMenuRows(line, cursor) : [];
+    const row = rows[Math.min(menuSelected, rows.length - 1)];
+    if (!tok || !row) return null;
+    const exact = rows.some((r) => r.usage.split(/\s+/)[0].toLowerCase() === tok.word.toLowerCase());
+    return { tok, name: !menuMoved && exact ? tok.word : row.usage.split(/\s+/)[0] };
+  }
+
+  // Tab with the menu open: put the picked name in the line, caret after it.
+  function completeMenuWord() {
+    const line = rl.line || "";
+    const pick = pickedMenuName(line, rl.cursor ?? line.length);
+    if (!pick) return false;
+    const next = acceptSlashRow(line, pick.tok, pick.name);
+    rl.line = next.line;
+    rl.cursor = next.cursor;
+    menuLastLine = next.line;
+    menuLastCursor = next.cursor;
+    menuSelected = 0;
+    menuMoved = false;
+    return true;
   }
 
   // Plain mode: draw the menu under the input line.
@@ -506,7 +557,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     if (footer) { renderFooter(); return; }
     if (!process.stdout.isTTY || !promptActive || ctx.currentAbort) return;
     const line = rl.line || "";
-    const rows = line.startsWith("/") ? buildMenuRows(line) : [];
+    const rows = buildMenuRows(line, rl.cursor ?? line.length);
     if (!rows.length && !menuLines) return;
     if (menuSelected >= rows.length) menuSelected = Math.max(0, rows.length - 1);
     if (menuSelected < 0) menuSelected = 0;
@@ -554,6 +605,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     }
     menuLines = 0;
     menuSelected = 0;
+    menuMoved = false;
   }
 
   // Registered after readline's own listener on the same stream, so it runs
@@ -577,19 +629,22 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
           }
         }
         // The box shows the draft even while a turn runs.
-        if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/") && !multiLine) {
-          const rows = buildMenuRows(menuLastLine);
+        if (arrow && !multiLine) {
+          const rows = buildMenuRows(menuLastLine, menuLastCursor);
           if (rows.length) {
             rl.line = menuLastLine;
-            rl.cursor = menuLastLine.length;
+            rl.cursor = menuLastCursor;
             menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
+            menuMoved = true;
+            renderFooter();
+            return;
           }
-          renderFooter();
-          return;
         }
         if (!(key && (key.name === "return" || key.name === "enter"))) {
           menuLastLine = rl.line || "";
+          menuLastCursor = rl.cursor ?? menuLastLine.length;
           menuSelected = 0;
+          menuMoved = false;
         }
         renderFooter();
         return;
@@ -598,24 +653,25 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       if (!promptActive || ctx.currentAbort) return;
       if (key && (key.name === "return" || key.name === "enter")) return;
 
-      if (key && (key.name === "up" || key.name === "down") && menuLastLine.startsWith("/")) {
+      if (key && (key.name === "up" || key.name === "down") && buildMenuRows(menuLastLine, menuLastCursor).length) {
         // Readline's own listener already ran for this same keypress and
         // applied its default Up/Down history substitution to rl.line —
         // override that: restore the real filter text and move the menu
         // selection instead of recalling a previous command.
-        const rows = buildMenuRows(menuLastLine);
-        if (rows.length) {
-          rl.line = menuLastLine;
-          rl.cursor = menuLastLine.length;
-          menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
-          redrawInputLine(menuLastLine);
-          renderMenu();
-        }
+        const rows = buildMenuRows(menuLastLine, menuLastCursor);
+        rl.line = menuLastLine;
+        rl.cursor = menuLastCursor;
+        menuSelected = ((menuSelected + (key.name === "down" ? 1 : -1)) % rows.length + rows.length) % rows.length;
+        menuMoved = true;
+        redrawInputLine(menuLastLine);
+        renderMenu();
         return;
       }
 
       menuLastLine = rl.line || "";
+      menuLastCursor = rl.cursor ?? menuLastLine.length;
       menuSelected = 0;
+      menuMoved = false;
       setImmediate(renderMenu);
     });
   }
@@ -642,9 +698,11 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     const lines = String(display).split("\n");
     console.log("");
     lines.forEach((l, i) => {
-      // A recognised /command or /skill shows in blue, like it did in the box.
-      const head = i === 0 ? recognizedSlashLength(ctx, l) : 0;
-      const text = head ? c.blue(c.bold(l.slice(0, head))) + c.bold(l.slice(head)) : c.bold(l);
+      // Each recognised /command or /skill shows in blue, like in the box.
+      const spans = i === 0 ? recognizedSlashRanges(ctx, l) : [];
+      let text = "", at = 0;
+      for (const [a, b] of spans) { text += c.bold(l.slice(at, a)) + c.blue(c.bold(l.slice(a, b))); at = b; }
+      text += c.bold(l.slice(at));
       console.log((i === 0 ? c.cyan(PROMPT) : "  ") + text);
     });
   }
@@ -709,7 +767,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       // writing its final answer) would otherwise sit unread — answer it now.
       if (!aborted && ctx.steerQueue.length) {
         for (const note of ctx.steerQueue.splice(0)) {
-          const msg = syntheticUser(steeringMessage(note), { userText: note });
+          const msg = syntheticUser(steeringMessage(note), { userText: steeringText(note) });
           ctx.messages.push(msg);
           await ctx.session.append(recordFor(msg));
         }
@@ -923,7 +981,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     rl.line = t;
     rl.cursor = t.length;
     menuLastLine = t;
+    menuLastCursor = t.length;
     menuSelected = 0;
+    menuMoved = false;
   }
 
   // A paste made while editing a queued prompt belongs to that prompt.
@@ -975,39 +1035,34 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       pump();
       return;
     }
-    const btw = parseBtw(text);
-    const cmdName = btw === null && text.startsWith("/") ? text.slice(1).split(/\s+/)[0].toLowerCase() : "";
-    // Several /names, or a skill: that needs a turn of its own.
-    if (btw === null && parseSlashLine(ctx, text)) {
-      queue.items.unshift(item);
-      flashNote("that prompt needs a turn of its own - it runs next");
-      return;
-    }
-    if (cmdName && INSTANT_WHILE_BUSY.has(cmdName)) {
+    const plan = planSendNow(ctx, text);
+    if (plan.kind === "empty") { renderFooter(); return; }
+    if (plan.kind === "instant") {
       const parts = text.split(/\s+/);
       console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
-      Promise.resolve(dispatchCommand(ctx, cmdName, parts.slice(1).join(" "), parts))
+      Promise.resolve(dispatchCommand(ctx, plan.cmdName, parts.slice(1).join(" "), parts))
         .catch((e) => warnLine(e?.message || String(e)))
         .finally(renderFooter);
       return;
     }
-    if (cmdName) {
+    if (plan.kind === "wait") {
       queue.items.unshift(item);
-      flashNote(`/${cmdName} waits for the turn to end - it runs next`);
+      flashNote(plan.why);
       return;
     }
-    let note = btw !== null ? btw : text;
-    if (!note) { renderFooter(); return; }
+    let note = plan.kind === "btw" ? plan.note : { text: plan.text, skills: plan.skills };
     // Same UserPromptSubmit hooks as any prompt you send.
-    if (btw === null) {
-      const hooked = await submitPromptHooks(note);
+    if (plan.kind === "message" && plan.text) {
+      const hooked = await submitPromptHooks(plan.text);
       for (const err of hooked.errors) warnLine(`hook ${err}`);
       if (hooked.denied) { warnLine(`prompt blocked by hook ${hooked.by}: ${hooked.reason}`); renderFooter(); return; }
-      note = hooked.content;
+      note = { text: hooked.content, skills: plan.skills };
     }
     ctx.steerQueue.push(note);
     console.log(c.cyan(PROMPT) + c.bold(item.display.trim()));
-    infoLine("↳ sent — Omi will read this at its next step");
+    infoLine(plan.skills?.length
+      ? `↳ sent with ${plan.skills.join(" ")} — Omi loads ${plan.skills.length > 1 ? "them" : "it"} at its next step`
+      : "↳ sent — Omi will read this at its next step");
     renderFooter();
   }
 
@@ -1022,19 +1077,20 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       return;
     }
     promptActive = false;
-    // Enter runs whichever row is highlighted in the live "/" menu, not
-    // necessarily the literal text typed (e.g. typed "/mod", arrowed to
-    // "/model", Enter runs "/model" — or just the top match if you never
-    // touched the arrows at all).
-    const menuOpen = footer ? menuShown.length > 0 : menuLines > 0;
-    if (menuOpen && !multiLine) {
-      const rows = buildMenuRows(input);
-      if (rows.length && rows[menuSelected]) {
-        input = rows[menuSelected].usage.split(/\s+/)[0];
-      }
+    // Enter takes whichever row is highlighted in the live "/" menu for the
+    // "/word" at the caret, not necessarily the literal text typed (typed
+    // "/mod", arrowed to "/model", Enter runs "/model"; untouched, the top
+    // match, or the word itself when it is already a full name). Only that
+    // word is swapped, wherever it is; the rest of the prompt stays. Worked
+    // out from the line itself, not from what was last drawn: keys that
+    // arrive in one chunk reach Enter before the menu is ever rendered.
+    if (!multiLine && input === menuLastLine) {
+      const pick = pickedMenuName(input, menuLastCursor);
+      if (pick) input = acceptSlashRow(input, pick.tok, pick.name, { space: false }).line;
     }
     clearMenuAfterSubmit();
     menuLastLine = "";
+    menuLastCursor = 0;
     menuShown = [];
     const text = expandPastes(input, pastes);
 

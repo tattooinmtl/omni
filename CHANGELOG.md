@@ -8,6 +8,48 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.17 — 2026-11-27
+
+- **Shipped:** this PR · TattooAI/omni-tower-upgrade-bug-14d181 · session 1810fb46-d750-4a82-b881-95778c3ef4d3
+- **`/` works anywhere in the prompt, as many times as you like.** The live
+  menu used to open only while the whole line was one `/word`, so a second
+  skill, or one typed after some text, got no menu and no Tab completion.
+  Now the menu follows the `/word` at the caret: `fix the hp bar /game-d`
+  offers `/game-designer`, and `… /py` after it offers the Python skills.
+  Tab puts the highlighted name in and adds a space so you can keep typing;
+  Enter puts it in and sends. Only that word changes. Before, Enter with the
+  menu open replaced the whole prompt with the picked name. Every recognised
+  `/name` in the box and in the echoed prompt shows in blue, not just the
+  first.
+- **↑ + Enter on a queued prompt sends it now, skills included.** A queued
+  `/skill do this` used to stay put with "waits for the turn to end", so you
+  had to wait or interrupt everything. Now it goes into the running turn,
+  which loads the skill with `invoke_skill` and does the request. Plain text
+  sent this way arrives as your latest message. It used to be wrapped as a
+  `/btw` note that said "not a new task", so new requests got set aside.
+  Commands that change state (`/model`, `/clear`) still wait their turn.
+- **A tool call that comes back as text runs.** MiniMax's tool parser can
+  misfire and return the call as text
+  (`]<]minimax[>[<invoke name="run_shell">…`). On a native-tools provider
+  that text ended the turn as if it were the answer, so the build it asked
+  for never ran. Leaked `<invoke>`, `<minimax:tool_call>`, `<tool_call>` and
+  `<function=…>` calls are now parsed and run; one that can't be parsed gets
+  a "make a real function call" nudge. A reply that only explains the format
+  in a code block is left alone. A garbled boolean (`false</dry_nap>…`) keeps
+  its leading word instead of reading as true.
+- **Huge context windows compact at 160k tokens.** Auto-compaction waited for
+  85% of the window, which on MiniMax's 1M window is about 850k, so a
+  three-day session never compacted: every step re-sent ~300k tokens (149M
+  prompt tokens over 696 steps) and the model lost track of the task. It now
+  compacts at 160k or 85% of the window, whichever comes first.
+  `compaction.compactAtTokens` moves the mark.
+- Tests: `tests/slash-anywhere.test.mjs` pins the `/word` at the caret, the
+  menu rows after text and after commands, only the word being replaced, the
+  blue spans, how a queued prompt is sent mid-turn, and the new message
+  wording. `tests/leaked-calls.test.mjs` pins parsing the leaked MiniMax reply
+  from the session log, MiniMax's own format, code blocks not counting, a
+  real turn running a leaked call, and the compaction mark.
+
 ## 3.6.16 — 2026-11-20
 
 - **Shipped:** [#78](https://github.com/tattooinmtl/omni/pull/78) · 85b0735 · TattooAI/omni-running-animation-fb12e6 · session 7547e0a3-5b2d-4996-aeba-7b03223373f3

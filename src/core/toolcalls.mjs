@@ -42,7 +42,32 @@ export function buildParamRegistry(toolDefs = []) {
 
 // Does the content look like the model attempted a tool call at all?
 export function hasToolIntent(content) {
-  return /<tool_call|<function\s*=|<arg_key>|<parameter\s*=|<invoke\b/i.test(String(content || ""));
+  return /<tool_call|<function\s*=|<arg_key>|<parameter\s*=|<invoke\b|minimax:tool_call|\]<\]minimax\[>\[/i.test(String(content || ""));
+}
+
+// MiniMax's own call format is
+//   <minimax:tool_call>\n<invoke name="t">\n<parameter name="k">v</parameter>\n</invoke>\n</minimax:tool_call>
+// and when its tool parser misfires the special tokens come back as text:
+// "]<]minimax[>[" stands where each line break was. Put the line breaks back
+// and drop the wrapper, so the <invoke> blocks inside parse like any other.
+// (A session that leaked one ended its turn on that text as the "answer".)
+const MINIMAX_SEP_RE = /\]<\]minimax\[>\[/g;
+
+// For native-tools providers, where text is normally the answer: does this
+// reply carry a call written out as text, rather than merely mention one?
+// A MiniMax token leak always counts; otherwise an opener has to start a line
+// outside code (a reply explaining the format in a ``` block is an answer).
+// Returns the text to parse, or "" when there is no leaked call.
+export function leakedToolCallText(content) {
+  const s = String(content || "");
+  if (/\]<\]minimax\[>\[|<\/?minimax:tool_call>/i.test(s)) return s;
+  const prose = s.replace(/```[\s\S]*?(?:```|$)/g, "").replace(/`[^`\n]*`/g, "");
+  return /(^|\n)[ \t]*<(?:tool_call>|function\s*=|invoke\s+name\s*=)/i.test(prose) ? prose : "";
+}
+export function normalizeMinimaxCalls(content) {
+  const s = String(content || "");
+  if (!/minimax/i.test(s)) return s;
+  return s.replace(MINIMAX_SEP_RE, "\n").replace(/<\/?minimax:tool_call>/gi, "\n");
 }
 
 // Remove <think>…</think> reasoning blocks (GLM/Qwen reasoning leak). An
@@ -133,7 +158,8 @@ export function createThinkSplitter() {
 
 // Remove all tool-call syntax from content meant for display / history.
 export function stripToolCallText(content) {
-  let s = String(content || "");
+  let s = normalizeMinimaxCalls(content);
+  s = s.replace(/<invoke\s+name\s*=[^>]*>[\s\S]*?(?:<\/invoke>|$)/g, "");
   s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
   const open = s.indexOf("<tool_call>");
   if (open !== -1) s = s.slice(0, open); // unclosed trailing block
@@ -148,6 +174,12 @@ function coerceValue(raw, type = "") {
   const t = String(raw).trim();
   if (t === "") return t;
   if (type === "string") return t;
+  // A garbled value ("false\n</dry_nap>…" from a misfired tag) still means
+  // its leading word: a junk string here would read as true.
+  if (type === "boolean") {
+    const b = /^(true|false)\b/i.exec(t);
+    if (b) return b[1].toLowerCase() === "true";
+  }
   if (type === "boolean" || type === "integer" || type === "number" || type === "array" || type === "object") {
     try { return JSON.parse(t); } catch { return t; }
   }
@@ -349,7 +381,7 @@ function isEnvelopeClose(src, idx) {
 // UNCLOSED <tool_call> envelopes plus bare <function=…> blocks.
 export function parseTextToolCalls(content, registry = null) {
   const calls = [];
-  const src = stripThink(content);
+  const src = normalizeMinimaxCalls(stripThink(content));
   if (!src.includes("<")) return calls;
 
   const blocks = [];
@@ -386,6 +418,13 @@ export function parseTextToolCalls(content, registry = null) {
   if (!blocks.length) {
     const fnRe = /<function\s*=[^>]+>[\s\S]*?(?:<\/function>|$)/g;
     while ((m = fnRe.exec(rest)) !== null) blocks.push(m[0]);
+  }
+
+  // Bare <invoke name="…"> blocks (MiniMax, Anthropic-style XML), with or
+  // without the <minimax:tool_call> wrapper normalizeMinimaxCalls removed.
+  if (!blocks.length) {
+    const invRe = /<invoke\s+name\s*=[^>]+>[\s\S]*?(?:<\/invoke>|$)/g;
+    while ((m = invRe.exec(rest)) !== null) blocks.push(m[0]);
   }
 
   for (const block of blocks) {
@@ -444,7 +483,13 @@ export function textToolInstructions(toolDefs) {
 }
 
 // Corrective message injected when a tool attempt failed to parse.
-export function recoveryMessage() {
+// native: the provider takes real function calls, so the fix is to make one,
+// not to write tags into the reply.
+export function recoveryMessage({ native = false } = {}) {
+  if (native) {
+    return "SYSTEM: Your last reply contained a tool call written out as text, so it could NOT be executed. " +
+      "Make the call again through your tool-calling interface (a real function call), not as text in your reply.";
+  }
   return [
     "SYSTEM: Your tool call was malformed and could NOT be executed.",
     "Re-emit it now using EXACTLY this format, closing every tag:",

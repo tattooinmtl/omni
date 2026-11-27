@@ -6,7 +6,7 @@ import { rotateAccount, activateAccount, resolveModel, redactForModel, saveSetti
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
-  parseTextToolCalls, buildParamRegistry, hasToolIntent,
+  parseTextToolCalls, buildParamRegistry, hasToolIntent, leakedToolCallText,
   stripThink, stripToolCallText, textToolInstructions, recoveryMessage,
   createThinkSplitter, extractThink,
 } from "./toolcalls.mjs";
@@ -795,12 +795,30 @@ export function stepChangedSomething(parsed) {
 // budget leaves room for the response (maxTokens) plus a safety margin.
 // Uses the forge digest (a model-written summary, core/compaction.mjs), which
 // falls back to the mechanical digest by itself when no summarizer is usable.
+//
+// On a huge window the 85% mark is no limit at all: with MiniMax's 1M window
+// it sits near 850k, so a three-day session never compacted and every step
+// re-sent ~300k tokens of old edits, reasoning and screenshots (149M prompt
+// tokens over 696 steps), and the model lost the thread in all of it. So the
+// mark is capped at DEFAULT_COMPACT_AT_TOKENS; settings.compaction
+// .compactAtTokens moves the cap (it never goes past the 85% mark).
+export const DEFAULT_COMPACT_AT_TOKENS = 160000;
+export function autoCompactThreshold(model, settings) {
+  const window = model?.contextWindow || 0;
+  if (!window) return 0;
+  const budget = Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5));
+  const near = Math.floor(budget * 0.85);
+  const configured = Number(settings?.compaction?.compactAtTokens);
+  const cap = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_COMPACT_AT_TOKENS;
+  return Math.min(near, cap);
+}
+
 async function maybeAutoCompact({ model, settings, messages, session, sessionGoal = null, signal = null }) {
   const window = model.contextWindow;
   if (!window) return false;
-  const budget = Math.max(window - (model.maxTokens || 0), Math.floor(window * 0.5));
+  const threshold = autoCompactThreshold(model, settings);
   const used = session.contextTokens || estimateTokens(messages);
-  if (used < budget * 0.85) return false;
+  if (used < threshold) return false;
   const r = await forgeCompact(messages, {
     model, settings, sessionGoal, trigger: "auto", signal, source: session?.file || "session",
   });
@@ -811,7 +829,7 @@ async function maybeAutoCompact({ model, settings, messages, session, sessionGoa
   }
   session.setContextTokens(estimateTokens(messages));
   warnLine(
-    `context ${used} tokens near the ${window}-token window — ` +
+    `context ${used} tokens ${threshold < Math.floor(window * 0.5) ? `passed the ${threshold}-token compaction mark` : `near the ${window}-token window`} — ` +
     (r.mode === "forge" ? `summarized ${r.dropped} older message(s) with ${r.summarizer}` : `auto-compacted ${r.dropped} older message(s)`) +
     (r.error ? ` (summary failed: ${String(r.error).slice(0, 80)}; kept the tool list instead)` : "")
   );
@@ -905,8 +923,26 @@ async function checkCreateToolRisk(name, confirmTool) {
 }
 
 // How a /btw note reads to the model — a course correction, not a new task.
+//
+// A queued prompt sent early (↑ then Enter while Omi works) is a different
+// thing: a real message, often a new request, so it arrives as one. It comes
+// as { text, skills: ["/name", …] }; skills named in it are loaded with
+// invoke_skill, since the skill's turn has already started without them.
+// Telling the model a new request was "not a new task" got it set aside.
 export function steeringMessage(note) {
+  if (note && typeof note === "object") {
+    const skills = (note.skills || []).filter(Boolean);
+    const load = skills.length
+      ? ` They want the ${skills.join(", ")} skill${skills.length > 1 ? "s" : ""} for it: call invoke_skill for ${skills.length > 1 ? "each" : "it"} first, then use ${skills.length > 1 ? "them" : "it"}.`
+      : "";
+    return `(the user sent this message while you were working. It is their latest message: answer it or do what it asks, then carry on with anything still unfinished.${load}): ${String(note.text || "").trim()}`;
+  }
   return `(btw — a note from the user while you work; not a new task. Factor it in and keep going): ${String(note || "").trim()}`;
+}
+
+// The user's own words inside a steering note (string or { text }).
+export function steeringText(note) {
+  return String(note && typeof note === "object" ? note.text || "" : note || "").trim();
 }
 
 export async function runTurn({ model, settings = null, messages, session, maxIterations = 30, diffPreview = true, persona = null, signal = null, permissions = null, confirmTool = null, showThinking = false, contextMode = "classic", takeSteering = null, beforeMutation = null, turnLimit = null, allowedTools = null, rateLimitFailFast = false }) {
@@ -1027,7 +1063,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // message is always valid.
     const steering = typeof takeSteering === "function" ? takeSteering() : [];
     for (const note of steering || []) {
-      const msg = syntheticUser(steeringMessage(note), { userText: note });
+      const msg = syntheticUser(steeringMessage(note), { userText: steeringText(note) });
       messages.push(msg);
       session.append(recordFor(msg));
     }
@@ -1219,6 +1255,18 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       }
     } else if (msg.content) {
       msg.content = rawContent.trim();
+      // Native tools, but the call came back as text (MiniMax's parser
+      // misfiring leaves "<invoke name=…>" in the content). Run it instead
+      // of ending the turn on it as if it were the answer.
+      const leaked = msg.tool_calls?.length ? "" : leakedToolCallText(rawContent);
+      if (leaked) {
+        const toolCalls = parseTextToolCalls(leaked, paramRegistry).filter((t) => paramRegistry.has(t.function.name));
+        if (toolCalls.length) {
+          msg.tool_calls = toolCalls;
+          msg.content = stripToolCallText(leaked).trim();
+          warnLine(`the model wrote ${toolCalls.length} tool call(s) as text - running ${toolCalls.length > 1 ? "them" : "it"}`);
+        }
+      }
     }
 
     messages.push(msg);
@@ -1255,7 +1303,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
       // response was cut off mid-call by the token limit. Don't end the turn —
       // tell the model what happened and let it re-emit the call.
       const truncated = resp.finishReason === "length";
-      const attempted = hopParsesText && hasToolIntent(rawContent);
+      // Native-tools models drift into text calls too; one that can't be
+      // parsed gets the same "re-emit it" nudge instead of ending the turn.
+      const attempted = hopParsesText ? hasToolIntent(rawContent) : Boolean(leakedToolCallText(rawContent));
       if ((attempted || (truncated && hopTextTools)) && parseRecoveries < MAX_PARSE_RECOVERIES) {
         parseRecoveries++;
         warnLine(
@@ -1263,7 +1313,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             ? `response truncated by token limit — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
             : `malformed tool call — asking the model to re-emit (${parseRecoveries}/${MAX_PARSE_RECOVERIES})`
         );
-        messages.push(syntheticUser(recoveryMessage()));
+        messages.push(syntheticUser(recoveryMessage({ native: !hopParsesText })));
         continue;
       }
       if (truncated) warnLine("response was truncated by the max_tokens limit");
