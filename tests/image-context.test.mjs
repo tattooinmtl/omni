@@ -61,6 +61,11 @@ await ok("only screenshot tools count; other images stay", () => {
   assert.deepEqual(urls(evictOldImages(msgs)), ["IMG1", "IMG3", "IMG4", "IMG5", "IMG6"]);
 });
 
+await ok("browser_run's shot() images share the screenshot budget", () => {
+  const msgs = [shotMsg("browser_run", 1, 2), shotMsg("browser_screenshot", 3), shotMsg("browser_run", 4, 5)];
+  assert.deepEqual(urls(evictOldImages(msgs)), ["IMG3", "IMG4", "IMG5"]);
+});
+
 await ok("nothing to evict returns the same array; keep and tools are options", () => {
   const few = [shotMsg("browser_screenshot", 1), shotMsg("browser_screenshot", 2)];
   assert.equal(evictOldImages(few), few);

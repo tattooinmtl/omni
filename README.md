@@ -819,6 +819,10 @@ brain's own config.
   accepted on its own. Downloads go to `downloads/` in the workspace. A
   vision model sees `browser_screenshot` directly (viewport, full page or one
   element, at most 1568 px), and only the last 3 screenshots stay in context.
+  `browser_run` does many steps in one call: a short async script calling
+  `goto`, `snap`, `click`, `type`, `wait`, `text`, `shot`, … that returns a
+  result. It runs in a sandbox with no `require`, `import`, file system or
+  network of its own, and stops at its time limit (Node 22.8+).
   `/browser` gives manual control.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
