@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.21 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/browser-b5 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#83](https://github.com/tattooinmtl/omni/pull/83) · 83f9555 · TattooAI/browser-b5 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Your own browser, on the sites you allow.** `/browser connect [port|ws-url]`
   attaches the default browser session to your Edge or Chrome, so sites you
   are logged in to work. With no address it finds a browser with remote
