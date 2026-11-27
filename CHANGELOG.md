@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.17 — 2026-11-27
 
-- **Shipped:** this PR · TattooAI/omni-tower-upgrade-bug-14d181 · session 1810fb46-d750-4a82-b881-95778c3ef4d3
+- **Shipped:** [#79](https://github.com/tattooinmtl/omni/pull/79) · c7200fa · TattooAI/omni-tower-upgrade-bug-14d181 · session 1810fb46-d750-4a82-b881-95778c3ef4d3
 - **`/` works anywhere in the prompt, as many times as you like.** The live
   menu used to open only while the whole line was one `/word`, so a second
   skill, or one typed after some text, got no menu and no Tab completion.
