@@ -1301,8 +1301,8 @@ export const COMMANDS = [
     },
   },
   {
-    name: "browser", aliases: [], usage: "/browser [status|close|navigate <url>|screenshot]", category: "Tools",
-    summary: "inspect or control the headless browser session (browser_* tools)",
+    name: "browser", aliases: [], usage: "/browser [status|show|hide|connect [port]|disconnect|allow [domain…]|disallow <domain…>|close [session|all]|navigate <url>|screenshot]", category: "Tools",
+    summary: "the browser_* tools' browser: show or hide it, connect your own Edge/Chrome (only on domains you allow), close sessions",
     handler: (ctx, arg) => runBrowserCommand(ctx, arg),
   },
   {

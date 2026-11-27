@@ -8,6 +8,54 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.21 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/browser-b5 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Your own browser, on the sites you allow.** `/browser connect [port|ws-url]`
+  attaches the default browser session to your Edge or Chrome, so sites you
+  are logged in to work. With no address it finds a browser with remote
+  debugging on from its `DevToolsActivePort` file (Edge, Chrome, Brave), on
+  this PC only. Only the user can connect: there is no tool for it, and
+  headless and scheduled runs take no slash commands. The rules while
+  connected:
+  - Omni opens a window of its own and attaches only to its tabs and the
+    popups they open, never to your tabs (no auto-attach in your browser).
+  - Every page it reads or acts on must be on the allowlist,
+    `settings.browserAllowedDomains`, edited with `/browser allow <domain…>`
+    and `/browser disallow` (a domain covers its subdomains; a bare TLD is
+    refused). Navigating off the list is refused, and so is reading a page
+    a click or redirect led to; titles of such pages are hidden too.
+    Connecting with an empty list is refused.
+  - `browser_evaluate` and the script's `eval()` are off: JavaScript in a
+    logged-in page could send your data anywhere.
+  - Sub-agents can't use it (tools now get the session kind in their
+    context); they get a headless browser under a session name.
+  - Omni never closes your browser: `browser_close` closes only Omni's tabs,
+    `/browser disconnect` lets go and leaves them open, and a lost connection
+    is reported, not replaced by a browser of Omni's own. Your download
+    settings are left alone.
+- **Named sessions.** Every browser tool takes `session: "<name>"`. Each name
+  is a browser of its own, with its own tabs and cookies, up to 4 at once, so
+  sub-agents don't fight over one tab. `browser_status` lists the others;
+  `/browser` lists them all and `/browser close [name|all]` closes them.
+- **A visible browser.** `headed: true` on `browser_navigate`, or
+  `/browser show [session]`, opens a window you can watch (a running headless
+  browser restarts, back on its page); `/browser hide` goes back.
+- **Password and card fields are closed off in every tool.** `browser_press`
+  won't type characters into a password or card field the agent focused some
+  other way (a click, Tab; Enter and shortcuts still work), and
+  `browser_select` won't fill a card field (`cc-exp-month`). Card fields are
+  also recognized by id and "security code".
+- `browser_wait` follows a popup that opens while it waits.
+- Tests: `tests/browser-connect.test.mjs` checks the allowlist rules, named
+  sessions (separate cookies, the cap), the password and card checks, and
+  connecting to a stand-in for your browser (a second Edge/Chrome with a
+  devtools port and a tab of "yours" open): your tab is never seen, allowed
+  and refused domains (also after a redirect), `browser_evaluate` off,
+  sub-agents refused, popups followed, closing and disconnecting leave your
+  browser running, discovery from `DevToolsActivePort`, and a lost
+  connection. `OMNI_TEST_HEADED=1` adds the visible-window check.
+
 ## 3.6.20 — 2026-11-27
 
 - **Shipped:** [#82](https://github.com/tattooinmtl/omni/pull/82) · cd1ac19 · TattooAI/browser-run-b4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403

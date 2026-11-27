@@ -37,6 +37,29 @@
 // Downloads land only in <workspace>/downloads/, named after the file the
 // site suggests; each one is reported in the next tool result.
 //
+// Sessions: every tool takes `session` (default "default"). Each name is a
+// browser of its own (own profile, tabs and cookies), so sub-agents don't
+// fight over one tab. At most MAX_SESSIONS run at once.
+//
+// Headless by default. `headed: true` on browser_navigate, or /browser show,
+// opens a visible window instead (a running headless browser restarts).
+//
+// Your own browser: /browser connect (the user only; there is no tool for
+// it) attaches the default session to the user's Edge/Chrome over its
+// devtools port, so logged-in sites work. Then:
+//   - Omni works only in tabs it opens (and popups from them), never in the
+//     user's own tabs.
+//   - Every page it reads or acts on must be on the user's domain allowlist
+//     (settings.browserAllowedDomains, /browser allow); anything else is
+//     refused, including a page a click or redirect led to.
+//   - browser_evaluate and the script eval() are off: arbitrary JS in a
+//     logged-in page could send the user's data anywhere.
+//   - Sub-agents can't use it (they get a headless session of their own),
+//     and closing never closes the user's browser, only Omni's tabs.
+//   - Downloads follow the browser's own settings (Omni doesn't change them).
+// Password and payment-card fields are refused everywhere (type, press,
+// select): the user fills those in.
+//
 // SSRF guard: refuses loopback/private/link-local/unique-local on both
 // literal IPs and DNS-resolved hostnames (same policy as web_fetch in
 // web-search.js). The agent may legitimately need localhost for dev work,
@@ -55,7 +78,7 @@ import { resolveContained } from "./file-tools.js";
 import { browserCandidates } from "../src/local/hardware-profile.mjs";
 import {
   snapshotExpression, locateExpression, focusExpression, selectExpression,
-  scrollExpression, fileInputExpression, probeExpression,
+  scrollExpression, fileInputExpression, probeExpression, activeFieldExpression,
 } from "../src/core/browser-snapshot.mjs";
 import { runSandboxed } from "../src/core/script-sandbox.mjs";
 
@@ -69,6 +92,9 @@ const MAX_IMAGE_PX = 1568;
 const MAX_FULL_PAGE_PX = 16000;
 // Console and network entries kept per tab.
 const LOG_CAP = 300;
+// Named browser sessions running at once.
+const MAX_SESSIONS = 4;
+const SESSION_NAME = /^[A-Za-z0-9_-]{1,32}$/;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clipText = (s, n) => {
@@ -266,7 +292,92 @@ async function assertPublicUrl(urlStr, { allowInternal = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// BrowserSession — one headless browser per Omni process, lazily spawned.
+// The domain allowlist for the user's own browser
+// ---------------------------------------------------------------------------
+
+// "https://Mail.Example.com/inbox" or "*.example.com" -> "mail.example.com" /
+// "example.com". Throws for something that isn't a host, or is too broad
+// (a bare TLD like "com" would allow every site under it).
+export function normalizeDomain(d) {
+  let h = String(d ?? "").trim().toLowerCase();
+  h = h.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?#].*$/, "").replace(/^\*\./, "").replace(/\.$/, "");
+  if (!h.startsWith("[")) h = h.replace(/:\d+$/, "");
+  if (!/^([a-z0-9-]+(\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/.test(h)) throw new Error(`"${d}" is not a domain (e.g. github.com)`);
+  if (!h.includes(".") && !h.startsWith("[") && h !== "localhost") throw new Error(`"${d}" is too broad: name a site, e.g. example.${h}`);
+  return h;
+}
+
+// Is this URL on the allowlist? A domain covers its subdomains. about:blank
+// (a fresh tab) is always fine; any other non-http(s) page is not.
+export function hostAllowed(url, allow = []) {
+  const u = String(url || "");
+  if (u === "about:blank") return true;
+  let parsed;
+  try { parsed = new URL(u); } catch { return false; }
+  if (!/^https?:$/.test(parsed.protocol)) return false;
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  return allow.some((d) => host === d || host.endsWith("." + d));
+}
+
+function notAllowedError(url, allow) {
+  let host = String(url || "(a page with no address)");
+  try { host = new URL(url).hostname || host; } catch { /* keep the raw text */ }
+  return new Error(
+    `${host} is not on the user's allowlist for their own browser (${allow.length ? allow.join(", ") : "nothing allowed yet"}). ` +
+    `Don't read or act on it. Ask the user to add it with /browser allow ${host} if they want, or navigate back to an allowed site.`,
+  );
+}
+
+// Where the user's browser listens: a port, a ws:// URL, or (nothing given)
+// the DevToolsActivePort file Edge/Chrome write when remote debugging is on.
+// Loopback only.
+async function findDevtools(target) {
+  const t = String(target ?? "").trim();
+  const viaPort = async (port) => {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) throw new Error(`127.0.0.1:${port} answered ${r.status}`);
+    const v = await r.json();
+    if (!v.webSocketDebuggerUrl) throw new Error(`127.0.0.1:${port} gave no devtools websocket`);
+    return v.webSocketDebuggerUrl;
+  };
+  if (/^\d{2,5}$/.test(t)) {
+    try { return await viaPort(Number(t)); }
+    catch (e) {
+      throw new Error(`nothing answers on 127.0.0.1:${t} (${e.message}). Start the browser with --remote-debugging-port=${t} (and a --user-data-dir of its own), then try again`);
+    }
+  }
+  if (t) {
+    let u;
+    try { u = new URL(t); } catch { throw new Error(`"${t}" is not a port or a ws:// address`); }
+    if (!/^wss?:$/.test(u.protocol)) throw new Error(`"${t}" is not a port or a ws:// address`);
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)) throw new Error("only a browser on this PC (127.0.0.1) can be connected");
+    return t;
+  }
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  // OMNI_BROWSER_PROFILE_DIRS: where else to look (tests, portable browsers).
+  const extra = (process.env.OMNI_BROWSER_PROFILE_DIRS || "").split(path.delimiter).filter(Boolean).map((d) => ["browser", d]);
+  const dirs = extra.length ? extra : process.platform === "win32"
+    ? [["Edge", "Microsoft/Edge/User Data"], ["Chrome", "Google/Chrome/User Data"], ["Brave", "BraveSoftware/Brave-Browser/User Data"]].map(([n, d]) => [n, path.join(local, d)])
+    : process.platform === "darwin"
+      ? [["Edge", "Microsoft Edge"], ["Chrome", "Google/Chrome"]].map(([n, d]) => [n, path.join(os.homedir(), "Library/Application Support", d)])
+      : [["Edge", ".config/microsoft-edge"], ["Chrome", ".config/google-chrome"], ["Chromium", ".config/chromium"]].map(([n, d]) => [n, path.join(os.homedir(), d)]);
+  for (const [, dir] of dirs) {
+    let lines;
+    try { lines = fsSync.readFileSync(path.join(dir, "DevToolsActivePort"), "utf8").split(/\r?\n/); } catch { continue; }
+    const port = Number(lines[0]);
+    if (!Number.isInteger(port) || port <= 0) continue;
+    try { return await viaPort(port); } catch { /* no HTTP endpoint (chrome://inspect mode), or stale */ }
+    if (/^\/devtools\/browser\/[\w-]+$/.test(lines[1] || "")) return `ws://127.0.0.1:${port}${lines[1]}`;
+  }
+  throw new Error(
+    "no browser with remote debugging found. Either start Edge or Chrome with " +
+    "--remote-debugging-port=9222 --user-data-dir=<a folder for it> and run /browser connect 9222, " +
+    "or in Chrome 144+ turn it on at chrome://inspect/#remote-debugging and run /browser connect",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BrowserSession — one browser (launched, or the user's own), lazily started.
 // ---------------------------------------------------------------------------
 
 // Commands a tab still answers while a JavaScript dialog is open. Anything
@@ -274,6 +385,9 @@ async function assertPublicUrl(urlStr, { allowInternal = false } = {}) {
 const DIALOG_SAFE = new Set(["Page.handleJavaScriptDialog", "Runtime.runIfWaitingForDebugger", "Page.enable", "Runtime.enable", "Network.enable", "Log.enable"]);
 // Methods sent to the browser itself, not to a tab.
 const BROWSER_LEVEL = /^(Target|Browser|SystemInfo)\./;
+// In the user's own browser, what a tab on a page off the allowlist still
+// answers: setup, dialogs, and going somewhere else. Nothing that reads it.
+const CONNECTED_SAFE = new Set([...DIALOG_SAFE, "Page.navigate", "Page.getNavigationHistory", "Page.navigateToHistoryEntry", "Page.stopLoading", "Page.getFrameTree"]);
 
 function dialogNotice(tab, index) {
   const d = tab.dialog;
@@ -285,7 +399,10 @@ function dialogNotice(tab, index) {
 }
 
 class BrowserSession {
-  constructor() {
+  constructor(name = "default") {
+    this.name = name;
+    this.headed = false;      // a visible window instead of headless
+    this.connected = null;    // { allow, product } while attached to the user's browser
     this.proc = null;
     this.ws = null;
     this.port = null;
@@ -329,12 +446,17 @@ class BrowserSession {
   // (some containers, restricted job objects), fall back to the old
   // no-sandbox + software-rendering launch.
   async _spawn() {
+    // Shown or hidden since it started: start it again the other way.
+    if (this.isAlive() && !this.connected && !!this.mode?.headed !== this.headed) await this._reset();
     if (this.isAlive()) {
       await this._settle();
       if (!this.current || !this.tabs.has(this.current.targetId)) {
         this.current = this._visibleTabs().at(-1) || await this._newTab();
       }
       return;
+    }
+    if (this.connected) {
+      throw new Error("the connection to the user's own browser closed. Ask them to run /browser connect again (or /browser disconnect to go back to a headless browser)");
     }
     if (process.env.OMNI_BROWSER_GPU === "1") {
       try {
@@ -353,6 +475,11 @@ class BrowserSession {
   async _killBrowser() {
     const ws = this.ws;
     this.ws = null;
+    if (this.connected) {
+      // Never Browser.close the user's own browser: just let go of it.
+      try { ws?.close(); } catch { /* ignore */ }
+      return;
+    }
     if (ws && ws.readyState === 1) {
       await new Promise((resolve) => {
         const t = setTimeout(resolve, 2000);
@@ -381,9 +508,9 @@ class BrowserSession {
     // Pick a port in the ephemeral range; collisions are rare with one user.
     this.port = 9300 + Math.floor(Math.random() * 200);
     const userDataDir = path.join(os.tmpdir(), `omni-browser-${process.pid}-${Date.now()}`);
-    this.mode = { sandbox, gpu };
+    this.mode = { sandbox, gpu, headed: this.headed };
     this.proc = spawn(exe, [
-      "--headless=new",
+      ...(this.headed ? [] : ["--headless=new"]),
       ...(gpu ? [] : ["--disable-gpu"]),
       ...(sandbox ? [] : ["--no-sandbox"]),
       "--disable-dev-shm-usage",
@@ -395,7 +522,7 @@ class BrowserSession {
       `--remote-debugging-port=${this.port}`,
       `--user-data-dir=${userDataDir}`,
       "about:blank",
-    ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: !this.headed });
 
     // A failed sandboxed attempt's process can exit after the fallback has
     // started, so only clear state if it is still the current process.
@@ -419,28 +546,7 @@ class BrowserSession {
     if (!version) throw new Error("browser started but devtools endpoint not reachable");
     this.browserWsUrl = version.webSocketDebuggerUrl || null;
     if (!this.browserWsUrl) throw new Error("the browser gave no devtools websocket");
-    if (typeof WebSocket === "undefined") {
-      throw new Error("browser_use requires Node 21+ for built-in WebSocket (run on a newer Node)");
-    }
-    this.ws = new WebSocket(this.browserWsUrl);
-    await new Promise((resolve, reject) => {
-      let settled = false;
-      const onErr = (e) => { if (settled) return; settled = true; cleanup(); reject(new Error(`websocket: ${e.message || e}`)); };
-      const onOpen = () => { if (settled) return; settled = true; cleanup(); resolve(); };
-      const cleanup = () => { try { if (this.ws) { this.ws.onopen = null; this.ws.onerror = null; } } catch { /* */ } };
-      this.ws.onopen = onOpen;
-      this.ws.onerror = onErr;
-      setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error("websocket connect timeout"));
-      }, 8000);
-    });
-    this.ws.onmessage = (ev) => this._onMessage(ev);
-    const ws = this.ws;
-    ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this._failAll("websocket closed"); this._resetTabs(); };
-    this._resetTabs();
+    await this._open(this.browserWsUrl);
 
     await this._send("Target.setDiscoverTargets", { discover: true });
     // Downloads go to <workspace>/downloads under a temporary name, renamed
@@ -473,6 +579,89 @@ class BrowserSession {
     } catch { this.browserPid = null; }
   }
 
+  // Open the browser-level devtools websocket.
+  async _open(wsUrl, timeoutMs = 8000) {
+    if (typeof WebSocket === "undefined") {
+      throw new Error("browser_use requires Node 21+ for built-in WebSocket (run on a newer Node)");
+    }
+    this.ws = new WebSocket(wsUrl);
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const onErr = (e) => { if (settled) return; settled = true; cleanup(); reject(new Error(`websocket: ${e.message || e}`)); };
+      const onOpen = () => { if (settled) return; settled = true; cleanup(); resolve(); };
+      const cleanup = () => { try { if (this.ws) { this.ws.onopen = null; this.ws.onerror = null; } } catch { /* */ } };
+      this.ws.onopen = onOpen;
+      this.ws.onerror = onErr;
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error("websocket connect timeout"));
+      }, timeoutMs);
+    });
+    this.ws.onmessage = (ev) => this._onMessage(ev);
+    const ws = this.ws;
+    ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this._failAll("websocket closed"); this._resetTabs(); };
+    this._resetTabs();
+  }
+
+  // Attach to the user's own browser. Nothing of theirs is touched: no
+  // download settings, no auto-attach to their tabs; Omni opens a window of
+  // its own and works there.
+  async connect({ wsUrl, allow }) {
+    if (this.connected) await this.disconnect();
+    else if (this.isAlive() || this.proc) await this.close();
+    const conn = { allow: [...allow], product: "browser" };
+    this.connected = conn;
+    try {
+      // The browser may ask the user to allow the connection first.
+      await this._open(wsUrl, 60000);
+      await this._send("Target.setDiscoverTargets", { discover: true });
+      const v = await this._send("Browser.getVersion", {}, { timeoutMs: 5000 }).catch(() => null);
+      conn.product = /Edg\//.test(v?.userAgent || "") ? "Edge" : /Headless/.test(v?.product || "") ? "Chrome (headless)" : "Chrome";
+      this.current = await this._newTab();
+    } catch (e) {
+      const ws = this.ws;
+      this.ws = null;
+      try { ws?.close(); } catch { /* ignore */ }
+      this.connected = null;
+      this._resetTabs();
+      throw new Error(`could not connect: ${e.message}`);
+    }
+    return { connected: true, browser: conn.product, allowed: conn.allow };
+  }
+
+  // Let go of the user's browser. Omni's tabs stay open for them to look at.
+  async disconnect() {
+    if (!this.connected) return { disconnected: false };
+    const ws = this.ws;
+    this.ws = null;
+    try { ws?.close(); } catch { /* ignore */ }
+    this.connected = null;
+    this._failAll("disconnected");
+    this._resetTabs();
+    return { disconnected: true };
+  }
+
+  setAllowed(allow) { if (this.connected) this.connected.allow = [...allow]; }
+
+  // Show or hide the window. A running browser restarts the other way and
+  // reopens the page it was on; its other tabs and cookies start over.
+  async setHeaded(on) {
+    if (this.connected) throw new Error("this is the user's own browser: it is already on their screen");
+    const url = this.current?.url;
+    this.headed = !!on;
+    if (!this.isAlive() || !!this.mode?.headed === this.headed) return { headed: this.headed, restarted: false };
+    await this._spawn();
+    if (url && /^https?:/i.test(url)) await this.navigate(url, { allow_internal: true }).catch(() => {});
+    return { headed: this.headed, restarted: true, url: this.current?.url ?? null };
+  }
+
+  // Refuse to read or act on a page that isn't on the allowlist.
+  _guard(tab = this.current) {
+    if (this.connected && tab && !hostAllowed(tab.url, this.connected.allow)) throw notAllowedError(tab.url, this.connected.allow);
+  }
+
   // ---- tabs ---------------------------------------------------------------
 
   _visibleTabs() { return [...this.tabs.values()].filter((t) => !t.hidden).sort((a, b) => a.seq - b.seq); }
@@ -501,6 +690,13 @@ class BrowserSession {
       const s = { sessionId, timeoutMs: 10000 };
       await Promise.all(["Page.enable", "Runtime.enable", "Network.enable", "Log.enable"].map((m) => this._send(m, {}, s).catch(() => {})));
       if (waitingForDebugger) await this._send("Runtime.runIfWaitingForDebugger", {}, s).catch(() => {});
+      // Attached by hand (the user's browser), the page may have committed
+      // before Page.enable: read where it is, since no frameNavigated came.
+      else {
+        const tree = await this._send("Page.getFrameTree", {}, s).catch(() => null);
+        const u = tree?.frameTree?.frame?.url;
+        if (u && (!tab.url || tab.url === "about:blank")) tab.url = u;
+      }
     })();
     this._setups.add(setup);
     setup.finally(() => this._setups.delete(setup)).then(() => {
@@ -546,7 +742,10 @@ class BrowserSession {
   async _newTab() {
     this._creatingTab++;
     try {
-      const { targetId } = await this._send("Target.createTarget", { url: "about:blank" });
+      const first = this.connected && !this._visibleTabs().length;
+      const { targetId } = await this._send("Target.createTarget", { url: "about:blank", ...(first ? { newWindow: true } : {}) });
+      // No auto-attach in the user's browser (it would take in their tabs too).
+      if (this.connected) await this._send("Target.attachToTarget", { targetId, flatten: true });
       return await this._waitTab(targetId);
     } finally {
       this._creatingTab--;
@@ -560,10 +759,13 @@ class BrowserSession {
     return list[i - 1];
   }
 
+  // A tab's title, unless it is a page off the allowlist in the user's browser.
+  _title(t) { return this.connected && !hostAllowed(t?.url, this.connected.allow) ? "(not on the allowlist)" : t?.title ?? null; }
+
   tabList() {
     return {
       tabs: this._visibleTabs().map((t, i) => ({
-        tab: i + 1, url: t.url, title: t.title,
+        tab: i + 1, url: t.url, title: this._title(t),
         ...(t === this.current ? { current: true } : {}),
         ...(t.dialog ? { dialog: t.dialog.type } : {}),
       })),
@@ -632,6 +834,15 @@ class BrowserSession {
         return;
       }
       case "Target.targetDestroyed": return this._dropTab(params.targetId);
+      case "Target.targetCreated": {
+        // In the user's browser nothing attaches on its own: take in a popup
+        // only when one of Omni's tabs opened it.
+        const info = params.targetInfo || {};
+        if (this.connected && info.type === "page" && info.openerId && this.tabs.has(info.openerId) && !this.tabs.has(info.targetId)) {
+          this._send("Target.attachToTarget", { targetId: info.targetId, flatten: true }).catch(() => {});
+        }
+        return;
+      }
       case "Target.targetInfoChanged": {
         const t = this.tabs.get(params.targetInfo?.targetId);
         // The title only: this event can carry a URL that has not committed
@@ -789,6 +1000,9 @@ class BrowserSession {
     if (tab?.dialog && !DIALOG_SAFE.has(method)) {
       return Promise.reject(new Error(dialogNotice(tab, this._index(tab))));
     }
+    if (this.connected && tab && !CONNECTED_SAFE.has(method) && !hostAllowed(tab.url, this.connected.allow)) {
+      return Promise.reject(notAllowedError(tab.url, this.connected.allow));
+    }
     const id = ++this._id;
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => {
@@ -813,6 +1027,7 @@ class BrowserSession {
 
   async navigate(url, { allow_internal = false, waitUntil = "load", timeoutMs = 30000 } = {}) {
     await assertPublicUrl(url, { allowInternal: !!allow_internal });
+    if (this.connected && !hostAllowed(url, this.connected.allow)) throw notAllowedError(url, this.connected.allow);
     await this._spawn();
     const tab = this.current;
     const load = this._waitForLoad(waitUntil, timeoutMs);
@@ -832,6 +1047,9 @@ class BrowserSession {
     // A same-document navigation (only the #hash changed) fires no load event.
     if (nav && !nav.loaderId && !nav._dialogOpened) load.cancel();
     else await load.promise;
+    if (this.connected && !hostAllowed(tab.url, this.connected.allow)) {
+      throw new Error(`${url} led to ${tab.url}. ${notAllowedError(tab.url, this.connected.allow).message}`);
+    }
     if (!tab.dialog) {
       const title = await this._send("Runtime.evaluate", { expression: "document.title", returnByValue: true }, { timeoutMs: 10000 }).catch(() => null);
       tab.title = title?.result?.value ?? tab.title;
@@ -850,11 +1068,12 @@ class BrowserSession {
     // event, so wait until the tab shows the entry and has finished loading.
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline && !tab.dialog) {
+      if (this.connected && !hostAllowed(tab.url, this.connected.allow)) break;
       const st = await this.evaluate("({ href: location.href, ready: document.readyState, title: document.title })").catch(() => null);
       if (st && st.href === entry.url && st.ready === "complete") { tab.title = st.title; break; }
       await sleep(100);
     }
-    return { url: tab.url, title: tab.title };
+    return { url: tab.url, title: this._title(tab) };
   }
 
   // The page as role/name lines with refs for everything actionable.
@@ -1065,6 +1284,12 @@ class BrowserSession {
       const res = await this.evaluate(focusExpression({ ref, selector, clear: false }));
       if (!res || res.error) throw new Error(res?.error || "element not found");
     }
+    // Keys that type characters must not land in a password or card field
+    // focused some other way (a click, Tab).
+    if (chords.some((c) => chordEvents(c).some((e) => e.text && e.text !== "\r"))) {
+      const st = await this.evaluate(activeFieldExpression());
+      if (st?.error) throw new Error(st.error);
+    }
     for (let i = 0; i < times; i++) {
       for (const chord of chords) {
         for (const ev of chordEvents(chord)) {
@@ -1097,10 +1322,13 @@ class BrowserSession {
       return { waited_ms: Date.now() - start };
     }
     const timeout = Math.max(100, Math.min(60000, Number(timeoutMs) || 10000));
-    const tab = this.current;
+    let tab = this.current;
     const matchUrl = url ? urlMatcher(url) : null;
     const what = [selector && `selector ${selector}`, text && `text ${JSON.stringify(text)}`, url && `URL ${url}`, networkIdle && "network idle"].filter(Boolean).join(" and ");
     for (;;) {
+      // A popup the page opened meanwhile is followed (attaching to one in
+      // the user's own browser can take a moment after the click).
+      if (this.current && this.current !== tab && this.tabs.has(this.current.targetId)) tab = this.current;
       if (tab.dialog) return { done: false, waited_ms: Date.now() - start, stopped: "a dialog opened" };
       if (!this.tabs.has(tab.targetId)) throw new Error("the tab closed while waiting");
       let ok = true;
@@ -1191,6 +1419,7 @@ class BrowserSession {
   }
 
   async consoleLog({ limit = 30, level = "all", clear = false } = {}) {
+    this._guard();
     if (!this.isAlive()) return "No browser session yet: nothing has logged.";
     await this._settle();
     const tab = this.current;
@@ -1206,6 +1435,7 @@ class BrowserSession {
   }
 
   async networkLog({ limit = 30, filter = null, clear = false } = {}) {
+    this._guard();
     if (!this.isAlive()) return "No browser session yet: no requests.";
     await this._settle();
     const tab = this.current;
@@ -1225,17 +1455,31 @@ class BrowserSession {
   }
 
   async status() {
-    if (!this.isAlive()) return { alive: false };
+    const named = this.name !== "default" ? { session: this.name } : {};
+    if (!this.isAlive()) {
+      return { ...named, alive: false, ...(this.connected ? { connected: true, lost: true } : {}), ...(this.headed ? { headed: true } : {}) };
+    }
     const t = this.current;
     const downloads = [...this.downloads.values()].map((d) => ({ url: d.url, state: d.state, ...(d.path ? { path: path.relative(process.cwd(), d.path) } : {}) }));
+    const how = this.connected
+      ? { connected: true, browser: this.connected.product, allowed: this.connected.allow }
+      : { port: this.port, sandbox: !!this.mode?.sandbox, gpu: !!this.mode?.gpu, headed: !!this.mode?.headed };
     return {
-      alive: true, url: t?.url ?? null, title: t?.title ?? null, port: this.port, sandbox: !!this.mode?.sandbox, gpu: !!this.mode?.gpu,
+      ...named, alive: true, url: t?.url ?? null, title: this._title(t), ...how,
       tab: t ? this._index(t) : null, tabs: this._visibleTabs().length,
       ...(downloads.length ? { downloads } : {}),
     };
   }
 
   async close() {
+    if (this.connected) {
+      // The user's browser stays up and connected: only Omni's tabs close.
+      const ids = [...this.tabs.keys()];
+      if (this.isAlive()) for (const targetId of ids) await this._send("Target.closeTarget", { targetId }, { timeoutMs: 3000 }).catch(() => {});
+      this._failAll("closed");
+      this._resetTabs();
+      return { closed: true, tabs: ids.length, still_connected: this.isAlive() };
+    }
     await this._killBrowser();
     this.mode = null;
     this._failAll("closed");
@@ -1244,12 +1488,38 @@ class BrowserSession {
   }
 }
 
-// One session for the lifetime of the Omni process.
-const session = new BrowserSession();
-// Make sure we don't leak a Chrome process if Node exits mid-session.
+// Named sessions for the lifetime of the Omni process.
+const sessions = new Map(); // name -> BrowserSession
+
+// The session a call is for. A new name gets a browser of its own, up to
+// MAX_SESSIONS. Only the main conversation may use the user's own browser.
+function sessionFor(args, ctx) {
+  const raw = args?.session;
+  const name = raw === undefined || raw === null || raw === "" ? "default" : String(raw);
+  if (!SESSION_NAME.test(name)) throw new Error(`session must be a short name (letters, digits, - and _), not ${JSON.stringify(name)}`);
+  let s = sessions.get(name);
+  if (!s) {
+    // Forget closed ones before counting.
+    for (const [n, x] of sessions) if (n !== "default" && !x.isAlive() && !x.proc && !x.connected) sessions.delete(n);
+    if (sessions.size >= MAX_SESSIONS) {
+      throw new Error(`already ${sessions.size} browser sessions (${[...sessions.keys()].join(", ")}): reuse one, or browser_close one first`);
+    }
+    s = new BrowserSession(name);
+    sessions.set(name, s);
+  }
+  if (s.connected && ctx?.sessionKind && ctx.sessionKind !== "main") {
+    throw new Error("the default browser session is the user's own browser, which only the main conversation may use. Pass session: \"<a name>\" for a headless browser of your own");
+  }
+  return s;
+}
+
+// Make sure we don't leak a Chrome process if Node exits mid-session. The
+// user's own browser has no pid here, so it is never killed.
 const killOnExit = () => {
-  try { if (session.browserPid) process.kill(session.browserPid); } catch { /* */ }
-  try { session.proc?.kill(); } catch { /* */ }
+  for (const s of sessions.values()) {
+    try { if (s.browserPid) process.kill(s.browserPid); } catch { /* */ }
+    try { s.proc?.kill(); } catch { /* */ }
+  }
 };
 process.on("exit", killOnExit);
 process.on("SIGINT", killOnExit);
@@ -1258,9 +1528,11 @@ process.on("SIGINT", killOnExit);
 // waiting for an answer, a popup that was followed, a finished download.
 function withEvents(fn) {
   return async (args = {}, ctx = null) => {
+    args = args || {};
+    const session = sessionFor(args, ctx);
     let out;
     try {
-      out = await fn(args || {}, ctx);
+      out = await fn(args, ctx, session);
     } catch (e) {
       const ev = session.takeEvents();
       if (ev.length && !ev.every((x) => e.message.includes(x))) e.message += "\n" + ev.map((x) => `[browser] ${x}`).join("\n");
@@ -1279,25 +1551,61 @@ const target = {
   selector: { type: "string", description: "CSS selector, when there is no ref" },
 };
 const snapshotArg = { type: "boolean", description: "Return a fresh snapshot afterwards (default false)" };
+const sessionArg = { type: "string", description: "Named browser session (default \"default\"); each name is a separate browser, e.g. one per sub-agent" };
 const fn = (name, description, properties = {}, required) => ({
   type: "function",
-  function: { name, description, parameters: { type: "object", properties, ...(required ? { required } : {}) } },
+  function: { name, description, parameters: { type: "object", properties: { ...properties, session: sessionArg }, ...(required ? { required } : {}) } },
 });
 
 // ---------------------------------------------------------------------------
 // Omni extension contract
 // ---------------------------------------------------------------------------
 
+// What /browser drives (src/cli/browser-cmd.mjs): the user's controls, not
+// tools, so the model can't connect to the user's browser or show windows
+// through them.
+export const control = {
+  async list() {
+    const out = [];
+    for (const [name, s] of sessions) if (s.isAlive() || s.connected || name === "default") out.push({ name, ...await s.status() });
+    return out;
+  },
+  show(name, on = true) { return sessionFor({ session: name }, null).setHeaded(on); },
+  // interactive: only the REPL (or the RPC front end a person types into)
+  // passes it. Headless and scheduled runs have no way to.
+  async connect({ target, allow, interactive } = {}) {
+    if (interactive !== true || process.env.OMNI_SESSION_KIND === "subagent") throw new Error("only the user can connect their own browser, from the interactive prompt");
+    const list = [...new Set((allow || []).map(normalizeDomain))];
+    if (!list.length) throw new Error("no domains are allowed yet: add the sites Omni may use with /browser allow <domain>, then connect");
+    const wsUrl = await findDevtools(target);
+    return sessionFor({}, null).connect({ wsUrl, allow: list });
+  },
+  disconnect() { return sessions.get("default")?.disconnect() ?? { disconnected: false }; },
+  setAllowed(allow) { const list = [...new Set((allow || []).map(normalizeDomain))]; for (const s of sessions.values()) s.setAllowed(list); return list; },
+  async close(name) {
+    if (name === "all") {
+      const out = [];
+      for (const [n, s] of sessions) if (s.isAlive() || s.proc) { await s.close(); out.push(n); }
+      return { closed: out };
+    }
+    const s = sessions.get(name || "default");
+    return s ? s.close() : { closed: false };
+  },
+};
+
 export default {
   name: "browser-use",
+  control,
   tools: [
     fn("browser_navigate",
-      "Open a URL in a headless Chromium browser, wait for the page to load, and return its URL, title and a snapshot " +
+      "Open a URL in a Chromium browser (headless unless headed:true), wait for the page to load, and return its URL, title and a snapshot " +
       "(the page as role/name lines; links, buttons and fields tagged [ref=eN]). Act on those refs with browser_click, " +
       "browser_type, browser_select and browser_press. Use this for pages that need JavaScript to render (SPAs, dashboards, forms). " +
-      "For static text pages prefer web_fetch (faster, no browser spawn).",
+      "For static text pages prefer web_fetch (faster, no browser spawn). If the user connected their own browser (/browser connect), " +
+      "the default session is that browser: logged-in sites work, but only on the domains they allowed.",
       {
         url: { type: "string", description: "Full http(s) URL to open" },
+        headed: { type: "boolean", description: "Show the browser window so the user can watch (restarts a running headless browser; default false)" },
         allow_internal: { type: "boolean", description: "Allow loopback/localhost URLs (default false)" },
         timeout_ms: { type: "integer", description: "Per-call timeout in ms (default 30000)" },
         snapshot: { type: "boolean", description: "Include the page snapshot (default true; false returns only URL and title)" },
@@ -1434,7 +1742,7 @@ export default {
         ...target,
         paths: { type: "array", items: { type: "string" }, description: "Workspace file paths (required)" },
       }, ["paths"]),
-    fn("browser_evaluate", "Evaluate a JavaScript expression in the page and return the JSON-serializable result. Use for fine-grained DOM work the other tools can't express.", {
+    fn("browser_evaluate", "Evaluate a JavaScript expression in the page and return the JSON-serializable result. Use for fine-grained DOM work the other tools can't express. Off in the user's own browser.", {
       expression: { type: "string", description: "JavaScript expression (required)" },
       await_promise: { type: "boolean", description: "Await the expression if it returns a Promise (default false)" },
     }, ["expression"]),
@@ -1458,17 +1766,18 @@ export default {
         allow_internal: { type: "boolean", description: "Let goto() and tabs open loopback/localhost URLs (default false)" },
       }, ["script"]),
     fn("browser_status", "Return { alive, url, title, port, tab, tabs, downloads } for the current browser session."),
-    fn("browser_close", "Kill the headless browser and free the devtools port. The next browser_navigate will spawn a fresh one."),
+    fn("browser_close", "Close this session's browser and free its devtools port; the next browser_navigate starts a fresh one. In the user's own browser it closes only Omni's tabs."),
   ],
   impl: Object.fromEntries(Object.entries({
-    async browser_navigate(args) {
+    async browser_navigate(args, ctx, session) {
+      if (args.headed === true && !session.connected) session.headed = true;
       const nav = await session.navigate(args.url, { allow_internal: !!args.allow_internal, timeoutMs: args.timeout_ms || 30000 });
-      return withPage(nav, args.snapshot);
+      return withPage(session, nav, args.snapshot);
     },
-    async browser_snapshot(args) {
+    async browser_snapshot(args, ctx, session) {
       return session.snapshot({ ref: args.ref || null, selector: args.selector || null, interactiveOnly: !!args.interactive_only, maxChars: args.max_chars });
     },
-    async browser_screenshot(args, ctx) {
+    async browser_screenshot(args, ctx, session) {
       // Pixels only for a model that can see them (the agent says so in ctx).
       const forModel = ctx?.vision === true;
       const shot = await session.screenshot({ path: args.path, fullPage: !!args.full_page, ref: args.ref || null, selector: args.selector || null, forModel });
@@ -1486,37 +1795,39 @@ export default {
           "read_media_file can attach the saved PNG if a vision model is set up.",
       };
     },
-    async browser_get_text(args) { return session.getText({ selector: args.selector, maxChars: args.max_chars }); },
-    async browser_get_html(args) { return session.getHtml({ selector: args.selector, maxChars: args.max_chars }); },
-    async browser_extract(args) { return session.extract(args.selector); },
-    async browser_click(args) { return session.click({ ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot }); },
-    async browser_type(args) {
+    async browser_get_text(args, ctx, session) { return session.getText({ selector: args.selector, maxChars: args.max_chars }); },
+    async browser_get_html(args, ctx, session) { return session.getHtml({ selector: args.selector, maxChars: args.max_chars }); },
+    async browser_extract(args, ctx, session) { return session.extract(args.selector); },
+    async browser_click(args, ctx, session) { return session.click({ ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot }); },
+    async browser_type(args, ctx, session) {
       return session.type({ ref: args.ref || null, selector: args.selector || null, text: args.text, clear: args.clear !== false, submit: !!args.submit, snapshot: !!args.snapshot });
     },
-    async browser_select(args) { return session.select({ ref: args.ref || null, selector: args.selector || null, value: args.value }); },
-    async browser_press(args) {
+    async browser_select(args, ctx, session) { return session.select({ ref: args.ref || null, selector: args.selector || null, value: args.value }); },
+    async browser_press(args, ctx, session) {
       return session.press({ keys: args.keys ?? args.key, ref: args.ref || null, selector: args.selector || null, repeat: args.repeat, snapshot: !!args.snapshot });
     },
-    async browser_scroll(args) {
+    async browser_scroll(args, ctx, session) {
       return session.scroll({ direction: args.direction || null, amount: args.amount ?? null, ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot });
     },
-    async browser_hover(args) { return session.hover({ ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot }); },
-    async browser_wait(args) {
+    async browser_hover(args, ctx, session) { return session.hover({ ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot }); },
+    async browser_wait(args, ctx, session) {
       return session.wait({ selector: args.selector || null, text: args.text || null, url: args.url || null, networkIdle: !!args.network_idle, gone: !!args.gone, ms: args.ms ?? null, timeoutMs: args.timeout_ms });
     },
-    async browser_back(args) { return withPage(await session.history(-1), args.snapshot); },
-    async browser_forward(args) { return withPage(await session.history(1), args.snapshot); },
-    async browser_tabs(args) { return session.tabsAction({ action: args.action || "list", tab: args.tab, url: args.url, allow_internal: !!args.allow_internal }); },
-    async browser_dialog(args) { return session.dialog({ accept: args.accept, text: args.text }); },
-    async browser_console(args) { return session.consoleLog({ limit: args.limit, level: args.level, clear: !!args.clear }); },
-    async browser_network(args) { return session.networkLog({ limit: args.limit, filter: args.filter, clear: !!args.clear }); },
-    async browser_upload(args) { return session.upload({ ref: args.ref || null, selector: args.selector || null, paths: args.paths ?? args.path }); },
-    async browser_evaluate(args) { return session.evaluate(args.expression, { awaitPromise: !!args.await_promise }); },
-    async browser_run(args, ctx) {
+    async browser_back(args, ctx, session) { return withPage(session, await session.history(-1), args.snapshot); },
+    async browser_forward(args, ctx, session) { return withPage(session, await session.history(1), args.snapshot); },
+    async browser_tabs(args, ctx, session) { return session.tabsAction({ action: args.action || "list", tab: args.tab, url: args.url, allow_internal: !!args.allow_internal }); },
+    async browser_dialog(args, ctx, session) { return session.dialog({ accept: args.accept, text: args.text }); },
+    async browser_console(args, ctx, session) { return session.consoleLog({ limit: args.limit, level: args.level, clear: !!args.clear }); },
+    async browser_network(args, ctx, session) { return session.networkLog({ limit: args.limit, filter: args.filter, clear: !!args.clear }); },
+    async browser_upload(args, ctx, session) { return session.upload({ ref: args.ref || null, selector: args.selector || null, paths: args.paths ?? args.path }); },
+    async browser_evaluate(args, ctx, session) {
+      if (session.connected) throw new Error(EVAL_OFF);
+      return session.evaluate(args.expression, { awaitPromise: !!args.await_promise }); },
+    async browser_run(args, ctx, session) {
       const vision = ctx?.vision === true;
       const shots = [];
       const timeoutMs = Math.max(1000, Math.min(300000, Number(args.timeout_ms) || 60000));
-      const res = await runSandboxed(args.script, { helpers: scriptHelpers({ allowInternal: !!args.allow_internal, vision, shots }), timeoutMs });
+      const res = await runSandboxed(args.script, { helpers: scriptHelpers(session, { allowInternal: !!args.allow_internal, vision, shots }), timeoutMs });
       const out = { result: res.result, calls: res.calls, ms: res.ms };
       if (res.logs.length) out.logs = res.logs;
       if (shots.length) {
@@ -1528,15 +1839,22 @@ export default {
       }
       return out;
     },
-    async browser_status() { return session.status(); },
-    async browser_close() { return session.close(); },
+    async browser_status(args, ctx, session) {
+      const st = await session.status();
+      const others = [...sessions.keys()].filter((n) => n !== session.name && (sessions.get(n).isAlive() || sessions.get(n).connected));
+      return others.length ? { ...st, other_sessions: others } : st;
+    },
+    async browser_close(args, ctx, session) { return session.close(); },
   }).map(([name, f]) => [name, withEvents(f)])),
 };
+
+const EVAL_OFF = "browser_evaluate (and eval() in browser_run) is off in the user's own browser: JavaScript in a logged-in page could send their data anywhere. " +
+  "Read the page with browser_snapshot, browser_get_text or browser_extract instead.";
 
 // The helpers a browser_run script can call. Arguments and results cross
 // the sandbox as JSON (src/core/script-sandbox.mjs); a target is a ref
 // ("e12") or a CSS selector, or { ref } / { selector }.
-function scriptHelpers({ allowInternal, vision, shots }) {
+function scriptHelpers(session, { allowInternal, vision, shots }) {
   const tgt = (t) => {
     if (t && typeof t === "object") return { ref: t.ref || null, selector: t.selector || null };
     const v = String(t ?? "").trim();
@@ -1566,8 +1884,8 @@ function scriptHelpers({ allowInternal, vision, shots }) {
     text: (sel) => session.getText({ selector: sel || undefined }),
     html: (sel) => session.getHtml({ selector: sel || undefined }),
     extract: (sel) => session.extract(sel),
-    eval: (expr) => session.evaluate(String(expr ?? "")),
-    evaluate: (expr) => session.evaluate(String(expr ?? "")),
+    eval: (expr) => { if (session.connected) throw new Error(EVAL_OFF); return session.evaluate(String(expr ?? "")); },
+    evaluate: (expr) => { if (session.connected) throw new Error(EVAL_OFF); return session.evaluate(String(expr ?? "")); },
     shot: async (o) => {
       o = opts(o);
       const t = o.ref || o.selector ? tgt(o.ref || o.selector) : {};
@@ -1589,7 +1907,7 @@ function scriptHelpers({ allowInternal, vision, shots }) {
 
 // A navigation's result with the page snapshot, unless snapshot:false or a
 // dialog is holding the page.
-async function withPage(nav, snapshot) {
+async function withPage(session, nav, snapshot) {
   if (snapshot === false || session.current?.dialog || nav.download) return nav;
   try {
     return { ...nav, snapshot: await session.snapshot({ maxChars: 6000 }) };

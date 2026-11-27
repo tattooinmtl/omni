@@ -823,7 +823,26 @@ brain's own config.
   `goto`, `snap`, `click`, `type`, `wait`, `text`, `shot`, … that returns a
   result. It runs in a sandbox with no `require`, `import`, file system or
   network of its own, and stops at its time limit (Node 22.8+).
-  `/browser` gives manual control.
+  Every tool takes `session: "<name>"`: each name is a browser of its own
+  (own tabs and cookies, up to 4), so sub-agents don't share a tab. The
+  browser is headless unless you want to watch: `headed: true` on
+  `browser_navigate`, or `/browser show` (and `/browser hide`).
+- **Your own browser:** `/browser connect` attaches Omni to your Edge or
+  Chrome, so sites you are logged in to work. Only you can do it, from the
+  prompt: there is no tool for it, and headless and scheduled runs can't.
+  First allow the sites, `/browser allow github.com mail.example.com` (kept
+  in settings, subdomains included; `/browser disallow` removes one). Omni
+  then opens a window of its own and works only there and in popups from
+  it, never in your tabs, and only on allowed sites: a page off the list,
+  also one a click or redirect led to, can't be read or acted on.
+  `browser_evaluate` is off there, sub-agents can't use it, and Omni never
+  closes your browser (`/browser disconnect` lets go). Password and card
+  fields stay yours everywhere. To start a browser Omni can connect to:
+  `msedge --remote-debugging-port=9222 --user-data-dir=<a folder for it>`
+  and `/browser connect 9222` (log in to your sites in that profile once),
+  or in Chrome 144+ turn remote debugging on at
+  `chrome://inspect/#remote-debugging` and run `/browser connect`.
+  `/browser` alone lists the sessions; `/browser close [name|all]` closes them.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)
