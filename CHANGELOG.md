@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.22 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/computer-use-c1 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#84](https://github.com/tattooinmtl/omni/pull/84) · 2f486ee · TattooAI/computer-use-c1 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Computer use, step one: Omni can see your Windows screen.** A new
   `extensions/computer-use.js` (in the default config) with two tools:
   - `computer_windows`: the open top-level windows, topmost first, with
