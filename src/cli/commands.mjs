@@ -1614,6 +1614,82 @@ export function recognizedSlashLength(ctx, line) {
   return slashKind(ctx, head) === "unknown" ? 0 : head.length;
 }
 
+// Every /name in the line that will actually run, as [start, end) spans, so
+// the box colours each skill blue and not only the first word. Mirrors
+// parseSlashLine: leading commands (with their arguments), then skills
+// anywhere after them; a template counts only as the first word.
+export function recognizedSlashRanges(ctx, line) {
+  const src = String(line || "");
+  const tokens = [...src.matchAll(/\S+/g)].map((m) => ({ t: m[0], at: m.index }));
+  const kindOf = (t) => (t.length > 1 && t.startsWith("/") ? slashKind(ctx, t) : "unknown");
+  const span = (k) => [tokens[k].at, tokens[k].at + tokens[k].t.length];
+  if (tokens.length && kindOf(tokens[0].t) === "template") return [span(0)];
+  const spans = [];
+  let i = 0;
+  while (i < tokens.length && kindOf(tokens[i].t) === "command") {
+    spans.push(span(i++));
+    while (i < tokens.length && kindOf(tokens[i].t) === "unknown") i++;
+  }
+  for (; i < tokens.length; i++) if (kindOf(tokens[i].t) === "skill") spans.push(span(i));
+  return spans;
+}
+
+// The "/word" being typed at the caret, or null. A "/" counts at the start of
+// the line or after a space, so "/python fix it /rev" opens the menu for
+// "/rev" too, as many times as you like. `prefix` is the part before the
+// caret, which is what the menu filters on. A path ("/src/app.js") is not a
+// name, so it never opens the menu.
+export function slashTokenAt(line, cursor) {
+  const s = String(line || "");
+  const cur = Math.max(0, Math.min(s.length, cursor == null ? s.length : cursor));
+  let start = cur;
+  while (start > 0 && !/\s/.test(s[start - 1])) start--;
+  if (s[start] !== "/") return null;
+  let end = cur;
+  while (end < s.length && !/\s/.test(s[end])) end++;
+  const word = s.slice(start, end);
+  if (word.indexOf("/", 1) !== -1) return null;
+  return { start, end, word, prefix: s.slice(start + 1, cur) };
+}
+
+// Rows for the live "/" menu at the caret. The first word offers commands,
+// templates and skills. Later words offer skills, plus commands while every
+// /name before them is a command too (that is how "/clear /model x" chains).
+export function slashMenuRows(ctx, line, cursor) {
+  const tok = slashTokenAt(line, cursor);
+  if (!tok) return [];
+  const prefix = tok.prefix.toLowerCase();
+  const before = String(line || "").slice(0, tok.start);
+  const first = !before.trim();
+  const kindOf = (t) => (t.length > 1 && t.startsWith("/") ? slashKind(ctx, t) : "unknown");
+  const named = before.split(/\s+/).filter((t) => kindOf(t) !== "unknown");
+  const offerCommands = first || (named.length > 0 && named.every((t) => kindOf(t) === "command") && kindOf(before.trim().split(/\s+/)[0]) === "command");
+  const taken = new Set(commandNames().map((n) => n.toLowerCase()));
+  const cmds = offerCommands ? commandMenu(prefix).map((r) => ({ usage: r.usage, summary: r.summary })) : [];
+  const templates = first
+    ? [...(ctx?.templates?.values() || [])]
+      .filter((t) => t.command.slice(1).startsWith(prefix) && !taken.has(t.command))
+      .map((t) => ({ usage: t.command + (t.argumentHint ? " " + t.argumentHint : ""), summary: `${t.description || "template"} (${t.scope} template)` }))
+    : [];
+  for (const t of templates) taken.add(t.usage.split(" ")[0]);
+  const skills = (ctx?.slashSkills || ctx?.skills || [])
+    .filter((s) => s.command.slice(1).toLowerCase().startsWith(prefix))
+    .filter((s) => !taken.has(s.command.toLowerCase()))
+    .map((s) => ({ usage: s.command, summary: s.description || "skill" }));
+  return [...cmds, ...templates, ...skills];
+}
+
+// Put the picked menu row's name in place of the "/word" at the caret and
+// leave the caret after it. Returns { line, cursor }. Only the word changes:
+// "fix it /py" + /python → "fix it /python ".
+export function acceptSlashRow(line, token, name, { space = true } = {}) {
+  const s = String(line || "");
+  const rest = s.slice(token.end);
+  const gap = space && !/^\s/.test(rest) ? " " : "";
+  const head = s.slice(0, token.start) + name + gap;
+  return { line: head + rest, cursor: head.length };
+}
+
 // Printed when a /skill runs, so it never looks like nothing happened.
 export function skillLoadedLine(skill) {
   const where = skill?.external ? " (from skill index)" : "";

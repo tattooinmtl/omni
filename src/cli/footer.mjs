@@ -91,7 +91,7 @@ export function layoutFooter({
   statusText = "",
   menuLines = [],
   note = "",
-  highlight = 0,                         // leading chars of `line` to draw blue (a recognised /command)
+  highlight = 0,                         // what of `line` to draw blue (recognised /names): a count of leading chars, or [start, end) spans
   maxRows = BOX_MAX_ROWS,
   queue = [],                            // queued prompts (display text), oldest first
   queueSelected = -1,                    // the one being edited, or -1
@@ -103,6 +103,10 @@ export function layoutFooter({
   const lineChars = Array.from(String(line));
   const chars = [...promptChars, ...lineChars];
   const caret = promptChars.length + Array.from(String(line).slice(0, Math.max(0, cursor))).length;
+  // Spans are string offsets; rows are drawn per code point.
+  const cp = (n) => Array.from(String(line).slice(0, n)).length;
+  const spans = Array.isArray(highlight) ? highlight.map(([a, b]) => [cp(a), cp(b)]) : [[0, highlight || 0]];
+  const blue = (k) => spans.some(([a, b]) => k >= a && k < b);
 
   // Hard-wrap into rows of `inner` characters; make room for a caret sitting
   // just past a full last row.
@@ -126,7 +130,7 @@ export function layoutFooter({
       const isCaret = r === caretRow && j === caretCol;
       if (isCaret) text += `\x1b[7m${ch}\x1b[27m`;
       else if (idx < promptChars.length) text += c.cyan(ch);
-      else if (idx < promptChars.length + highlight) text += c.blue(c.bold(ch));
+      else if (blue(idx - promptChars.length)) text += c.blue(c.bold(ch));
       else text += ch;
     }
     return c.gray("│") + " " + text + " " + c.gray("│");

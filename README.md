@@ -366,8 +366,9 @@ work from outside Omni too.
 
 ## Commands
 
-Tab completes `/commands`, typing `/` opens a live menu, and `/help` lists
-everything with usage strings. Unknown commands get a nearest-match suggestion.
+Typing `/` opens a live menu, at the start of the prompt or after any space,
+as many times as you like; Tab puts the highlighted name in and adds a space,
+Enter puts it in and sends. `/help` lists everything with usage strings. Unknown commands get a nearest-match suggestion.
 
 | Category | Commands |
 |---|---|
@@ -390,12 +391,15 @@ box stays usable while the agent works:
   ✎ (edit) and 🗑 (delete) you can click.
 - **↑ on an empty box** opens the newest queued prompt for editing; ↑/↓ walk
   the queue (edits are kept), ↓ past the newest gives your draft back.
-  **Enter** sends the open prompt right now (into the running turn, like
-  `/btw`), **Esc** stops editing. Clicks are captured only while something is
+  **Enter** sends the open prompt right now: the running turn reads it as
+  your latest message, and a `/skill` in it is loaded there and then.
+  Commands that change state (`/model`, `/clear`) still wait. **Esc** stops
+  editing. Clicks are captured only while something is
   queued; Shift+drag still selects text, `OMNI_MOUSE=0` turns clicks off.
 - **Several /commands and /skills in one prompt:** `/brainstorming /python
-  make a game` loads both skills for one turn; leading commands
-  (`/clear /model x …`) run in order first.
+  make a game` loads both skills for one turn, and so does `make a game with
+  /brainstorming and /python`; leading commands (`/clear /model x …`) run in
+  order first. Each recognised name shows in blue.
 - **`/btw <note>` while the agent works** goes straight into the running turn.
   The agent reads it at its next step and adjusts without stopping. `/help`,
   `/status`, `/cost`, `/usage` and `/version` also run right away; other commands wait
@@ -470,7 +474,8 @@ secrets file such as `.env` never is; a refused one shows as
 
 ### Compaction
 
-When the conversation nears the model's context window (or on `/compact`),
+When the conversation nears the model's context window, or passes 160k
+tokens on a model with a bigger window (or on `/compact`),
 the older turns are replaced by a summary a model writes under fixed
 headings: goal, decisions, files touched, what's done, what's open, errors.
 `/compact now` keeps only the last two messages; anything after it is a
@@ -482,7 +487,8 @@ memory first. In `agent/settings.json`:
 ```
 
 runs the summary on a cheaper model so it doesn't spend the main one's rate
-limit. Local models use the plain tool list unless you set a model here, and
+limit. `"compactAtTokens": 300000` under `compaction` moves the 160k mark
+(it never goes past 85% of the window). Local models use the plain tool list unless you set a model here, and
 `"mode": "mechanical"` always does.
 
 Before that, once the conversation passes 48k tokens (or half the window on a
