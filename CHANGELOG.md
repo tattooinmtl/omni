@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.23 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/computer-use-c2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#85](https://github.com/tattooinmtl/omni/pull/85) · 5bb2bc2 · TattooAI/computer-use-c2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`computer_ui_tree` reads a window as its UI controls (C2).** One line per
   control from Windows UI Automation: type, "name", #automation-id, value,
   and state (checked, unchecked, mixed, expanded, collapsed, selected,
