@@ -70,6 +70,9 @@ export const READ_ONLY_TOOLS = new Set([
   "find_skill", "invoke_skill", "ask_user", "agent_status", "process_status",
   "read_media_file", "read_video_file", "self_review", "project_todo", "spawn_agent",
   "browser_navigate", "browser_snapshot", "browser_get_text", "browser_get_html", "browser_screenshot", "browser_extract", "browser_status",
+  // Looking around a page without changing anything on it (navigating is
+  // already reading, above). browser_tabs is read-only only for "list".
+  "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_forward", "browser_console", "browser_network",
   "exit_plan_mode", "goal_complete", "load_tools",
 ]);
 
@@ -91,6 +94,7 @@ export function isReadOnlyCommand(command) {
 export function planModeAllows(name, args = {}) {
   if (READ_ONLY_TOOLS.has(name)) return true;
   if (name === "deps") return true; // detect / list / outdated / audit only read
+  if (name === "browser_tabs") return !args?.action || args.action === "list";
   if (name === "run_shell") return isReadOnlyCommand(args?.command) && !args?.allow_unsafe;
   return false;
 }

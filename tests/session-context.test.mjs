@@ -125,11 +125,11 @@ await ok("browser_screenshot's default path is one read_media_file accepts", asy
   );
 });
 
-await ok("browser_screenshot's description points at read_media_file, not read_file", () => {
-  const src = fs.readFileSync(path.join(root, "extensions", "browser-use.js"), "utf8");
-  const i = src.indexOf('name: "browser_screenshot"');
-  assert.ok(i > 0, "browser_screenshot tool definition not found");
-  const desc = src.slice(i, i + 900);
+await ok("browser_screenshot's description points at read_media_file, not read_file", async () => {
+  const ext = (await import(pathToFileURL(path.join(root, "extensions", "browser-use.js")).href)).default;
+  const def = ext.tools.find((t) => t.function?.name === "browser_screenshot");
+  assert.ok(def, "browser_screenshot tool definition not found");
+  const desc = def.function.description;
   assert.ok(desc.includes("read_media_file"), "description must name read_media_file");
   assert.ok(
     /do NOT use read_file/i.test(desc),

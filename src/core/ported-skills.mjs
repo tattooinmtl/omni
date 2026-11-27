@@ -26,7 +26,6 @@ const MAP = [
   ["web_extract", "`web_fetch`", false],
   ["vision_analyze", "`read_media_file`", false],
   ["browser_vision", "`browser_screenshot`", false],
-  ["browser_console", "`browser_evaluate`", false],
   ["execute_code", "`write_file` a script, then run it with `run_shell`", false],
   ["skill_view", "`invoke_skill`", false],
   ["skills_list", "`find_skill`", false],

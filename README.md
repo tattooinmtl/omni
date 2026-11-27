@@ -811,6 +811,14 @@ brain's own config.
   the page's headings, links, buttons and fields with refs (`[ref=e7]`), and
   the action tools take a ref instead of a CSS selector, also inside shadow
   DOM and same-origin iframes. Password and card fields are refused.
+  `browser_press` (keys and chords), `browser_scroll`, `browser_hover`,
+  `browser_wait`, `browser_back`/`browser_forward`, `browser_tabs` (popups
+  are followed), `browser_upload` (workspace files only), and
+  `browser_console`/`browser_network` for debugging your own app. An alert,
+  confirm or prompt is reported and waits for `browser_dialog`; it is never
+  accepted on its own. Downloads go to `downloads/` in the workspace. A
+  vision model sees `browser_screenshot` directly (viewport, full page or one
+  element, at most 1568 px), and only the last 3 screenshots stay in context.
   `/browser` gives manual control.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
