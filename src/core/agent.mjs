@@ -23,6 +23,7 @@ import crypto from "node:crypto";
 import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider.mjs";
 import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { syntheticUser, recordFor } from "./synthetic.mjs";
+import { evictOldImages, imageLabel, toolResultContent } from "./image-context.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
@@ -548,7 +549,7 @@ export function systemPrompt() {
     `Omni's live settings file (providers, models, API keys): ${SETTINGS_PATH}. This is the only settings.json Omni reads. Another settings.json on disk (agent/settings.json in a checkout of Omni, another app's folder) is not it, even when the names match. Change providers and models with Omni's own commands (/addprovider, /model, the settings_* tools) rather than hand-editing.`,
     "",
     "Use the provided tools to inspect projects, read files, patch code, manage project todos, inspect git, manage dev processes, run shell commands, and run tests.",
-    "You can build complete applications end to end: scaffold with run_shell (raise timeout_ms — create-* and installs exceed the 120s default), write the code, install dependencies, start the dev server with start_process, then actually check your work — web_fetch or http_request with allow_internal:true to hit your own endpoints, browser_navigate with allow_internal:true plus browser_screenshot and read_media_file to see the page render.",
+    "You can build complete applications end to end: scaffold with run_shell (raise timeout_ms — create-* and installs exceed the 120s default), write the code, install dependencies, start the dev server with start_process, then actually check your work — web_fetch or http_request with allow_internal:true to hit your own endpoints, browser_navigate with allow_internal:true, then browser_snapshot to read the page and browser_screenshot to see it render (a vision model gets the image attached).",
     "Prefer making concrete changes with tools over describing them.",
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
@@ -1157,7 +1158,9 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         // Lean mode: rewrite old tool results into hash-stubs before the
         // provider sees them (in-memory `messages` is untouched — the full
         // body is still on disk for /expand). Classic mode is a no-op.
-        const shaped = isLean ? shrinkOldToolResults(messages, session) : messages;
+        // Only the newest few screenshots are sent; older ones become a note
+        // (image-context.mjs). The history itself keeps them.
+        const shaped = evictOldImages(isLean ? shrinkOldToolResults(messages, session) : messages);
         const quiet = !hasNewImages(messages);
         const visible = hopModel.vision === true ? shaped : stripImageParts(shaped, hopModel.key, { quiet });
         const providerMessages = hopTextTools
@@ -1459,7 +1462,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             if (hopDeferred.some((t) => t.function?.name === name)) loadedTools.add(name);
             const run = name === LOAD_TOOLS
               ? async () => loadTools(args, hopDeferred, loadedTools)
-              : () => runTool(name, args, { permissions, confirmTool, signal });
+              : () => runTool(name, args, { permissions, confirmTool, signal, vision: sendsImages });
             if (lockKey) {
               const prev = fileLocks.get(lockKey) || Promise.resolve();
               let release;
@@ -1522,7 +1525,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         name,
         // Keys in a tool result (a .env the agent read, a page that printed
         // one) are redacted before the model sees them; see redactForModel.
-        content: redactForModel(typeof result === "string" ? result : JSON.stringify(result)),
+        // Image results leave their base64 out: the pixels follow as an image message.
+        content: redactForModel(toolResultContent(result)),
       });
       // Vision results: a tool returned {_omni_image, mime, base64, detail,
       // text} (one image) or {_omni_images: [{mime, base64}, ...], detail}
@@ -1547,9 +1551,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         }
       }
       if (imageParts.length) {
-        const label = imageParts.length === 1
-          ? `[image attached from ${name} — look at it and answer from what you see]`
-          : `[${imageParts.length} frames attached from ${name} — look at them in order and describe what happens]`;
+        // The label names the tool, so evictOldImages can find screenshots again.
+        const label = imageLabel(name, imageParts.length);
         const visionMsg = syntheticUser([{ type: "text", text: label }, ...imageParts]);
         visionMessages.push(visionMsg);
       }

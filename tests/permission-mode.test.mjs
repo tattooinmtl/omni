@@ -110,6 +110,19 @@ await ok("default mode is unchanged: ask asks", async () => {
   assert.ok(asked);
 });
 
+await ok("plan mode: browser tools that only look run; ones that act on the page don't", () => {
+  for (const t of ["browser_snapshot", "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_forward", "browser_console", "browser_network", "browser_screenshot"]) {
+    assert.ok(pm.planModeAllows(t, {}), t);
+  }
+  for (const t of ["browser_click", "browser_type", "browser_press", "browser_select", "browser_upload", "browser_dialog", "browser_evaluate"]) {
+    assert.ok(!pm.planModeAllows(t, {}), t);
+  }
+  assert.ok(pm.planModeAllows("browser_tabs", {}));
+  assert.ok(pm.planModeAllows("browser_tabs", { action: "list" }));
+  assert.ok(!pm.planModeAllows("browser_tabs", { action: "close", tab: 2 }));
+  assert.ok(!pm.planModeAllows("browser_tabs", { action: "open", url: "https://example.com" }));
+});
+
 await ok("isMutatingCall: edits, writes and non-read-only shell; not reads or planning tools", () => {
   assert.ok(pm.isMutatingCall("write_file", {}));
   assert.ok(pm.isMutatingCall("run_shell", { command: "npm i" }));

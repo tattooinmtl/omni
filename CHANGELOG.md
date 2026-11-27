@@ -8,6 +8,67 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.19 — 2026-11-27
+
+- **Shipped:** this PR · TattooAI/serene-newton-c0fea4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **The browser can do what a person does on a page.** New tools, each taking
+  a `ref` from `browser_snapshot` or a CSS selector where they act on an
+  element:
+  - `browser_press`: keys and chords (`Enter`, `Escape`, `Control+A`,
+    `Shift+Tab`, `ArrowDown ArrowDown Enter`), with `repeat`.
+  - `browser_scroll`: the page or an element's scroll container by direction
+    and amount, or an element into view. It says where it ended up.
+  - `browser_hover`, for menus and tooltips that open on hover.
+  - `browser_wait`: for a visible selector, some text, a URL (substring,
+    glob or /regex/), or network idle, or for one to disappear, with a
+    timeout that says what it saw.
+  - `browser_back` / `browser_forward`, which also work for back/forward-cache
+    and same-document history entries that fire no load event.
+- **Tabs and popups.** `browser_tabs` lists, opens, switches and closes
+  tabs. A popup or a `target=_blank` link is followed on its own, and the
+  next result says so. The browser now runs on one browser-level devtools
+  connection with a session per tab, so new tabs are seen from their first
+  line of script.
+- **Dialogs are never accepted on their own.** An alert, confirm, prompt or
+  "leave this page?" dialog is reported in the next tool result, with its
+  text, until `browser_dialog` answers it (`accept`, and `text` for a
+  prompt). Calls that would hang on the paused page are refused with that
+  message, and an alert while a page loads no longer stalls
+  `browser_navigate` for 30 seconds.
+- **`browser_console` and `browser_network`** list the current page's
+  console (logs, warnings, uncaught exceptions, failed loads) and requests
+  (status, type, time), errors and failures first, for debugging your own
+  web app. They cover the page since it last loaded; an SPA's route changes
+  keep them.
+- **Uploads and downloads stay in the workspace.** `browser_upload` puts
+  workspace files into an `<input type=file>` and refuses anything outside
+  it. Downloads land only in `downloads/` in the workspace, under the name
+  the site suggests (never overwriting), and each one is reported. A link
+  that downloads a file no longer makes `browser_navigate` fail.
+- **A vision model sees the screenshot.** `browser_screenshot` attaches the
+  image to the result for a model marked `vision: true`, scaled to at most
+  1568 px on its longest side, and adds `full_page` and one-element (`ref`
+  or `selector`) capture. A text-only model still gets the saved file, and
+  is told to read the page with `browser_snapshot`.
+- **Only the last 3 screenshots stay in context.** Older ones are replaced
+  by `[screenshot removed to save context]` in what is sent (the history
+  keeps them). The helper is `evictOldImages` in
+  `src/core/image-context.mjs`, ready for computer-use screenshots.
+- **Image results no longer cost their pixels twice.** A tool's image used
+  to go out once as the image and again as base64 text inside its tool
+  result. The tool result now leaves the base64 out, in live turns and in
+  resumed sessions, for `read_media_file` and `read_video_file` too.
+- Plan mode lets through the browser tools that only look (`browser_scroll`,
+  `browser_hover`, `browser_wait`, `browser_back`, `browser_forward`,
+  `browser_console`, `browser_network`, and `browser_tabs` for `list`).
+- Tests: `tests/browser-actions.test.mjs` drives a real Edge/Chrome against
+  a local fixture for every new action, dialogs (during load too), popups
+  and tabs, console and network ordering, contained uploads, downloads,
+  and screenshot size, scaling and element pixels.
+  `tests/image-context.test.mjs` pins eviction, base64-free tool results
+  and `ctx.vision` through `runTurn`. `tests/permission-mode.test.mjs`
+  pins the plan-mode list.
+
 ## 3.6.18 — 2026-11-27
 
 - **Shipped:** [#80](https://github.com/tattooinmtl/omni/pull/80) · ae792ae · TattooAI/eloquent-wescoff-cb208a · session b76a78b4-4893-4d62-b387-7cd1b55afc4d

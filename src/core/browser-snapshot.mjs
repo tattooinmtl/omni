@@ -40,6 +40,26 @@ export function selectExpression({ ref = null, selector = null, value = "" } = {
   return withTarget(selectInPage, { ref, selector, value: String(value ?? "") });
 }
 
+// Scroll the page, or the element's scroll container, by dx/dy CSS pixels;
+// with to:true, scroll the element into view instead. dx/dy null means 80%
+// of the container's size in the direction given by dirX/dirY (-1, 0, 1).
+export function scrollExpression({ ref = null, selector = null, dirX = 0, dirY = 0, amount = null, to = false } = {}) {
+  return withTarget(scrollInPage, { ref, selector, dirX, dirY, amount, to });
+}
+
+// The <input type=file> a ref or selector points at (the input itself, a
+// label for it, or an element holding one). Evaluated without returnByValue,
+// so the caller gets the element's objectId; throws when there is none.
+export function fileInputExpression({ ref = null, selector = null } = {}) {
+  return withTarget(fileInputInPage, { ref, selector });
+}
+
+// One check for browser_wait: is the selector (visible) / the text on the
+// page? Returns { found, url }.
+export function probeExpression({ selector = null, text = null } = {}) {
+  return `(${probeInPage.toString()})(${JSON.stringify({ selector, text })})`;
+}
+
 // ---------------------------------------------------------------------------
 // Everything below runs inside the page, via Function.prototype.toString().
 // Each function must be self-contained: no closures over module scope.
@@ -327,7 +347,12 @@ function locateInPage(opts) {
     win = win.parent;
   }
   const label = (el.getAttribute("aria-label") || el.innerText || el.value || el.tagName).toString().replace(/\s+/g, " ").trim().slice(0, 80);
-  return { x, y, width: r.width, height: r.height, label, disabled: !!el.disabled };
+  // left/top: the box in top-level viewport coordinates; scrollX/scrollY of
+  // the top window turn that into page coordinates for a clipped screenshot.
+  return {
+    x, y, width: r.width, height: r.height, label, disabled: !!el.disabled,
+    left: x - r.width / 2, top: y - r.height / 2, scrollX: window.scrollX, scrollY: window.scrollY,
+  };
 }
 
 function focusInPage(opts) {
@@ -372,4 +397,80 @@ function selectInPage(opts) {
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
   return { selected: opt.label || opt.text, value: opt.value };
+}
+
+function scrollInPage(opts) {
+  let el = null;
+  if (opts.ref || opts.selector) {
+    const found = findTarget(opts);
+    if (found.error) return found;
+    el = found.el;
+  }
+  if (el && opts.to) {
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    return { scrolled: "to", top: Math.round(r.top), left: Math.round(r.left), pageY: Math.round(window.scrollY), pageX: Math.round(window.scrollX) };
+  }
+  // The element's own scroll container: itself, or the nearest ancestor that
+  // scrolls in the asked direction. None: the page.
+  const scrolls = (n) => {
+    if (!n || n.nodeType !== 1) return false;
+    const cs = n.ownerDocument.defaultView.getComputedStyle(n);
+    const okY = opts.dirY && /(auto|scroll|overlay)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight;
+    const okX = opts.dirX && /(auto|scroll|overlay)/.test(cs.overflowX) && n.scrollWidth > n.clientWidth;
+    return okY || okX;
+  };
+  let box = null;
+  for (let n = el; n; n = n.parentElement || n.getRootNode?.().host || null) {
+    if (n === n.ownerDocument.documentElement || n === n.ownerDocument.body) break;
+    if (scrolls(n)) { box = n; break; }
+  }
+  const doc = el ? el.ownerDocument : document;
+  const target = box || doc.scrollingElement || doc.documentElement;
+  const w = box ? box.clientWidth : doc.defaultView.innerWidth;
+  const h = box ? box.clientHeight : doc.defaultView.innerHeight;
+  const amt = Number(opts.amount);
+  const dx = opts.dirX * (amt > 0 ? amt : Math.round(w * 0.8));
+  const dy = opts.dirY * (amt > 0 ? amt : Math.round(h * 0.8));
+  const beforeX = target.scrollLeft, beforeY = target.scrollTop;
+  target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+  const maxX = target.scrollWidth - (box ? box.clientWidth : doc.defaultView.innerWidth);
+  const maxY = target.scrollHeight - (box ? box.clientHeight : doc.defaultView.innerHeight);
+  return {
+    scrolled: box ? "element" : "page",
+    x: Math.round(target.scrollLeft), y: Math.round(target.scrollTop),
+    maxX: Math.max(0, Math.round(maxX)), maxY: Math.max(0, Math.round(maxY)),
+    moved: target.scrollLeft !== beforeX || target.scrollTop !== beforeY,
+    atTop: target.scrollTop <= 0, atBottom: target.scrollTop >= maxY - 1,
+  };
+}
+
+function fileInputInPage(opts) {
+  const found = findTarget(opts);
+  if (found.error) throw new Error(found.error);
+  const el = found.el;
+  const isFile = (n) => n && n.tagName === "INPUT" && (n.type || "").toLowerCase() === "file";
+  if (isFile(el)) return el;
+  if (el.tagName === "LABEL" && isFile(el.control)) return el.control;
+  const inner = el.querySelector?.("input[type=file]") || el.shadowRoot?.querySelector("input[type=file]");
+  if (inner) return inner;
+  throw new Error("that element is not a file input (<input type=file>), and holds none");
+}
+
+function probeInPage(opts) {
+  let found = true;
+  if (opts.selector) {
+    const el = document.querySelector(opts.selector);
+    let shown = !!el;
+    if (el) {
+      if (typeof el.checkVisibility === "function") shown = el.checkVisibility({ checkVisibilityCSS: true });
+      if (shown) { const r = el.getBoundingClientRect(); shown = r.width > 0 || r.height > 0; }
+    }
+    found = found && shown;
+  }
+  if (opts.text) {
+    const body = document.body ? document.body.innerText : "";
+    found = found && body.includes(opts.text);
+  }
+  return { found, url: location.href, ready: document.readyState };
 }

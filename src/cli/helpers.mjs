@@ -1,6 +1,7 @@
 // Small shared CLI utilities — no state, no side effects beyond printing.
 
 import { syntheticUser, markFromRecord } from "../core/synthetic.mjs";
+import { toolResultContent } from "../core/image-context.mjs";
 import { infoLine, warnLine } from "../ui.mjs";
 import { providerKeyMissing, providerKeyEnvVars, SETTINGS_PATH, Session } from "../core/config.mjs";
 import { rankChunks } from "../core/bm25.mjs";
@@ -192,7 +193,7 @@ export function restoreSessionMessages(records, msgs) {
       msgs.push({
         role: "tool",
         tool_call_id: rec.tool_call_id,
-        content: typeof rec.result === "string" ? rec.result : JSON.stringify(rec.result),
+        content: toolResultContent(rec.result),
       });
     } else if (rec.type === "skill" && rec.skill) {
       const invocation = rec.arg
