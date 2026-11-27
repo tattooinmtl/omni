@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.20 — 2026-11-27
 
-- **Shipped:** this PR · TattooAI/browser-run-b4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#82](https://github.com/tattooinmtl/omni/pull/82) · cd1ac19 · TattooAI/browser-run-b4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`browser_run` does many browser steps in one call.** The model writes the
   body of an async function that calls helpers (`goto`, `snap`, `click`,
   `type`, `press`, `select`, `hover`, `scroll`, `wait`, `text`, `html`,
