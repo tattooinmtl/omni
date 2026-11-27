@@ -8,6 +8,44 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.18 — 2026-11-27
+
+- **Shipped:** this PR · TattooAI/eloquent-wescoff-cb208a · session b76a78b4-4893-4d62-b387-7cd1b55afc4d
+- **`web_fetch` returns readable Markdown.** It used to strip every tag with
+  regexes, so navigation, cookie banners and footers ran into the article,
+  and links, tables and code blocks were lost. A new zero-dependency
+  converter (`src/core/html-markdown.mjs`) finds the main content the way
+  reader modes do, then writes headings, absolute links, nested lists,
+  tables and fenced code with its language. `format: "text"` still gives the
+  whole page as plain lines. The result starts with the page's title and URL.
+- **Long pages keep their start and end.** A page over `max_chars` used to be
+  cut off with no way to read the rest. Now about three quarters comes from
+  the start and a quarter from the end, and a note gives the `start` offset
+  of the missing middle. `web_fetch` with `start` pages through it.
+- **Web results are cached.** A fetched page is kept for 15 minutes under
+  `<home>/cache/web/`, so paging, a sub-agent reading the same docs or a
+  second look costs no request. The same search within 10 minutes is
+  answered from memory. Identical calls made at the same time share one
+  request, and failures are never cached. PDFs and media URLs get a clear
+  message, and an empty JavaScript-only page says to use the browser.
+- **`browser_snapshot`: the page as a model can act on it.** One line per
+  heading, link, button, field and piece of text, indented by structure, with
+  every actionable element tagged `[ref=eN]` and its state (checked,
+  disabled, expanded, focused) and current value. It reaches into shadow
+  DOM and same-origin iframes. `browser_navigate` now returns a short
+  snapshot too (`snapshot: false` turns that off).
+- **Click, type and select by ref.** `browser_click` and `browser_type` take
+  a `ref` from the snapshot as well as a CSS selector, and work inside
+  shadow DOM and iframes. A stale ref says to take a new snapshot. Disabled
+  elements aren't clicked. `browser_type` has `clear`, `submit` (press
+  Enter) and `snapshot`. It refuses password and payment-card fields and
+  asks you to fill those. New `browser_select` picks a dropdown option by its
+  label or value. `browser_snapshot` is allowed in plan mode.
+- Tests: `web-fetch-markdown` (converter, main-content detection, budget,
+  paging, cache, request sharing, search memory, loopback guard) and
+  `browser-snapshot` (refs, shadow DOM, iframes, typing, select, refused
+  fields, stale refs, against a real Edge/Chrome; skips without one).
+
 ## 3.6.17 — 2026-11-27
 
 - **Shipped:** [#79](https://github.com/tattooinmtl/omni/pull/79) · c7200fa · TattooAI/omni-tower-upgrade-bug-14d181 · session 1810fb46-d750-4a82-b881-95778c3ef4d3

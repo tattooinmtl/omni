@@ -800,11 +800,17 @@ brain's own config.
   `dev_env_report` (about 85 toolchains probed in parallel, including
   broken-PATH detection), `where_is`
 - **Web (no API keys):** `web_search` (DuckDuckGo), `web_fetch`,
-  `youtube_transcript`, `http_request`
-- **Browser:** `browser_navigate`, `browser_click`, `browser_type`,
-  `browser_screenshot`, `browser_get_text`, `browser_extract`,
-  `browser_evaluate`, … drive a headless Edge/Chrome for JS-rendered pages,
-  with the GPU on when this PC has one.
+  `youtube_transcript`, `http_request`. `web_fetch` returns a page's main
+  content as Markdown (links, tables and code kept; menus, cookie banners and
+  footers dropped). A long page keeps its start and end, and `start` reads
+  the middle from a 15-minute cache.
+- **Browser:** `browser_navigate`, `browser_snapshot`, `browser_click`,
+  `browser_type`, `browser_select`, `browser_screenshot`, `browser_get_text`,
+  `browser_extract`, `browser_evaluate`, … drive a headless Edge/Chrome for
+  JS-rendered pages, with the GPU on when this PC has one. A snapshot lists
+  the page's headings, links, buttons and fields with refs (`[ref=e7]`), and
+  the action tools take a ref instead of a CSS selector, also inside shadow
+  DOM and same-origin iframes. Password and card fields are refused.
   `/browser` gives manual control.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
