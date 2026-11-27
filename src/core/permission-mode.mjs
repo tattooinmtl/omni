@@ -74,7 +74,7 @@ export const READ_ONLY_TOOLS = new Set([
   // already reading, above). browser_tabs is read-only only for "list".
   "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_forward", "browser_console", "browser_network",
   // Seeing the screen, once the user turned computer use on (/computer on).
-  "computer_windows", "computer_screenshot",
+  "computer_windows", "computer_screenshot", "computer_ui_tree",
   "exit_plan_mode", "goal_complete", "load_tools",
 ]);
 

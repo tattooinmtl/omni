@@ -1,12 +1,15 @@
-// C1: computer use sees the screen (extensions/computer-use.js and
-// src/local/desktop-host.cs).
+// C1 and C2: computer use sees the screen and reads windows as UI controls
+// (extensions/computer-use.js and src/local/desktop-host.cs).
 //
 // Off until the user turns it on, never for a sub-agent; computer_windows
 // lists a real window; computer_screenshot captures it (by title, app or
 // handle), one monitor or the whole screen, and the pixel mapping it reports
 // points at the window; apps on the deny list are hidden, refused and
-// blacked out. The window is a small red form that doesn't take focus,
-// open for a few seconds. Windows only; the rest skips.
+// blacked out. computer_ui_tree reads the window's controls with refs
+// (names, values, states; never a password), honours its caps, reads below
+// a ref, and a ref can be screenshotted on its own. The window is a small
+// red form with a few controls that never takes focus, open for a few
+// seconds. Windows only; the rest skips.
 //
 // Run: node tests/computer-use.test.mjs
 
@@ -33,7 +36,7 @@ const { READ_ONLY_TOOLS } = await import(pathToFileURL(path.join(root, "src/core
 
 await ok("computer screenshots share the screenshot budget, and both tools only read", () => {
   assert.ok(SCREENSHOT_TOOLS.includes("computer_screenshot"));
-  assert.ok(READ_ONLY_TOOLS.has("computer_windows") && READ_ONLY_TOOLS.has("computer_screenshot"));
+  for (const t of ["computer_windows", "computer_screenshot", "computer_ui_tree"]) assert.ok(READ_ONLY_TOOLS.has(t), t);
 });
 
 await ok("off until the user turns it on; only the user can", async () => {
@@ -103,8 +106,14 @@ $f.Text = '${title}'
 $f.BackColor = [System.Drawing.Color]::FromArgb(255, 0, 0)
 $f.StartPosition = 'Manual'
 $f.Location = New-Object System.Drawing.Point(60, 60)
-$f.Size = New-Object System.Drawing.Size(360, 260)
+$f.Size = New-Object System.Drawing.Size(520, 420)
 $f.TopMost = $true
+$q = New-Object System.Windows.Forms.TextBox; $q.AccessibleName = 'Query'; $q.Text = 'hello omni'; $q.Location = New-Object System.Drawing.Point(10, 10); $q.Width = 150; $f.Controls.Add($q)
+$pw = New-Object System.Windows.Forms.TextBox; $pw.AccessibleName = 'Password'; $pw.UseSystemPasswordChar = $true; $pw.Text = 'hunter2secret'; $pw.Location = New-Object System.Drawing.Point(10, 40); $pw.Width = 150; $f.Controls.Add($pw)
+$cb = New-Object System.Windows.Forms.CheckBox; $cb.Text = 'Remember me'; $cb.Checked = $true; $cb.BackColor = [System.Drawing.Color]::White; $cb.Location = New-Object System.Drawing.Point(10, 70); $f.Controls.Add($cb)
+$b = New-Object System.Windows.Forms.Button; $b.Text = 'Sign in'; $b.BackColor = [System.Drawing.Color]::FromArgb(0, 0, 255); $b.Location = New-Object System.Drawing.Point(180, 10); $b.Size = New-Object System.Drawing.Size(100, 40); $f.Controls.Add($b)
+$lb = New-Object System.Windows.Forms.ListBox; $lb.AccessibleName = 'Items'; $lb.Location = New-Object System.Drawing.Point(330, 10); $lb.Size = New-Object System.Drawing.Size(150, 90)
+1..60 | ForEach-Object { [void]$lb.Items.Add("Item $_") }; $f.Controls.Add($lb)
 $f.Add_Shown({ [Console]::Out.WriteLine("hwnd " + $f.Handle.ToInt64()); [Console]::Out.Flush() })
 [System.Windows.Forms.Application]::Run($f)
 `;
@@ -204,9 +213,75 @@ try {
     }
   });
 
+  // ── C2: the UI tree ────────────────────────────────────────────────────
+  let tree = "";
+  const refOf = (text, re) => {
+    const line = text.split("\n").find((l) => re.test(l));
+    assert.ok(line, `no line matches ${re}:\n${text}`);
+    return line.match(/\[ref=(w\d+:e\d+)\]/)[1];
+  };
+  await ok("computer_ui_tree lists the controls with names, values, states and refs", async () => {
+    tree = await ext.computer_ui_tree({ window: String(hwnd) });
+    assert.match(tree, new RegExp(`^window "${title}" \\(powershell\\) · handle ${hwnd}`));
+    assert.match(tree, /^window ".*" \[ref=w\d+:e1\]$/m);
+    assert.match(tree, /button "Sign in".* \[ref=w\d+:e\d+\]/);
+    assert.match(tree, /checkbox "Remember me" checked/);
+    assert.match(tree, /edit "Query" value="hello omni"/);
+    assert.match(tree, /list "Items"/);
+    // A password is never read.
+    assert.match(tree, /edit "Password" value=\(password, not shown\)/);
+    assert.doesNotMatch(tree, /hunter2/);
+    // Items scrolled out of the list box are left out, and it says so.
+    assert.match(tree, /listitem "Item 1"/);
+    assert.doesNotMatch(tree, /listitem "Item 60"/);
+    assert.match(tree, /out of view not shown/);
+  });
+
+  await ok("bounds, offscreen, a subtree by ref, and the caps", async () => {
+    const withBounds = await ext.computer_ui_tree({ window: String(hwnd), bounds: true });
+    assert.match(withBounds, /button "Sign in" @\d+,\d+ \d+x\d+/);
+    const list = refOf(withBounds, /list "Items"/);
+    const below = await ext.computer_ui_tree({ ref: list, offscreen: true });
+    assert.match(below, /· below w\d+:e\d+/);
+    assert.match(below, /listitem "Item 60"/);
+    assert.doesNotMatch(below, /button "Sign in"/);
+    const capped = await ext.computer_ui_tree({ window: String(hwnd), max_nodes: 10 });
+    assert.match(capped, /cut at the 10-node limit/);
+    assert.ok(capped.split("\n").filter((l) => /\[ref=w\d+:e\d+\]$/.test(l)).length <= 10);
+    const shallow = await ext.computer_ui_tree({ window: String(hwnd), max_depth: 1 });
+    assert.match(shallow, /cut at the depth limit/);
+    tree = await ext.computer_ui_tree({ window: String(hwnd) });
+  });
+
+  await ok("a control by ref: its own screenshot; an old ref is refused after a new tree", async () => {
+    const button = refOf(tree, /button "Sign in"/);
+    const r = await ext.computer_screenshot({ ref: button, path: path.join(work, "button.png") });
+    assert.match(r.what, /element w\d+:e\d+ of "Omni CU test/);
+    assert.ok(r.width < 200 && r.height < 100, `${r.width}×${r.height}`);
+    const [cr, cg, cbl] = readPng(fs.readFileSync(r.path)).at(r.width >> 1, r.height >> 1);
+    assert.ok(cbl > 150 && cr < 120, `the blue button, got ${[cr, cg, cbl]}`);
+    await ext.computer_ui_tree({ window: String(hwnd) });
+    await assert.rejects(ext.computer_screenshot({ ref: button }), /unknown ref/);
+    await assert.rejects(ext.computer_ui_tree({ ref: "w99:e1" }), /unknown ref/);
+  });
+
+  await ok("an app on the deny list has no tree", async () => {
+    const t2 = await ext.computer_ui_tree({ window: String(hwnd) });
+    const button = refOf(t2, /button "Sign in"/);
+    control.setDeny(["powershell"]);
+    try {
+      await assert.rejects(ext.computer_ui_tree({ window: String(hwnd) }), /powershell is on the deny list/);
+      await assert.rejects(ext.computer_ui_tree({ ref: button }), /powershell is on the deny list/);
+      await assert.rejects(ext.computer_screenshot({ ref: button }), /powershell is on the deny list/);
+    } finally {
+      control.setDeny([]);
+    }
+  });
+
   await ok("/computer off: refused again", async () => {
     control.disable();
     await assert.rejects(ext.computer_windows({}), /computer use is off/);
+    await assert.rejects(ext.computer_ui_tree({ window: String(hwnd) }), /computer use is off/);
   });
 } finally {
   control.disable();

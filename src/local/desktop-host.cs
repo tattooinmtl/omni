@@ -6,6 +6,13 @@
 //   {"id":2,"op":"monitors"}                              the monitors
 //   {"id":3,"op":"shot","window":"Notepad","maxPx":1568,"deny":[...]}
 //   {"id":4,"op":"shot","monitor":1,...} / {"op":"shot"}  one monitor / all of them
+//   {"id":5,"op":"tree","window":"Notepad","maxDepth":12,"maxNodes":400}
+//                                                         the window as UI Automation lines with refs
+//   {"id":6,"op":"shot","ref":"w1:e7"}                    one element of a tree
+//
+// A tree tags each control [ref=w1:e7]: w1 is the window (numbered once per
+// session), e7 the element. Refs stay valid until the next full tree of that
+// window; C3's actions will take them.
 //
 // Every coordinate is in physical screen pixels (the process is per-monitor
 // DPI aware), so a later click lands where the screenshot showed. A window
@@ -24,6 +31,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using System.Windows.Automation;
 
 namespace OmniDesktop {
   public static class Host {
@@ -84,6 +92,7 @@ namespace OmniDesktop {
         case "monitors": return Monitors();
         case "windows": return Windows(deny, Bool(req, "all"));
         case "shot": return Shot(req, deny);
+        case "tree": return Tree(req, deny);
         default: throw new Exception("unknown op " + op);
       }
     }
@@ -243,7 +252,24 @@ namespace OmniDesktop {
       Bitmap src;
       string what, how = "screen";
       var masked = new List<string>();
-      if (!string.IsNullOrEmpty(spec)) {
+      string refId = Str(req, "ref");
+      if (!string.IsNullOrEmpty(refId)) {
+        // One element: its rectangle, cut out of its window's own pixels.
+        var node = Resolve(refId);
+        var w = ByHandle(node.Hwnd, deny);
+        if (w.Denied) throw new Exception(w.App + " is on the deny list: Omni doesn't look at it");
+        if (w.Minimized) throw new Exception("\"" + w.Title + "\" is minimized: ask the user to restore it");
+        var b = node.El.Current.BoundingRectangle;
+        if (b.IsEmpty || b.Width < 1 || b.Height < 1) throw new Exception("ref " + refId + " has no size on screen (it may be scrolled away or hidden)");
+        var r = Rectangle.Intersect(new Rectangle((int)b.X, (int)b.Y, (int)Math.Ceiling(b.Width), (int)Math.Ceiling(b.Height)), w.Bounds);
+        if (r.Width < 1 || r.Height < 1) throw new Exception("ref " + refId + " is outside its window");
+        using (var whole = FromWindow(w, out how)) {
+          if (how == "screen") Mask(whole, w.Bounds, deny, masked, w.Hwnd);
+          src = whole.Clone(new Rectangle(r.X - w.Bounds.X, r.Y - w.Bounds.Y, r.Width, r.Height), PixelFormat.Format32bppArgb);
+        }
+        area = r;
+        what = "element " + refId + " of \"" + w.Title + "\" (" + w.App + ")";
+      } else if (!string.IsNullOrEmpty(spec)) {
         var w = Find(spec, deny);
         if (w.Denied) throw new Exception(w.App + " is on the deny list: Omni doesn't look at it");
         if (w.Minimized) throw new Exception("\"" + w.Title + "\" is minimized: ask the user to restore it (or take a screenshot of the screen)");
@@ -284,6 +310,195 @@ namespace OmniDesktop {
           }
         }
       }
+    }
+
+    // ---- the UI Automation tree (C2) ----------------------------------------
+
+    class Node { public AutomationElement El; public long Hwnd; }
+    static readonly Dictionary<long, int> WinIds = new Dictionary<long, int>();
+    static readonly Dictionary<int, int> ElemSeq = new Dictionary<int, int>();
+    static readonly Dictionary<string, Node> Refs = new Dictionary<string, Node>();
+
+    static int WinId(long hwnd) {
+      int id;
+      if (!WinIds.TryGetValue(hwnd, out id)) { id = WinIds.Count + 1; WinIds[hwnd] = id; }
+      return id;
+    }
+
+    static Node Resolve(string refId) {
+      Node n;
+      if (!Refs.TryGetValue(refId, out n)) {
+        throw new Exception("unknown ref " + refId + ": refs come from computer_ui_tree, and a new tree of the window replaces its old ones");
+      }
+      try { var _ = n.El.Current.ControlType; }
+      catch (ElementNotAvailableException) { throw new Exception("ref " + refId + " is gone (the window changed): call computer_ui_tree again"); }
+      return n;
+    }
+
+    static Win ByHandle(long hwnd, HashSet<string> deny) {
+      foreach (var w in List(deny, true)) if (w.Hwnd.ToInt64() == hwnd) return w;
+      throw new Exception("that window is closed");
+    }
+
+    static CacheRequest TreeCache() {
+      var c = new CacheRequest { TreeScope = TreeScope.Element, AutomationElementMode = AutomationElementMode.Full };
+      foreach (var p in new AutomationProperty[] {
+        AutomationElement.ControlTypeProperty, AutomationElement.NameProperty, AutomationElement.AutomationIdProperty,
+        AutomationElement.IsEnabledProperty, AutomationElement.IsOffscreenProperty, AutomationElement.IsPasswordProperty,
+        AutomationElement.HasKeyboardFocusProperty, AutomationElement.BoundingRectangleProperty,
+        AutomationElement.IsValuePatternAvailableProperty, ValuePattern.ValueProperty,
+        AutomationElement.IsTogglePatternAvailableProperty, TogglePattern.ToggleStateProperty,
+        AutomationElement.IsExpandCollapsePatternAvailableProperty, ExpandCollapsePattern.ExpandCollapseStateProperty,
+        AutomationElement.IsSelectionItemPatternAvailableProperty, SelectionItemPattern.IsSelectedProperty,
+      }) c.Add(p);
+      return c;
+    }
+
+    static object P(AutomationElement el, AutomationProperty p) {
+      try {
+        var v = el.GetCachedPropertyValue(p, true);
+        return v == AutomationElement.NotSupported ? null : v;
+      } catch { return null; }
+    }
+    static string S(AutomationElement el, AutomationProperty p) { var v = P(el, p); return v == null ? "" : Convert.ToString(v); }
+    static bool B(AutomationElement el, AutomationProperty p) { var v = P(el, p); return v is bool && (bool)v; }
+
+    static string Clip(string s, int n) {
+      s = (s ?? "").Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+      while (s.Contains("  ")) s = s.Replace("  ", " ");
+      return s.Length > n ? s.Substring(0, n - 1) + "…" : s;
+    }
+    static string Q(string s) { return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+
+    class Walk {
+      public StringBuilder Out = new StringBuilder();
+      public int Wid, Nodes, MaxNodes, MaxDepth, MaxChars, Offscreen;
+      public long Hwnd;
+      public bool Bounds, ShowOffscreen;
+      public DateTime Deadline;
+      public CacheRequest Cache;
+      public List<string> Cut = new List<string>();
+      public bool Stop(string why) { if (!Cut.Contains(why)) Cut.Add(why); return true; }
+    }
+
+    static string Line(Walk wk, AutomationElement el, int depth, out bool print) {
+      var ct = P(el, AutomationElement.ControlTypeProperty) as ControlType;
+      string type = ct == null ? "element" : ct.ProgrammaticName.Replace("ControlType.", "").ToLowerInvariant();
+      string name = Clip(S(el, AutomationElement.NameProperty), 120);
+      string aid = Clip(S(el, AutomationElement.AutomationIdProperty), 60);
+      // WinForms and Win32 give a control id or handle number: noise that changes each run.
+      if (System.Text.RegularExpressions.Regex.IsMatch(aid, "^[0-9]+$")) aid = "";
+      // Unnamed layout containers add nothing: their children move up.
+      print = !((type == "pane" || type == "group" || type == "custom") && name.Length == 0 && aid.Length == 0) || depth == 0;
+      if (!print) return null;
+      var sb = new StringBuilder();
+      sb.Append(' ', depth * 2).Append(type);
+      if (name.Length > 0) sb.Append(' ').Append(Q(name));
+      if (aid.Length > 0 && aid != name) sb.Append(" #").Append(aid);
+      if (B(el, AutomationElement.IsValuePatternAvailableProperty)) {
+        if (B(el, AutomationElement.IsPasswordProperty)) sb.Append(" value=(password, not shown)");
+        else {
+          string v = Clip(S(el, ValuePattern.ValueProperty), 200);
+          if (v.Length > 0 && v != name) sb.Append(" value=").Append(Q(v));
+        }
+      }
+      if (B(el, AutomationElement.IsTogglePatternAvailableProperty)) {
+        var t = P(el, TogglePattern.ToggleStateProperty);
+        if (t is ToggleState) sb.Append((ToggleState)t == ToggleState.On ? " checked" : (ToggleState)t == ToggleState.Off ? " unchecked" : " mixed");
+      }
+      if (B(el, AutomationElement.IsExpandCollapsePatternAvailableProperty)) {
+        var e = P(el, ExpandCollapsePattern.ExpandCollapseStateProperty);
+        if (e is ExpandCollapseState && (ExpandCollapseState)e != ExpandCollapseState.LeafNode) sb.Append((ExpandCollapseState)e == ExpandCollapseState.Expanded ? " expanded" : " collapsed");
+      }
+      if (B(el, AutomationElement.IsSelectionItemPatternAvailableProperty) && B(el, SelectionItemPattern.IsSelectedProperty)) sb.Append(" selected");
+      if (B(el, AutomationElement.HasKeyboardFocusProperty)) sb.Append(" focused");
+      var en = P(el, AutomationElement.IsEnabledProperty);
+      if (en is bool && !(bool)en) sb.Append(" disabled");
+      if (wk.Bounds) {
+        var r = P(el, AutomationElement.BoundingRectangleProperty);
+        if (r is System.Windows.Rect && !((System.Windows.Rect)r).IsEmpty) {
+          var b = (System.Windows.Rect)r;
+          sb.Append(" @").Append((int)b.X).Append(',').Append((int)b.Y).Append(' ').Append((int)b.Width).Append('x').Append((int)b.Height);
+        }
+      }
+      int seq;
+      ElemSeq.TryGetValue(wk.Wid, out seq);
+      seq++;
+      ElemSeq[wk.Wid] = seq;
+      string refId = "w" + wk.Wid + ":e" + seq;
+      Refs[refId] = new Node { El = el, Hwnd = wk.Hwnd };
+      sb.Append(" [ref=").Append(refId).Append(']');
+      return sb.ToString();
+    }
+
+    static void Visit(Walk wk, AutomationElement el, int depth) {
+      if (wk.Nodes >= wk.MaxNodes && wk.Stop("the " + wk.MaxNodes + "-node limit")) return;
+      if (DateTime.UtcNow > wk.Deadline && wk.Stop("the time limit (the app answers slowly)")) return;
+      if (wk.Out.Length > wk.MaxChars && wk.Stop("the size limit")) return;
+      if (depth > 0 && !wk.ShowOffscreen && B(el, AutomationElement.IsOffscreenProperty)) { wk.Offscreen++; return; }
+      bool print;
+      string line = Line(wk, el, depth, out print);
+      if (print) { wk.Out.Append(line).Append('\n'); wk.Nodes++; }
+      int next = print ? depth + 1 : depth;
+      if (next > wk.MaxDepth) {
+        if (print) wk.Stop("the depth limit (pass a ref to see deeper)");
+        return;
+      }
+      AutomationElement child;
+      try { child = TreeWalker.ControlViewWalker.GetFirstChild(el, wk.Cache); } catch { return; }
+      while (child != null) {
+        Visit(wk, child, next);
+        if (wk.Cut.Count > 0 && (wk.Nodes >= wk.MaxNodes || DateTime.UtcNow > wk.Deadline || wk.Out.Length > wk.MaxChars)) return;
+        try { child = TreeWalker.ControlViewWalker.GetNextSibling(child, wk.Cache); } catch { child = null; }
+      }
+    }
+
+    static object Tree(Dictionary<string, object> req, HashSet<string> deny) {
+      var t0 = DateTime.UtcNow;
+      string refId = Str(req, "ref"), spec = Str(req, "window");
+      Win w;
+      AutomationElement root;
+      var cache = TreeCache();
+      if (!string.IsNullOrEmpty(refId)) {
+        var node = Resolve(refId);
+        w = ByHandle(node.Hwnd, deny);
+        if (w.Denied) throw new Exception(w.App + " is on the deny list: Omni doesn't look at it");
+        root = node.El.GetUpdatedCache(cache);
+      } else {
+        if (!string.IsNullOrEmpty(spec)) w = Find(spec, deny);
+        else {
+          long fg = GetForegroundWindow().ToInt64();
+          w = null;
+          foreach (var x in List(deny, true)) if (x.Hwnd.ToInt64() == fg) { w = x; break; }
+          if (w == null) throw new Exception("no window has the focus: name one (computer_windows lists them)");
+        }
+        if (w.Denied) throw new Exception(w.App + " is on the deny list: Omni doesn't look at it");
+        root = AutomationElement.FromHandle(w.Hwnd).GetUpdatedCache(cache);
+      }
+      long hwnd = w.Hwnd.ToInt64();
+      int wid = WinId(hwnd);
+      var wk = new Walk {
+        Wid = wid, Hwnd = hwnd, Cache = cache,
+        MaxNodes = Math.Max(10, Math.Min(3000, Int(req, "maxNodes", 400))),
+        MaxDepth = Math.Max(1, Math.Min(60, Int(req, "maxDepth", 12))),
+        MaxChars = Math.Max(1000, Math.Min(200000, Int(req, "maxChars", 16000))),
+        Bounds = Bool(req, "bounds"),
+        // Everything of a minimized window is "offscreen".
+        ShowOffscreen = Bool(req, "offscreen") || w.Minimized,
+        Deadline = t0.AddMilliseconds(Math.Max(1000, Math.Min(60000, Int(req, "timeMs", 15000)))),
+      };
+      if (string.IsNullOrEmpty(refId)) {
+        // A full tree of the window: its old refs are gone (the numbers go on,
+        // so an old ref can't silently point at a new element).
+        var stale = new List<string>();
+        foreach (var k in Refs.Keys) if (k.StartsWith("w" + wid + ":")) stale.Add(k);
+        foreach (var k in stale) Refs.Remove(k);
+      }
+      Visit(wk, root, 0);
+      return new Dictionary<string, object> {
+        { "text", wk.Out.ToString().TrimEnd('\n') }, { "window", hwnd }, { "wid", "w" + wid }, { "title", w.Title }, { "app", w.App },
+        { "nodes", wk.Nodes }, { "offscreen", wk.Offscreen }, { "cut", wk.Cut }, { "ms", (int)(DateTime.UtcNow - t0).TotalMilliseconds },
+      };
     }
 
     // Paint every denied window that shows in `area` black.

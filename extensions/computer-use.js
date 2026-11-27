@@ -1,8 +1,12 @@
-// Omni extension: computer use on Windows. Phase C1: seeing the screen.
+// Omni extension: computer use on Windows. Seeing the screen (C1) and
+// reading it as UI controls (C2); acting comes in C3.
 //
 //   computer_windows     the open top-level windows: title, app, bounds, focus
+//   computer_ui_tree     one window as UI Automation lines (type, name, id,
+//                        value, state), each control tagged [ref=w1:e7]; what
+//                        text-only and local models read instead of pixels
 //   computer_screenshot  the whole screen, one monitor, or one window, scaled
-//                        to ≤1568 px and attached for a vision model (saved
+//                        to ≤1568 px (or one control, by ref) and attached for a vision model (saved
 //                        to a path for the rest); old ones leave the context
 //                        with the browser's (src/core/image-context.mjs)
 //
@@ -69,7 +73,7 @@ function startHost() {
   const cs = HOST_CS.replace(/'/g, "''");
   const script =
     "$ErrorActionPreference='Stop';" +
-    `Add-Type -Path '${cs}' -ReferencedAssemblies System.Drawing,System.Windows.Forms,System.Web.Extensions;` +
+    `Add-Type -Path '${cs}' -ReferencedAssemblies System.Drawing,System.Windows.Forms,System.Web.Extensions,UIAutomationClient,UIAutomationTypes,WindowsBase;` +
     "[OmniDesktop.Host]::Run()";
   const proc = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
@@ -117,7 +121,12 @@ async function call(op, params = {}, timeoutMs = 20000) {
   await host.ready;
   const id = ++state.seq;
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => { host.pending.delete(id); reject(new Error(`the desktop host took over ${timeoutMs} ms on ${op}`)); }, timeoutMs);
+    const t = setTimeout(() => {
+      host.pending.delete(id);
+      // A hung app can block a UI Automation call for good: start over.
+      if (op === "tree") stopHost();
+      reject(new Error(`the desktop host took over ${timeoutMs} ms on ${op}${op === "tree" ? " (the app may be hung)" : ""}`));
+    }, timeoutMs);
     host.pending.set(id, { resolve: (v) => { clearTimeout(t); resolve(v); }, reject: (e) => { clearTimeout(t); reject(e); } });
     try { host.proc.stdin.write(JSON.stringify({ id, op, deny: state.deny, ...params }) + "\n"); }
     catch (e) { clearTimeout(t); host.pending.delete(id); reject(e); }
@@ -149,10 +158,41 @@ async function windowsTool(args, ctx) {
   };
 }
 
+// One window as UI Automation lines with refs. Unnamed layout panes are
+// folded away, controls scrolled out of view are left out (offscreen:true
+// keeps them), and password values are never read.
+async function uiTreeTool(args, ctx) {
+  assertUsable(ctx);
+  const params = {
+    maxDepth: clampInt(args.max_depth, 1, 60, 12),
+    maxNodes: clampInt(args.max_nodes, 10, 3000, 400),
+    maxChars: clampInt(args.max_chars, 1000, 200000, 16000),
+    bounds: args.bounds === true,
+    offscreen: args.offscreen === true,
+    timeMs: 15000,
+  };
+  if (args.ref) params.ref = String(args.ref).trim();
+  else if (args.window !== undefined && args.window !== null && args.window !== "") params.window = String(args.window);
+  const t = await call("tree", params, 30000);
+  const notes = [];
+  if (t.offscreen) notes.push(`${t.offscreen} control(s) out of view not shown (offscreen:true lists them)`);
+  if (t.cut?.length) notes.push(`cut at ${t.cut.join(" and ")}`);
+  const head = `window ${JSON.stringify(t.title)} (${t.app}) · handle ${t.window} · ${t.nodes} control(s) · ${t.ms} ms` +
+    (args.ref ? ` · below ${args.ref}` : "") + (notes.length ? `\n(${notes.join("; ")})` : "");
+  return `${head}\n${t.text}\n\nRefs like [ref=${t.wid}:e3] name a control: computer_screenshot takes one (ref) to show just it, ` +
+    "and computer_ui_tree takes one to read deeper below it. A new full tree of this window replaces its refs.";
+}
+
+function clampInt(v, lo, hi, dflt) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : dflt;
+}
+
 async function screenshotTool(args, ctx) {
   assertUsable(ctx);
   const params = { maxPx: MAX_IMAGE_PX };
-  if (args.window !== undefined && args.window !== null && args.window !== "") params.window = String(args.window);
+  if (args.ref) params.ref = String(args.ref).trim();
+  else if (args.window !== undefined && args.window !== null && args.window !== "") params.window = String(args.window);
   else if (args.monitor !== undefined && args.monitor !== null) {
     const m = Number(args.monitor);
     if (!Number.isInteger(m) || m < 1) throw new Error("monitor is a number from 1 (computer_windows lists the monitors)");
@@ -233,18 +273,34 @@ export default {
         filter: { type: "string", description: "Only windows whose title or app contains this" },
         include_minimized: { type: "boolean", description: "Include minimized windows (default true)" },
       }),
+    fn("computer_ui_tree",
+      "Read one window of the user's Windows PC as its UI controls, one line each: type, \"name\", #automation-id, value, " +
+      "state (checked, expanded, selected, focused, disabled), indented by structure and tagged [ref=w1:e7]. Works for any model " +
+      "(no image needed) and is the way to find a control before acting on it. Default window: the focused one. Pass a ref to read " +
+      "deeper below that control. Only after the user turned computer use on (/computer on); apps on the deny list are refused, and password values are never read.",
+      {
+        window: { type: "string", description: "A window: its handle from computer_windows, its app name (notepad), or part of its title. Default: the focused window" },
+        ref: { type: "string", description: "Read only below this control (a ref from an earlier tree)" },
+        max_depth: { type: "integer", description: "Levels to go down (default 12)" },
+        max_nodes: { type: "integer", description: "Controls to list at most (default 400)" },
+        max_chars: { type: "integer", description: "Characters of output at most (default 16000)" },
+        bounds: { type: "boolean", description: "Add each control's screen rectangle as @x,y wxh (default false)" },
+        offscreen: { type: "boolean", description: "Also list controls scrolled out of view (default false)" },
+      }),
     fn("computer_screenshot",
       "Take a screenshot of the user's screen: everything (default), one monitor, or one window (also when other windows cover it). " +
       "A vision model gets the image attached, at most 1568 px on its longest side, with how its pixels map to screen coordinates; " +
       "other models get the saved path. Only after the user turned computer use on (/computer on). Apps on the deny list are refused or blacked out.",
       {
         window: { type: "string", description: "A window: its handle from computer_windows, its app name (notepad), or part of its title" },
+        ref: { type: "string", description: "Just one control, by its ref from computer_ui_tree (e.g. w1:e7)" },
         monitor: { type: "integer", description: "One monitor, from 1 (when no window is given)" },
         path: { type: "string", description: "Where to save the PNG (default ~/.omni/image-cache/)" },
       }),
   ],
   impl: {
     computer_windows: windowsTool,
+    computer_ui_tree: uiTreeTool,
     computer_screenshot: screenshotTool,
   },
 };

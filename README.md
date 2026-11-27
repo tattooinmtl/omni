@@ -848,15 +848,22 @@ brain's own config.
   takes the whole screen, one monitor, or one window (also when it is
   covered), at most 1568 px, attached for a vision model with how its pixels
   map to screen coordinates, and sharing the 3-screenshot budget with the
-  browser. Both are off until you type `/computer on`, and off again each
+  browser. `computer_ui_tree` reads one window as its UI controls (type,
+  name, automation id, value, checked / expanded / selected / focused /
+  disabled), one line each with a ref like `[ref=w1:e7]`: what text-only and
+  local models use instead of pixels. Unnamed layout panes are folded away,
+  controls scrolled out of view are left out unless asked for, password
+  values are never read, and it stops at a depth, node and size limit (a
+  ref reads deeper below that control). `computer_screenshot` also takes a
+  ref, to show just that control. All three are off until you type `/computer on`, and off again each
   time Omni starts; the model can't turn them on, and sub-agents, headless
   and scheduled runs can't use them. Apps on the deny list are never looked
   at: password managers, Windows Security and the UAC and sign-in prompts
   are on it, `/computer deny <app>` adds yours (by process name). Their
   titles are hidden, a screenshot of one is refused, and in a screen shot
   they are blacked out. `/computer doctor` checks the Windows host (one
-  PowerShell process, no dependencies). Seeing only, for now: Omni can't
-  click or type in other apps.
+  PowerShell process, no dependencies). Seeing and reading only, for now:
+  Omni can't click or type in other apps.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)

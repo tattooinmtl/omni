@@ -8,6 +8,41 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.23 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/computer-use-c2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`computer_ui_tree` reads a window as its UI controls (C2).** One line per
+  control from Windows UI Automation: type, "name", #automation-id, value,
+  and state (checked, unchecked, mixed, expanded, collapsed, selected,
+  focused, disabled), indented by structure and tagged `[ref=w1:e7]` (w1 is
+  the window, numbered once per session; e7 the control). Text-only and
+  local models read this instead of pixels. The default window is the
+  focused one; `window` takes a handle, app name or title like the
+  screenshot.
+  - Unnamed layout panes are folded away, and controls scrolled out of view
+    are counted but not listed (`offscreen: true` lists them). A minimized
+    window lists everything.
+  - Password values are never read (`value=(password, not shown)`), and
+    automation ids that are only a number (WinForms and Win32 handles) are
+    left out as noise.
+  - It stops at `max_depth` (12), `max_nodes` (400), `max_chars` (16000) and
+    15 s, and says where it was cut; `ref` reads below one control.
+    `bounds: true` adds each control's screen rectangle. A call that hangs
+    on an unresponsive app restarts the host.
+  - Refs stay valid until the next full tree of that window, whose numbers
+    go on, so an old ref is refused rather than pointing at a new control.
+    C3's actions will take them.
+- `computer_screenshot` takes a `ref` to show just that control, cut out of
+  its window's own pixels.
+- The deny list covers the tree too: a denied app's tree, and a shot of one
+  of its refs, are refused.
+- Tests: `tests/computer-use.test.mjs` (14 cases) adds a form with a text
+  box, a password box, a check box, a button and a 60-item list: names,
+  values and states with refs, the password never read, items out of view
+  left out and listed with `offscreen`, bounds, a subtree by ref, the node
+  and depth caps, a screenshot of one button by ref, stale refs refused, and
+  the deny list.
+
 ## 3.6.22 — 2026-11-27
 
 - **Shipped:** [#84](https://github.com/tattooinmtl/omni/pull/84) · 2f486ee · TattooAI/computer-use-c1 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
