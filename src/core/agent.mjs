@@ -1462,7 +1462,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
             if (hopDeferred.some((t) => t.function?.name === name)) loadedTools.add(name);
             const run = name === LOAD_TOOLS
               ? async () => loadTools(args, hopDeferred, loadedTools)
-              : () => runTool(name, args, { permissions, confirmTool, signal, vision: sendsImages });
+              : () => runTool(name, args, { permissions, confirmTool, signal, vision: sendsImages, sessionKind: session?.kind || "main" });
             if (lockKey) {
               const prev = fileLocks.get(lockKey) || Promise.resolve();
               let release;

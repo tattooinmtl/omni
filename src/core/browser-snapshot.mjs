@@ -25,9 +25,10 @@ export function locateExpression({ ref = null, selector = null } = {}) {
   return withTarget(locateInPage, { ref, selector });
 }
 
-// The in-page helpers share findTarget; each expression carries its own copy.
+// The in-page helpers share findTarget and sensitiveField; each expression
+// carries its own copy.
 function withTarget(fn, opts) {
-  return `(() => { ${findTarget.toString()}; return (${fn.toString()})(${JSON.stringify(opts)}); })()`;
+  return `(() => { ${findTarget.toString()}; ${sensitiveField.toString()}; return (${fn.toString()})(${JSON.stringify(opts)}); })()`;
 }
 
 // Focus and clear an element for typing; returns a description or an error.
@@ -52,6 +53,13 @@ export function scrollExpression({ ref = null, selector = null, dirX = 0, dirY =
 // so the caller gets the element's objectId; throws when there is none.
 export function fileInputExpression({ ref = null, selector = null } = {}) {
   return withTarget(fileInputInPage, { ref, selector });
+}
+
+// Is the focused element (through open shadow roots and same-origin
+// iframes) a password or payment-card field? Returns { error } if so, so
+// browser_press can't type into one the agent clicked.
+export function activeFieldExpression() {
+  return `(() => { ${sensitiveField.toString()}; return (${activeFieldInPage.toString()})(); })()`;
 }
 
 // One check for browser_wait: is the selector (visible) / the text on the
@@ -355,18 +363,42 @@ function locateInPage(opts) {
   };
 }
 
+// A password or payment-card field gets an error message, anything else null.
+function sensitiveField(el) {
+  if (!el || !el.tagName) return null;
+  const tag = el.tagName.toLowerCase();
+  if (tag === "input" && (el.type || "").toLowerCase() === "password") {
+    return "refusing to type into a password field: ask the user to enter it themselves";
+  }
+  const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+  const name = `${el.getAttribute("name") || ""} ${el.id || ""}`;
+  if (/(^|\s)cc-|card|cvc|cvv/.test(ac) || /card.?(number|num|no\b)|cvc|cvv|security.?code/i.test(name)) {
+    return "refusing to fill a payment-card field: ask the user to enter it themselves";
+  }
+  return null;
+}
+
+function activeFieldInPage() {
+  let el = document.activeElement;
+  for (let i = 0; el && i < 20; i++) {
+    if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+    if (/^i?frame$/i.test(el.tagName)) {
+      let inner = null;
+      try { inner = el.contentDocument && el.contentDocument.activeElement; } catch { inner = null; }
+      if (inner && inner !== el.contentDocument.body) { el = inner; continue; }
+    }
+    break;
+  }
+  const error = sensitiveField(el);
+  return error ? { error } : { ok: true };
+}
+
 function focusInPage(opts) {
   const found = findTarget(opts);
   if (found.error) return found;
   const el = found.el;
-  const tag = el.tagName.toLowerCase();
-  if (tag === "input" && (el.type || "").toLowerCase() === "password") {
-    return { error: "refusing to type into a password field: ask the user to enter it themselves" };
-  }
-  const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
-  if (/^cc-|card|cvc|cvv/.test(ac) || /card.?number|cvc|cvv/i.test(el.getAttribute("name") || "")) {
-    return { error: "refusing to type into a payment-card field: ask the user to enter it themselves" };
-  }
+  const sensitive = sensitiveField(el);
+  if (sensitive) return { error: sensitive };
   el.scrollIntoView({ block: "center" });
   el.focus();
   if (opts.clear) {
@@ -379,7 +411,7 @@ function focusInPage(opts) {
       sel.addRange(range);
     }
   }
-  return { ok: true, tag, focused: el.ownerDocument.activeElement === el };
+  return { ok: true, tag: el.tagName.toLowerCase(), focused: el.ownerDocument.activeElement === el };
 }
 
 function selectInPage(opts) {
@@ -387,6 +419,8 @@ function selectInPage(opts) {
   if (found.error) return found;
   const el = found.el;
   if (el.tagName.toLowerCase() !== "select") return { error: "that element is not a <select>; click it and pick the option by ref instead" };
+  const sensitive = sensitiveField(el);
+  if (sensitive) return { error: sensitive };
   const want = String(opts.value).trim().toLowerCase();
   const options = Array.from(el.options);
   const opt = options.find((o) => o.value.toLowerCase() === want)
