@@ -31,12 +31,13 @@ export async function runComputerCommand(ctx, arg) {
       const s = control.status();
       infoLine(`computer use: ${s.enabled ? "on" : "off"}${s.enabled ? "" : " (/computer on to let the agent see your screen)"}`);
       infoLine(`never looked at: ${s.deny.join(", ")}`);
+      if (s.approved?.length) infoLine(`you let it control this session: ${s.approved.join(", ")}`);
       return;
     }
     if (sub === "on") {
       const r = control.enable({ interactive: true, deny: mine() });
-      infoLine("computer use: on. The agent can list your windows and take screenshots (computer_windows, computer_screenshot).");
-      warnLine("Screenshots go to the model you are using, which may be a cloud provider. /computer off stops it; it is off again the next time Omni starts.");
+      infoLine("computer use: on. The agent can see your windows and screen, and act in apps you OK (it asks the first time for each app).");
+      warnLine("Screenshots go to the model you are using, which may be a cloud provider. While it acts, a red banner shows; Ctrl+Alt+Esc stops it. /computer off stops it too; it is off again the next time Omni starts.");
       infoLine(`never looked at: ${r.deny.join(", ")} (/computer deny <app> adds one)`);
       return;
     }

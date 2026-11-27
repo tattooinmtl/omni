@@ -8,6 +8,62 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.24 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/computer-use-c3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Computer use acts (C3).** New tools in `extensions/computer-use.js`:
+  - `computer_click`: a control by ref, pressed through UI Automation first
+    (Invoke, Toggle, Select, Expand: no cursor, no focus change; an Invoke
+    that opens a modal dialog stops waiting after 3 s), else the mouse at
+    its middle once its window is the one there; or at x, y (screen pixels,
+    or `from_screenshot: true` for pixels in the last screenshot). `button`,
+    `double`, and `mouse: true` to force the mouse.
+  - `computer_type`: into a control by ref (its value is set directly when
+    it can be, else it is focused and typed into; `clear` defaults to true
+    with a ref; clearing selects with Control+Home, Control+Shift+End since
+    classic edit boxes ignore Control+A; adding text starts at the end), or
+    where the keyboard focus is. `submit` presses Enter.
+  - `computer_press`: keys and chords (`Control+S`, `Alt+F4`,
+    `Down Down Enter`), to the focused window or a control by ref.
+  - `computer_scroll`: a control's own scrolling first (it says where it
+    ended up), else the mouse wheel; `computer_drag` from and to a ref or a
+    point; `computer_focus` brings a window forward (restoring it);
+    `computer_launch` starts an app by Start menu name (desktop and Store
+    apps) or an .exe / shortcut path, and returns its new window.
+- **The rules, as you chose: any app, after your first OK.**
+  - The first action in each app asks (`allow computer use (control notepad:
+    …)?`), in every permission mode, auto included; no one to ask means
+    refused. The OKs last until `/computer off`, Ctrl+Alt+Esc or the end of
+    the session. Launching an app asks first and counts as the OK for its
+    window.
+  - Typing or pressing keys in a terminal (cmd, PowerShell, Windows
+    Terminal, bash, …) asks every time, showing the text: there it runs
+    commands, past `run_shell`'s risk checks.
+  - The deny list is checked before anyone is asked. Store apps are named by
+    their own process (CalculatorApp), not the ApplicationFrameHost they all
+    share, so an OK or a deny is for that app only.
+  - Password fields are refused, by ref and when the keyboard focus is on
+    one. Sub-agents are refused, as before.
+  - While Omni acts, a red banner at the top of the screen says "Omni is
+    controlling this PC · Ctrl+Alt+Esc stops it". It never takes focus,
+    clicks pass through it, and it is left out of screenshots.
+  - **Ctrl+Alt+Esc** stops the action in progress (between key and mouse
+    events), turns computer use off and forgets the OKs, until `/computer on`.
+  - Every action, done or refused, is a line in `computer-actions.jsonl` in
+    Omni's home, with thumbnails of the window before and after (under
+    `~/.omni/image-cache/computer-actions`).
+- `/computer` shows the apps you OK'd this session.
+- Tests: `tests/computer-act.test.mjs` (12 cases, nothing that takes the
+  mouse or keyboard): no one to ask and a "no" both refuse and change
+  nothing, sub-agents refused before asking, a button pressed by ref with
+  one question for two clicks, a check box toggled, a list item selected, a
+  text box set, typing in a terminal asked each time and refused on "no", a
+  password box refused, a list scrolled, the deny list before any question,
+  the action log with thumbnails, and Ctrl+Alt+Esc pressed from another
+  process stopping it all. `OMNI_TEST_INPUT=1` adds focus, keyboard typing
+  and keys, clicks at coordinates and from a screenshot, a drag, and
+  launching and closing Calculator.
+
 ## 3.6.23 — 2026-11-27
 
 - **Shipped:** [#85](https://github.com/tattooinmtl/omni/pull/85) · 5bb2bc2 · TattooAI/computer-use-c2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403

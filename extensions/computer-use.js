@@ -1,10 +1,15 @@
-// Omni extension: computer use on Windows. Seeing the screen (C1) and
-// reading it as UI controls (C2); acting comes in C3.
+// Omni extension: computer use on Windows. Seeing the screen (C1), reading
+// it as UI controls (C2), and acting on it (C3).
 //
 //   computer_windows     the open top-level windows: title, app, bounds, focus
 //   computer_ui_tree     one window as UI Automation lines (type, name, id,
 //                        value, state), each control tagged [ref=w1:e7]; what
 //                        text-only and local models read instead of pixels
+//   computer_click / computer_type / computer_press / computer_scroll /
+//   computer_drag        act on a control by ref (UI Automation first: no
+//                        cursor, no focus change), or at screen coordinates
+//   computer_focus       bring a window to the front
+//   computer_launch      start an app by its Start menu name or path
 //   computer_screenshot  the whole screen, one monitor, or one window, scaled
 //                        to ≤1568 px (or one control, by ref) and attached for a vision model (saved
 //                        to a path for the rest); old ones leave the context
@@ -25,6 +30,14 @@
 //     windows are painted black.
 //   - Every screenshot is saved under ~/.omni/image-cache, so the session
 //     log points at exactly what the model was shown.
+//   - Acting on an app needs the user's OK for that app, asked the first
+//     time in this session (any permission mode, auto included). Typing or
+//     pressing keys in a terminal asks every time, showing the text: in a
+//     terminal that runs commands, past run_shell's checks.
+//   - While Omni acts, a red banner says so (left out of screenshots), and
+//     Ctrl+Alt+Esc stops it at once and turns computer use off.
+//   - Every action is logged to computer-actions.jsonl in Omni's home with a
+//     before and after thumbnail of the window.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -32,6 +45,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveContained } from "./file-tools.js";
+import { warnLine } from "../src/ui.mjs";
+import { HOME } from "../src/core/config.mjs";
 
 const HOST_CS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "local", "desktop-host.cs");
 // Must match vision-tools.js's readable roots, so read_media_file can attach it.
@@ -47,7 +62,18 @@ export const DEFAULT_DENY = [
   "NordPass", "Keeper", "KeeperPasswordManager", "ProtonPass", "Authy Desktop", "WinAuth",
 ];
 
+// Apps where typing runs commands: Omni asks before every keystroke batch.
+export const TERMINAL_APPS = ["cmd", "powershell", "pwsh", "WindowsTerminal", "wt", "OpenConsole", "conhost", "bash", "wsl",
+  "mintty", "alacritty", "wezterm-gui", "Hyper", "Tabby", "ConEmu64", "ConEmu", "putty", "kitty"];
+// In Omni's home (OMNI_HOME, or agent/ in the install), next to the sessions.
+const ACTION_LOG = path.join(HOME, "computer-actions.jsonl");
+const THUMBS = path.join(IMAGE_CACHE, "computer-actions");
+
 const state = {
+  approved: new Set(), // apps (lowercase) the user OK'd this session
+  lastShot: null,      // { x, y, scale } of the last screenshot, for from_screenshot
+  stopped: false,      // the user pressed Ctrl+Alt+Esc
+  armed: false,
   enabled: false,
   deny: [...DEFAULT_DENY],
   host: null, // { proc, pending: Map, buf, ready }
@@ -96,6 +122,7 @@ function startHost() {
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
       if (msg.ready) { host.onReady(); continue; }
+      if (msg.event === "stopped") { onStopped(); continue; }
       const p = host.pending.get(msg.id);
       if (!p) continue;
       host.pending.delete(msg.id);
@@ -131,6 +158,15 @@ async function call(op, params = {}, timeoutMs = 20000) {
     try { host.proc.stdin.write(JSON.stringify({ id, op, deny: state.deny, ...params }) + "\n"); }
     catch (e) { clearTimeout(t); host.pending.delete(id); reject(e); }
   });
+}
+
+// Ctrl+Alt+Esc: every action stops, and computer use is off until /computer on.
+function onStopped() {
+  state.enabled = false;
+  state.stopped = true;
+  state.approved.clear();
+  try { warnLine("computer use stopped (Ctrl+Alt+Esc): it is off until you type /computer on"); } catch { /* no terminal */ }
+  setTimeout(stopHost, 50);
 }
 
 function stopHost() {
@@ -199,6 +235,7 @@ async function screenshotTool(args, ctx) {
     params.monitor = m;
   }
   const shot = await call("shot", params, 30000);
+  state.lastShot = { x: shot.x, y: shot.y, scale: shot.scale };
   const buf = Buffer.from(shot.base64, "base64");
   // Like browser_screenshot: the workspace, the image cache or temp only.
   let outPath = args.path
@@ -226,6 +263,197 @@ async function screenshotTool(args, ctx) {
   };
 }
 
+// ---- acting (C3) ----------------------------------------------------------
+
+const isTerminal = (app) => TERMINAL_APPS.some((t) => t.toLowerCase() === String(app || "").toLowerCase());
+const clip = (t, n) => { t = String(t ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+
+// x, y: screen pixels, or pixels in the last computer_screenshot.
+function point(args, prefix = "") {
+  const x = args[prefix + "x"], y = args[prefix + "y"];
+  if (x === undefined || y === undefined || x === null || y === null) return null;
+  if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) throw new Error("x and y are numbers");
+  if (args.from_screenshot === true) {
+    const m = state.lastShot;
+    if (!m) throw new Error("from_screenshot: take a computer_screenshot first");
+    return { x: Math.round(m.x + Number(x) / m.scale), y: Math.round(m.y + Number(y) / m.scale) };
+  }
+  return { x: Math.round(Number(x)), y: Math.round(Number(y)) };
+}
+
+// The user's OK for an app, asked once per session.
+async function approve(target, ctx, verb = "control") {
+  const key = String(target.app || "").toLowerCase();
+  if (target.denied) throw new Error(`${target.app} is on the deny list: Omni doesn't touch it`);
+  if (state.approved.has(key)) return;
+  if (typeof ctx?.confirmTool !== "function") {
+    throw new Error(`acting on ${target.app} needs the user's OK first, and there is no one to ask in this session`);
+  }
+  const what = target.title ? `${target.app}: ${clip(target.title, 40)}` : target.app;
+  const answer = String((await ctx.confirmTool("computer use", `${verb} ${what} (this session)`)) || "").trim().toLowerCase();
+  if (!["y", "yes", "a", "always"].includes(answer)) throw new Error(`the user did not let Omni ${verb} ${target.app}. Don't try it another way; ask them what to do`);
+  state.approved.add(key);
+}
+
+// Typing into a terminal runs commands: ask every time, showing the text.
+async function approveTyping(target, text, ctx) {
+  if (!isTerminal(target.app)) return;
+  if (typeof ctx?.confirmTool !== "function") throw new Error(`typing into ${target.app} needs the user's OK each time, and there is no one to ask`);
+  const answer = String((await ctx.confirmTool("computer use", `type into ${target.app}: ${clip(text, 50)}`)) || "").trim().toLowerCase();
+  if (!["y", "yes", "a", "always"].includes(answer)) throw new Error(`the user did not let Omni type that into ${target.app}`);
+}
+
+async function thumb(hwnd, tag, stamp) {
+  if (!hwnd) return null;
+  try {
+    const s = await call("shot", { window: String(hwnd), maxPx: 480 }, 15000);
+    fs.mkdirSync(THUMBS, { recursive: true });
+    const file = path.join(THUMBS, `${stamp}-${tag}.png`);
+    fs.writeFileSync(file, Buffer.from(s.base64, "base64"));
+    return file;
+  } catch { return null; }
+}
+
+let actSeq = 0;
+// One action: who it touches, the user's OK, the banner, the thumbnails
+// before and after, the log line.
+async function act(tool, args, ctx, { targetParams, op, opParams, verb = "control", typing = null, describe }) {
+  assertUsable(ctx);
+  if (ctx?.signal?.aborted) throw new Error("stopped");
+  const target = await call("target", targetParams);
+  await approve(target, ctx, verb);
+  if (typing !== null) await approveTyping(target, typing, ctx);
+  if (!state.armed) { await call("arm", {}, 15000); state.armed = true; }
+  const stamp = `${Date.now()}-${++actSeq}`;
+  const before = await thumb(target.window, "before", stamp);
+  let res, error = null;
+  try {
+    res = await call(op, opParams, 30000);
+  } catch (e) {
+    error = e.message;
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  const after = await thumb(res?.window || target.window, "after", stamp);
+  try {
+    fs.mkdirSync(path.dirname(ACTION_LOG), { recursive: true });
+    fs.appendFileSync(ACTION_LOG, JSON.stringify({
+      time: new Date().toISOString(), tool, app: target.app, title: target.title, args: { ...args, text: args.text !== undefined ? clip(args.text, 200) : undefined },
+      ...(error ? { error } : { how: res?.how }), before, after,
+    }) + "\n");
+  } catch { /* the log is best effort */ }
+  if (error) throw new Error(error);
+  return { done: describe(res, target), how: res.how, app: target.app, ...(before || after ? { log: { before, after } } : {}) };
+}
+
+function refOrPoint(args, what) {
+  if (args.ref) return { ref: String(args.ref).trim() };
+  const p = point(args);
+  if (p) return p;
+  throw new Error(`${what} needs a ref (from computer_ui_tree) or x and y (screen pixels, or from_screenshot:true for pixels in the last screenshot)`);
+}
+
+async function clickTool(args, ctx) {
+  assertUsable(ctx);
+  const at = refOrPoint(args, "computer_click");
+  const button = String(args.button || "left").toLowerCase();
+  return act("computer_click", args, ctx, {
+    targetParams: at, op: "click", opParams: { ...at, button, double: args.double === true, mouse: args.mouse === true },
+    describe: (r) => `${args.double ? "double-" : ""}${button === "left" ? "" : button + "-"}clicked ${at.ref || `${at.x},${at.y}`} in ${r.app}` +
+      ({ invoke: " (pressed it through UI Automation" + (r.finished === false ? "; the app is still busy, maybe a dialog opened)" : ")"),
+        toggle: ` (now ${r.state})`, select: " (selected it)", expand: ` (now ${r.state})`, mouse: " with the mouse" }[r.how] || ""),
+  });
+}
+
+async function typeTool(args, ctx) {
+  assertUsable(ctx);
+  if (typeof args.text !== "string") throw new Error("computer_type needs text");
+  const ref = args.ref ? String(args.ref).trim() : null;
+  const clear = args.clear === undefined ? !!ref : args.clear === true;
+  return act("computer_type", args, ctx, {
+    targetParams: ref ? { ref } : {}, op: "type", opParams: { ref, text: args.text, clear, submit: args.submit === true },
+    typing: args.text,
+    describe: (r) => `typed ${args.text.length} character(s) into ${ref || "the focused control"} in ${r.app}${r.how === "value" ? " (set its value)" : ""}${args.submit ? ", then Enter" : ""}`,
+  });
+}
+
+async function pressTool(args, ctx) {
+  assertUsable(ctx);
+  const keys = Array.isArray(args.keys) ? args.keys.join(" ") : String(args.keys ?? "").trim();
+  if (!keys) throw new Error("computer_press needs keys, e.g. \"Enter\", \"Control+S\" or \"Alt+Tab\"");
+  const ref = args.ref ? String(args.ref).trim() : null;
+  return act("computer_press", args, ctx, {
+    targetParams: ref ? { ref } : {}, op: "keys", opParams: { ref, keys, repeat: args.repeat },
+    typing: keys,
+    describe: (r) => `pressed ${keys}${r.times > 1 ? ` ×${r.times}` : ""} in ${r.app}`,
+  });
+}
+
+async function scrollTool(args, ctx) {
+  assertUsable(ctx);
+  const at = args.ref ? { ref: String(args.ref).trim() } : point(args) || {};
+  return act("computer_scroll", args, ctx, {
+    targetParams: at, op: "scroll", opParams: { ...at, direction: args.direction || "down", amount: args.amount },
+    describe: (r) => `scrolled ${args.direction || "down"} in ${r.app}${r.how === "scroll" ? ` (now at ${r.position}%)` : " with the mouse wheel"}`,
+  });
+}
+
+async function dragTool(args, ctx) {
+  assertUsable(ctx);
+  const end = (v, name) => {
+    if (!v || typeof v !== "object") throw new Error(`computer_drag needs ${name}: {ref} or {x, y}`);
+    if (v.ref) return { ref: String(v.ref).trim() };
+    const p = point({ x: v.x, y: v.y, from_screenshot: args.from_screenshot });
+    if (!p) throw new Error(`computer_drag needs ${name}: {ref} or {x, y}`);
+    return p;
+  };
+  const from = end(args.from, "from"), to = end(args.to, "to");
+  const t2 = await call("target", to);
+  await approve(t2, ctx);
+  return act("computer_drag", args, ctx, {
+    targetParams: from, op: "drag", opParams: { from, to },
+    describe: (r) => `dragged from ${r.from} to ${r.to} (${r.app} to ${r.toApp})`,
+  });
+}
+
+async function focusTool(args, ctx) {
+  assertUsable(ctx);
+  if (!args.window) throw new Error("computer_focus needs window: a handle, app name or part of a title");
+  const spec = { window: String(args.window) };
+  return act("computer_focus", args, ctx, {
+    targetParams: spec, op: "focus", opParams: spec,
+    describe: (r) => `${r.app} ("${r.title}") is in front now`,
+  });
+}
+
+async function launchTool(args, ctx) {
+  assertUsable(ctx);
+  const app = String(args.app ?? "").trim();
+  if (!app) throw new Error("computer_launch needs app: a Start menu name (\"Notepad\") or the path to an .exe or shortcut");
+  const found = await call("findapp", { app }, 20000);
+  if (!found.exists) throw new Error(`no Start menu app or file matches "${app}"`);
+  const name = found.name;
+  if (state.deny.some((d) => name.toLowerCase().includes(d.toLowerCase()))) throw new Error(`${name} is on the deny list: Omni doesn't touch it`);
+  await approve({ app: name, title: "", denied: false }, ctx, "launch and control");
+  const before = new Set((await call("windows", { all: false })).map((w) => w.window));
+  if (!state.armed) { await call("arm", {}, 15000); state.armed = true; }
+  const res = await call("launch", { app }, 20000);
+  // Its window, when one comes up: the user just OK'd this app.
+  let win = null;
+  for (let i = 0; i < 40 && !win; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    win = (await call("windows", { all: false })).find((w) => !before.has(w.window) && !w.denied) || null;
+  }
+  if (win) state.approved.add(win.app.toLowerCase());
+  try {
+    fs.mkdirSync(path.dirname(ACTION_LOG), { recursive: true });
+    fs.appendFileSync(ACTION_LOG, JSON.stringify({ time: new Date().toISOString(), tool: "computer_launch", app: res.launched, window: win?.window ?? null }) + "\n");
+  } catch { /* best effort */ }
+  return {
+    done: `launched ${res.launched}`,
+    ...(win ? { window: win.window, title: win.title, app: win.app } : { note: "no new window showed up within 10 s; computer_windows lists what is open" }),
+  };
+}
+
 const fn = (name, description, properties = {}) => ({
   type: "function",
   function: { name, description, parameters: { type: "object", properties } },
@@ -241,9 +469,11 @@ export const control = {
     if (process.platform !== "win32") throw new Error("computer use works on Windows only, for now");
     if (deny) control.setDeny(deny);
     state.enabled = true;
+    state.stopped = false;
+    state.armed = false;
     return { enabled: true, deny: state.deny };
   },
-  disable() { state.enabled = false; stopHost(); return { enabled: false }; },
+  disable() { state.enabled = false; state.approved.clear(); state.armed = false; stopHost(); return { enabled: false }; },
   setDeny(extra = []) {
     const names = new Map();
     for (const a of [...DEFAULT_DENY, ...extra.map(normApp)]) if (!names.has(a.toLowerCase())) names.set(a.toLowerCase(), a);
@@ -251,7 +481,9 @@ export const control = {
     return state.deny;
   },
   normApp,
-  status() { return { enabled: state.enabled, platform: process.platform, host: !!state.host, deny: state.deny }; },
+  status() { return { enabled: state.enabled, platform: process.platform, host: !!state.host, deny: state.deny, approved: [...state.approved], stopped: state.stopped }; },
+  // For tests: the OKs given so far.
+  forget() { state.approved.clear(); },
   // For /computer doctor: start the host and ask it the basics.
   async doctor() {
     if (process.platform !== "win32") return { ok: false, why: "Windows only, for now" };
@@ -273,6 +505,60 @@ export default {
         filter: { type: "string", description: "Only windows whose title or app contains this" },
         include_minimized: { type: "boolean", description: "Include minimized windows (default true)" },
       }),
+    fn("computer_click",
+      "Click a control on the user's Windows PC: by ref from computer_ui_tree (pressed, toggled, selected or expanded through UI Automation, " +
+      "so the mouse doesn't move when the app supports it), or at x, y (screen pixels, or from_screenshot:true for pixels in the last " +
+      "computer_screenshot). The first action in each app asks the user. Prefer refs; read the tree again after the window changes.",
+      {
+        ref: { type: "string", description: "The control's ref from computer_ui_tree, e.g. w1:e7" },
+        x: { type: "number", description: "Screen x (or image x with from_screenshot)" },
+        y: { type: "number", description: "Screen y (or image y with from_screenshot)" },
+        from_screenshot: { type: "boolean", description: "x and y are pixels in the last computer_screenshot" },
+        button: { type: "string", description: "left (default), right or middle" },
+        double: { type: "boolean", description: "Double-click" },
+        mouse: { type: "boolean", description: "Click with the mouse even when UI Automation could press it" },
+      }),
+    fn("computer_type",
+      "Type text on the user's Windows PC: into a control by ref (its text is replaced unless clear:false), or where the keyboard focus is. " +
+      "Password fields are refused: ask the user to type those. In a terminal the user is asked every time.",
+      {
+        text: { type: "string", description: "The text (\\n presses Enter)" },
+        ref: { type: "string", description: "The control to type into, from computer_ui_tree" },
+        clear: { type: "boolean", description: "Replace what is there first (default true with a ref, false without)" },
+        submit: { type: "boolean", description: "Press Enter afterwards" },
+      }),
+    fn("computer_press",
+      "Press keys or shortcuts on the user's Windows PC: \"Enter\", \"Control+S\", \"Alt+F4\", \"Control+Shift+Esc\", or several separated by " +
+      "spaces (\"Down Down Enter\"). Goes to the focused window, or to a control by ref (focused first).",
+      {
+        keys: { type: "string", description: "Keys and chords, space-separated" },
+        ref: { type: "string", description: "Focus this control first" },
+        repeat: { type: "integer", description: "Press the whole sequence this many times (default 1)" },
+      }),
+    fn("computer_scroll",
+      "Scroll on the user's Windows PC: a control by ref (its own scrolling first, then the mouse wheel), at x, y, or the focused window's middle.",
+      {
+        ref: { type: "string", description: "The control (or anything inside the area) to scroll" },
+        x: { type: "number", description: "Screen x" },
+        y: { type: "number", description: "Screen y" },
+        from_screenshot: { type: "boolean", description: "x and y are pixels in the last computer_screenshot" },
+        direction: { type: "string", description: "down (default), up, left or right" },
+        amount: { type: "integer", description: "Steps (default 3)" },
+      }),
+    fn("computer_drag",
+      "Drag with the mouse on the user's Windows PC, from one place to another: each a control ({ref}) or a point ({x, y}).",
+      {
+        from: { type: "object", description: "{ref} or {x, y}" },
+        to: { type: "object", description: "{ref} or {x, y}" },
+        from_screenshot: { type: "boolean", description: "The x, y are pixels in the last computer_screenshot" },
+      }),
+    fn("computer_focus",
+      "Bring a window to the front on the user's Windows PC (restoring it if minimized).",
+      { window: { type: "string", description: "Its handle from computer_windows, its app name, or part of its title" } }),
+    fn("computer_launch",
+      "Start an app on the user's Windows PC by its Start menu name (\"Notepad\", \"Calculator\", \"Visual Studio Code\") or the path to an .exe or shortcut, " +
+      "and return its window. The user is asked first.",
+      { app: { type: "string", description: "Start menu name or path" } }),
     fn("computer_ui_tree",
       "Read one window of the user's Windows PC as its UI controls, one line each: type, \"name\", #automation-id, value, " +
       "state (checked, expanded, selected, focused, disabled), indented by structure and tagged [ref=w1:e7]. Works for any model " +
@@ -302,5 +588,12 @@ export default {
     computer_windows: windowsTool,
     computer_ui_tree: uiTreeTool,
     computer_screenshot: screenshotTool,
+    computer_click: clickTool,
+    computer_type: typeTool,
+    computer_press: pressTool,
+    computer_scroll: scrollTool,
+    computer_drag: dragTool,
+    computer_focus: focusTool,
+    computer_launch: launchTool,
   },
 };

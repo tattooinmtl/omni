@@ -1308,7 +1308,7 @@ export const COMMANDS = [
   },
   {
     name: "computer", aliases: [], usage: "/computer [on|off|status|deny <app…>|undeny <app…>|doctor]", category: "Tools",
-    summary: "let the agent see your Windows screen (computer_windows, computer_screenshot); off until /computer on, with a deny list of apps",
+    summary: "let the agent see and use your Windows PC (screenshots, UI tree, clicks, typing); off until /computer on, asks per app, deny list, Ctrl+Alt+Esc stops it",
     handler: (ctx, arg) => runComputerCommand(ctx, arg),
   },
   {
