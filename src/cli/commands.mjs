@@ -48,6 +48,7 @@ import { hardwareCommand } from "./hardware-cmd.mjs";
 import { runtimeCommand } from "./runtime-cmd.mjs";
 import { updateCommand } from "./update-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
+import { runComputerCommand } from "./computer-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -1304,6 +1305,11 @@ export const COMMANDS = [
     name: "browser", aliases: [], usage: "/browser [status|show|hide|connect [port]|disconnect|allow [domain…]|disallow <domain…>|close [session|all]|navigate <url>|screenshot]", category: "Tools",
     summary: "the browser_* tools' browser: show or hide it, connect your own Edge/Chrome (only on domains you allow), close sessions",
     handler: (ctx, arg) => runBrowserCommand(ctx, arg),
+  },
+  {
+    name: "computer", aliases: [], usage: "/computer [on|off|status|deny <app…>|undeny <app…>|doctor]", category: "Tools",
+    summary: "let the agent see your Windows screen (computer_windows, computer_screenshot); off until /computer on, with a deny list of apps",
+    handler: (ctx, arg) => runComputerCommand(ctx, arg),
   },
   {
     name: "runtime", aliases: ["pack"], usage: "/runtime [install [names|recommended|all] | remove <name>]", category: "Tools",

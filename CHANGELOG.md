@@ -8,6 +8,43 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.22 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/computer-use-c1 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Computer use, step one: Omni can see your Windows screen.** A new
+  `extensions/computer-use.js` (in the default config) with two tools:
+  - `computer_windows`: the open top-level windows, topmost first, with
+    title, app (process name), handle, screen bounds, monitor, and focused /
+    minimized / maximized, plus the monitors.
+  - `computer_screenshot`: the whole screen (default), one `monitor`, or one
+    `window` by handle, app name or part of its title. A window is captured
+    with its own pixels, also where other windows cover it. The image is
+    scaled to at most 1568 px, attached for a vision model with the mapping
+    from its pixels to screen points (for clicks later), and saved under
+    `~/.omni/image-cache`; a text-only model gets the path. It shares the
+    3-screenshot eviction budget with `browser_screenshot`.
+  The work is done by `src/local/desktop-host.cs`, compiled by Windows
+  PowerShell once per session and kept running (user32, dwmapi and
+  System.Drawing; per-monitor DPI aware, so coordinates are real pixels).
+  No dependencies.
+- **Off until you turn it on.** `/computer on` enables it for this Omni
+  process only; it starts off every time. There is no tool for it, headless
+  and scheduled runs take no slash commands, and sub-agents are refused.
+  `/computer off` stops it and the host.
+- **A deny list.** Password managers (KeePass, KeePassXC, 1Password,
+  Bitwarden, Dashlane, LastPass, …), Windows Security and the UAC, credential
+  and sign-in prompts are never looked at; `/computer deny <app>` and
+  `/computer undeny` edit your own additions (`settings.computerDenyApps`).
+  A denied app's titles are hidden in the window list, a screenshot of it is
+  refused, and in a screen shot its windows are painted black.
+- `/computer doctor` starts the host and reports the monitors.
+- Tests: `tests/computer-use.test.mjs` opens a small red window that never
+  takes focus and checks: off by default and only the user can turn it on,
+  sub-agents refused, the window list, window shots by title and handle
+  (vision and text-only), the screen and monitor shots and their pixel
+  mapping, the save path kept to the workspace / cache / temp, and the deny
+  list (hidden title, refused shot, blacked out on the screen).
+
 ## 3.6.21 — 2026-11-27
 
 - **Shipped:** [#83](https://github.com/tattooinmtl/omni/pull/83) · 83f9555 · TattooAI/browser-b5 · session fdbf92f2-27de-4fdf-a1cb-42da54823403

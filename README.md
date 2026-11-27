@@ -375,7 +375,7 @@ Enter puts it in and sends. `/help` lists everything with usage strings. Unknown
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` `/runtime` `/update-omni` `/omnibots` |
+| Tools | `/browser` `/computer` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
@@ -843,6 +843,20 @@ brain's own config.
   or in Chrome 144+ turn remote debugging on at
   `chrome://inspect/#remote-debugging` and run `/browser connect`.
   `/browser` alone lists the sessions; `/browser close [name|all]` closes them.
+- **Computer use (Windows):** `computer_windows` lists the open windows
+  (title, app, handle, bounds, focus) and the monitors; `computer_screenshot`
+  takes the whole screen, one monitor, or one window (also when it is
+  covered), at most 1568 px, attached for a vision model with how its pixels
+  map to screen coordinates, and sharing the 3-screenshot budget with the
+  browser. Both are off until you type `/computer on`, and off again each
+  time Omni starts; the model can't turn them on, and sub-agents, headless
+  and scheduled runs can't use them. Apps on the deny list are never looked
+  at: password managers, Windows Security and the UAC and sign-in prompts
+  are on it, `/computer deny <app>` adds yours (by process name). Their
+  titles are hidden, a screenshot of one is refused, and in a screen shot
+  they are blacked out. `/computer doctor` checks the Windows host (one
+  PowerShell process, no dependencies). Seeing only, for now: Omni can't
+  click or type in other apps.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)

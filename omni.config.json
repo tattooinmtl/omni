@@ -6,6 +6,7 @@
     "extensions/file-tools.js",
     "extensions/web-search.js",
     "extensions/browser-use.js",
+    "extensions/computer-use.js",
     "extensions/vision-tools.js",
     "extensions/git-ops.js",
     "extensions/http-request.js",
