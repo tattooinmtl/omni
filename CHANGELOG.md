@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.18 — 2026-11-27
 
-- **Shipped:** this PR · TattooAI/eloquent-wescoff-cb208a · session b76a78b4-4893-4d62-b387-7cd1b55afc4d
+- **Shipped:** [#80](https://github.com/tattooinmtl/omni/pull/80) · ae792ae · TattooAI/eloquent-wescoff-cb208a · session b76a78b4-4893-4d62-b387-7cd1b55afc4d
 - **`web_fetch` returns readable Markdown.** It used to strip every tag with
   regexes, so navigation, cookie banners and footers ran into the article,
   and links, tables and code blocks were lost. A new zero-dependency
