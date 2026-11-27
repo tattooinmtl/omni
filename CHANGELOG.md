@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.24 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/computer-use-c3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#86](https://github.com/tattooinmtl/omni/pull/86) · 28fdc51 · TattooAI/computer-use-c3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Computer use acts (C3).** New tools in `extensions/computer-use.js`:
   - `computer_click`: a control by ref, pressed through UI Automation first
     (Invoke, Toggle, Select, Expand: no cursor, no focus change; an Invoke
