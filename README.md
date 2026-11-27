@@ -862,8 +862,20 @@ brain's own config.
   are on it, `/computer deny <app>` adds yours (by process name). Their
   titles are hidden, a screenshot of one is refused, and in a screen shot
   they are blacked out. `/computer doctor` checks the Windows host (one
-  PowerShell process, no dependencies). Seeing and reading only, for now:
-  Omni can't click or type in other apps.
+  PowerShell process, no dependencies).
+- **Computer use, acting:** `computer_click`, `computer_type`,
+  `computer_press`, `computer_scroll` and `computer_drag` act on a control
+  by its ref (through UI Automation first, so the mouse doesn't move when the
+  app supports it) or at screen coordinates (`from_screenshot: true` takes
+  pixels in the last screenshot); `computer_focus` brings a window forward
+  and `computer_launch` starts an app by its Start menu name or path. The
+  first action in each app asks you (`allow computer use (control notepad
+  …)?`), in every permission mode; typing into a terminal asks every time,
+  with the text. Password fields are refused. While Omni acts, a red banner
+  at the top of the screen says so (it isn't in screenshots), and
+  **Ctrl+Alt+Esc** stops it at once and turns computer use off. Every action
+  is logged to `computer-actions.jsonl` in Omni's home, with a thumbnail of
+  the window before and after.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)
