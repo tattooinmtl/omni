@@ -6,13 +6,15 @@
 //
 // Tools exposed (one BrowserSession, lazily spawned on first call, kept warm
 // across turns, killed on process exit):
-//   browser_navigate    url                  go to a URL, wait for load
+//   browser_navigate    url                  go to a URL, wait for load, return a short snapshot
+//   browser_snapshot    [ref|selector]       the page as role/name lines, actionable elements tagged [ref=eN]
 //   browser_screenshot  [path]               capture viewport as PNG (path must stay in workspace or %TEMP%)
 //   browser_get_text    [selector]           visible text (whole page or selector match)
 //   browser_get_html    [selector]           innerHTML of element (or full page)
 //   browser_extract     selector             array of textContent for each match
-//   browser_click       selector             click element by CSS selector
-//   browser_type        selector, text       clear+type into input/textarea/contenteditable
+//   browser_click       ref|selector         click an element (ref from browser_snapshot, or CSS selector)
+//   browser_type        ref|selector, text   clear+type into input/textarea/contenteditable
+//   browser_select      ref|selector, value  choose an option in a <select>
 //   browser_evaluate    expression           run JS in page context, return JSON-serializable result
 //   browser_status                           { url, title, alive } of current session
 //   browser_close                             kill the browser
@@ -32,6 +34,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import { resolveContained } from "./file-tools.js";
 import { browserCandidates } from "../src/local/hardware-profile.mjs";
+import { snapshotExpression, locateExpression, focusExpression, selectExpression } from "../src/core/browser-snapshot.mjs";
 
 // Where screenshots land by default. Must match vision-tools.js's readable
 // roots exactly, or read_media_file refuses the file we just wrote.
@@ -351,6 +354,31 @@ class BrowserSession {
     return { url, title: this._title };
   }
 
+  // The page as role/name lines with refs for everything actionable.
+  async snapshot({ ref = null, selector = null, interactiveOnly = false, maxChars = 12000, maxNodes = 600 } = {}) {
+    await this._spawn();
+    const res = await this.evaluate(snapshotExpression({ rootRef: ref, selector, interactiveOnly, maxNodes }));
+    if (!res || res.error) throw new Error(res?.error || "snapshot failed");
+    let text = res.snapshot || "(the page has no visible content yet)";
+    const cap = Math.max(1000, Number(maxChars) || 12000);
+    let cut = res.truncated;
+    if (text.length > cap) {
+      text = text.slice(0, text.lastIndexOf("\n", cap) > 0 ? text.lastIndexOf("\n", cap) : cap);
+      cut = true;
+    }
+    if (cut) text += "\n[… more elements: call browser_snapshot with ref (a list, form or region from above) or selector to see one part, or interactive_only:true]";
+    this._url = res.url;
+    this._title = res.title;
+    return `Page: ${res.title || "(untitled)"}\nURL: ${res.url}\n\n${text}`;
+  }
+
+  // Center of a ref or selector in viewport coordinates (scrolled into view).
+  async _locate({ ref, selector }) {
+    const res = await this.evaluate(locateExpression({ ref, selector }));
+    if (!res || res.error) throw new Error(res?.error || "element not found");
+    return res;
+  }
+
   _waitForLoad(eventName = "load", timeoutMs = 30000) {
     const cdpEvent = eventName === "load" ? "Page.loadEventFired"
                    : eventName === "domcontentloaded" ? "Page.domContentEventFired"
@@ -441,31 +469,57 @@ class BrowserSession {
     return arr;
   }
 
-  async click(selector) {
-    if (!selector) throw new Error("click requires a CSS selector");
+  async click({ ref = null, selector = null, snapshot = false } = {}) {
+    if (!ref && !selector) throw new Error("browser_click needs ref (from browser_snapshot) or selector");
+    await this._spawn();
     // Synthesize a real click via the CDP Input domain — works for both
     // pointer-driven and form-submit handlers, unlike el.click() which only
     // fires a synthetic event.
-    const handle = await this.evaluate(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); return { x: r.left + r.width/2, y: r.top + r.height/2 }; })()`,
-    );
-    if (!handle) throw new Error(`no element matches selector: ${selector}`);
-    await this._send("Input.dispatchMouseEvent", { type: "mousePressed", x: handle.x, y: handle.y, button: "left", clickCount: 1 });
-    await this._send("Input.dispatchMouseEvent", { type: "mouseReleased", x: handle.x, y: handle.y, button: "left", clickCount: 1 });
-    return { clicked: selector, at: handle };
+    const at = await this._locate({ ref, selector });
+    if (at.disabled) throw new Error(`${ref || selector} is disabled`);
+    const pt = { x: at.x, y: at.y, button: "left", clickCount: 1 };
+    await this._send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
+    await this._send("Input.dispatchMouseEvent", { type: "mousePressed", ...pt });
+    await this._send("Input.dispatchMouseEvent", { type: "mouseReleased", ...pt });
+    const out = { clicked: ref || selector, label: at.label, at: { x: Math.round(at.x), y: Math.round(at.y) } };
+    if (snapshot) {
+      await new Promise((r) => setTimeout(r, 400)); // let the page react
+      out.snapshot = await this.snapshot({ maxChars: 6000 });
+    }
+    return out;
   }
 
-  async type(selector, text) {
-    if (!selector) throw new Error("type requires a CSS selector");
-    if (typeof text !== "string") throw new Error("type requires a text:string");
-    // Focus the element, clear, then type using Input.insertText (one event
-    // per character is fine for the sizes the agent will use).
-    const focused = await this.evaluate(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.focus(); if (el.select) el.select(); document.execCommand && document.execCommand('selectAll'); document.execCommand && document.execCommand('delete'); return true; })()`,
-    );
-    if (!focused) throw new Error(`no element matches selector: ${selector}`);
-    await this._send("Input.insertText", { text });
-    return { typed: text.length, into: selector };
+  async type({ ref = null, selector = null, text, clear = true, submit = false, snapshot = false } = {}) {
+    if (!ref && !selector) throw new Error("browser_type needs ref (from browser_snapshot) or selector");
+    if (typeof text !== "string") throw new Error("browser_type requires text (a string)");
+    await this._spawn();
+    const res = await this.evaluate(focusExpression({ ref, selector, clear }));
+    if (!res || res.error) throw new Error(res?.error || "element not found");
+    if (clear) {
+      // Replace a selection made by focusExpression (inputs and contenteditable).
+      await this._send("Input.dispatchKeyEvent", { type: "keyDown", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
+      await this._send("Input.dispatchKeyEvent", { type: "keyUp", key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 });
+    }
+    if (text) await this._send("Input.insertText", { text });
+    if (submit) {
+      await this._send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await this._send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    }
+    const out = { typed: text.length, into: ref || selector, submitted: !!submit };
+    if (snapshot) {
+      await new Promise((r) => setTimeout(r, 400));
+      out.snapshot = await this.snapshot({ maxChars: 6000 });
+    }
+    return out;
+  }
+
+  async select({ ref = null, selector = null, value } = {}) {
+    if (!ref && !selector) throw new Error("browser_select needs ref (from browser_snapshot) or selector");
+    if (value === undefined || value === null || value === "") throw new Error("browser_select needs value (the option's label or value)");
+    await this._spawn();
+    const res = await this.evaluate(selectExpression({ ref, selector, value }));
+    if (!res || res.error) throw new Error(res?.error || "element not found");
+    return res;
   }
 
   async status() {
@@ -503,8 +557,9 @@ export default {
       function: {
         name: "browser_navigate",
         description:
-          "Open a URL in a headless Chromium browser, wait for the page to load, and return its final URL + title. " +
-          "Use this for pages that need JavaScript to render (SPAs, dashboards, anything web_fetch can't read). " +
+          "Open a URL in a headless Chromium browser, wait for the page to load, and return its URL, title and a snapshot " +
+          "(the page as role/name lines; links, buttons and fields tagged [ref=eN]). Act on those refs with browser_click, " +
+          "browser_type and browser_select. Use this for pages that need JavaScript to render (SPAs, dashboards, forms). " +
           "For static text pages prefer web_fetch (faster, no browser spawn).",
         parameters: {
           type: "object",
@@ -512,8 +567,29 @@ export default {
             url: { type: "string", description: "Full http(s) URL to open" },
             allow_internal: { type: "boolean", description: "Allow loopback/localhost URLs (default false)" },
             timeout_ms: { type: "integer", description: "Per-call timeout in ms (default 30000)" },
+            snapshot: { type: "boolean", description: "Include the page snapshot (default true; false returns only URL and title)" },
           },
           required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "browser_snapshot",
+        description:
+          "Read the current page as a model can act on it: one line per heading, link, button, field, list item and text, " +
+          "indented by structure, with every actionable element tagged [ref=eN]. Pass a ref to browser_click, browser_type " +
+          "or browser_select. Refs work inside shadow DOM and same-origin iframes. Call it again after the page changes: " +
+          "old refs go stale. Prefer this over browser_get_html and screenshots for finding what to click.",
+        parameters: {
+          type: "object",
+          properties: {
+            ref: { type: "string", description: "Only this part of the page (a ref of a list, form, dialog or region from an earlier snapshot)" },
+            selector: { type: "string", description: "Only the first element matching this CSS selector" },
+            interactive_only: { type: "boolean", description: "Only actionable elements and headings, no text (default false)" },
+            max_chars: { type: "integer", description: "Cap on the output (default 12000)" },
+          },
         },
       },
     },
@@ -579,13 +655,14 @@ export default {
       type: "function",
       function: {
         name: "browser_click",
-        description: "Click the first element matching a CSS selector. Synthesizes a real pointer event (Input domain).",
+        description: "Click an element with a real mouse event: by ref from browser_snapshot (preferred) or by CSS selector.",
         parameters: {
           type: "object",
           properties: {
-            selector: { type: "string", description: "CSS selector (required)" },
+            ref: { type: "string", description: "Element ref from browser_snapshot, e.g. e12" },
+            selector: { type: "string", description: "CSS selector, when there is no ref" },
+            snapshot: { type: "boolean", description: "Return a fresh snapshot after the click (default false)" },
           },
-          required: ["selector"],
         },
       },
     },
@@ -593,14 +670,36 @@ export default {
       type: "function",
       function: {
         name: "browser_type",
-        description: "Focus the element matching the CSS selector, clear it, then type the text. Works for input/textarea/contenteditable.",
+        description:
+          "Type into a field (input, textarea, contenteditable): by ref from browser_snapshot (preferred) or CSS selector. " +
+          "Clears it first unless clear:false. Refuses password and payment-card fields: ask the user to fill those.",
         parameters: {
           type: "object",
           properties: {
-            selector: { type: "string", description: "CSS selector (required)" },
+            ref: { type: "string", description: "Element ref from browser_snapshot, e.g. e5" },
+            selector: { type: "string", description: "CSS selector, when there is no ref" },
             text: { type: "string", description: "Text to type (required)" },
+            clear: { type: "boolean", description: "Clear the field first (default true)" },
+            submit: { type: "boolean", description: "Press Enter afterwards (default false)" },
+            snapshot: { type: "boolean", description: "Return a fresh snapshot afterwards (default false)" },
           },
-          required: ["selector", "text"],
+          required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "browser_select",
+        description: "Choose an option in a <select> dropdown by its visible label or value: by ref from browser_snapshot or CSS selector.",
+        parameters: {
+          type: "object",
+          properties: {
+            ref: { type: "string", description: "Ref of the combobox/listbox from browser_snapshot" },
+            selector: { type: "string", description: "CSS selector, when there is no ref" },
+            value: { type: "string", description: "Option label or value (required)" },
+          },
+          required: ["value"],
         },
       },
     },
@@ -637,13 +736,27 @@ export default {
     },
   ],
   impl: {
-    async browser_navigate(args) { return session.navigate(args.url, { allow_internal: !!args.allow_internal, timeoutMs: args.timeout_ms || 30000 }); },
+    async browser_navigate(args) {
+      const nav = await session.navigate(args.url, { allow_internal: !!args.allow_internal, timeoutMs: args.timeout_ms || 30000 });
+      if (args.snapshot === false) return nav;
+      try {
+        return { ...nav, snapshot: await session.snapshot({ maxChars: 6000 }) };
+      } catch (e) {
+        return { ...nav, snapshot_error: e.message };
+      }
+    },
+    async browser_snapshot(args = {}) {
+      return session.snapshot({ ref: args.ref || null, selector: args.selector || null, interactiveOnly: !!args.interactive_only, maxChars: args.max_chars });
+    },
     async browser_screenshot(args) { return session.screenshot({ path: args.path }); },
     async browser_get_text(args) { return session.getText({ selector: args.selector, maxChars: args.max_chars }); },
     async browser_get_html(args) { return session.getHtml({ selector: args.selector, maxChars: args.max_chars }); },
     async browser_extract(args) { return session.extract(args.selector); },
-    async browser_click(args) { return session.click(args.selector); },
-    async browser_type(args) { return session.type(args.selector, args.text); },
+    async browser_click(args = {}) { return session.click({ ref: args.ref || null, selector: args.selector || null, snapshot: !!args.snapshot }); },
+    async browser_type(args = {}) {
+      return session.type({ ref: args.ref || null, selector: args.selector || null, text: args.text, clear: args.clear !== false, submit: !!args.submit, snapshot: !!args.snapshot });
+    },
+    async browser_select(args = {}) { return session.select({ ref: args.ref || null, selector: args.selector || null, value: args.value }); },
     async browser_evaluate(args) { return session.evaluate(args.expression, { awaitPromise: !!args.await_promise }); },
     async browser_status() { return session.status(); },
     async browser_close() { return session.close(); },

@@ -4,6 +4,11 @@
 
 import dns from "node:dns/promises";
 import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { htmlToMarkdown, budgetText } from "../src/core/html-markdown.mjs";
+import { HOME } from "../src/core/config.mjs";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Omni/0.1 (+https://localhost)";
@@ -319,6 +324,168 @@ async function youtubeTranscript({ url, lang = "en", timestamps = true, max_char
   return [header, "", `Description (first 1500 chars):\n${description || "(none)"}`, "", trackNote, transcript].join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Caching. A page read once is kept on disk for a while, so paging through a
+// long page with `start`, a sub-agent re-reading the same docs, or the agent
+// checking a page again minutes later costs no request. Identical calls that
+// are in flight at the same moment share one request.
+// ---------------------------------------------------------------------------
+
+const PAGE_TTL_MS = 15 * 60 * 1000;
+const SEARCH_TTL_MS = 10 * 60 * 1000;
+const MAX_STORED = 2_000_000; // characters of page text kept per URL
+const searchMemo = new Map(); // key -> { at, value } | { pending }
+const pageMemo = new Map();   // in-flight page fetches only
+
+function cacheDir() {
+  return path.join(process.env.OMNI_HOME || HOME, "cache", "web");
+}
+
+export function pageCachePath(url, fmt) {
+  const h = crypto.createHash("sha1").update(fmt + "\u0000" + url).digest("hex").slice(0, 24);
+  return path.join(cacheDir(), h + ".json");
+}
+
+function readCachedPage(url, fmt) {
+  try {
+    const rec = JSON.parse(fs.readFileSync(pageCachePath(url, fmt), "utf8"));
+    if (rec.url !== url || Date.now() - rec.at > PAGE_TTL_MS) return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPage(rec, fmt) {
+  try {
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    fs.writeFileSync(pageCachePath(rec.url, fmt), JSON.stringify(rec));
+    pruneCache();
+  } catch {
+    /* a cache that can't be written just means the next call refetches */
+  }
+}
+
+let lastPrune = 0;
+function pruneCache() {
+  if (Date.now() - lastPrune < 60_000) return;
+  lastPrune = Date.now();
+  try {
+    for (const f of fs.readdirSync(cacheDir())) {
+      const full = path.join(cacheDir(), f);
+      if (Date.now() - fs.statSync(full).mtimeMs > PAGE_TTL_MS * 4) fs.rmSync(full, { force: true });
+    }
+  } catch { /* best effort */ }
+}
+
+// Run `fn` once per key: callers within `ttl` get the stored value, callers
+// while it runs share its promise. `fn` returns { value, keep }; failures
+// aren't kept, so the next call retries.
+async function memo(map, key, ttl, fn) {
+  const hit = map.get(key);
+  if (hit?.pending) return hit.pending;
+  if (hit && Date.now() - hit.at < ttl) return hit.value;
+  const pending = (async () => {
+    try {
+      const { value, keep } = await fn();
+      if (keep) map.set(key, { at: Date.now(), value });
+      else map.delete(key);
+      if (map.size > 200) map.delete(map.keys().next().value);
+      return value;
+    } catch (e) {
+      map.delete(key);
+      throw e;
+    }
+  })();
+  map.set(key, { pending });
+  return pending;
+}
+
+export function _resetWebCaches() {
+  searchMemo.clear();
+  pageMemo.clear();
+}
+
+// Fetch and convert a page, or return it from cache. Returns
+// { url, finalUrl, title, text, at, cached } or an error string.
+async function getPage(url, fmt, allowInternal) {
+  const cached = readCachedPage(url, fmt);
+  if (cached) return { ...cached, cached: true };
+  const key = fmt + "\u0000" + (allowInternal ? "i" : "") + url;
+  const inflight = pageMemo.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    const res = await safeFetch(url, {
+      headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
+      signal: AbortSignal.timeout(30000),
+    }, 5, { allowInternal });
+    if (!res.ok) return `web_fetch failed: HTTP ${res.status} ${res.statusText}`;
+    const type = res.headers.get("content-type") || "";
+    const finalUrl = res.url || url;
+    if (/application\/pdf/i.test(type)) {
+      return "web_fetch: that URL is a PDF, which web_fetch can't read as text yet.";
+    }
+    if (/^(image|audio|video)\//i.test(type)) {
+      return `web_fetch: that URL is ${type.split(";")[0]}, not a page.`;
+    }
+    const body = await res.text();
+    let title = "";
+    let text;
+    if (/html|xml/i.test(type) || /^\s*<(!doctype|html)/i.test(body)) {
+      if (fmt === "text") {
+        text = htmlToText(body);
+      } else {
+        const md = htmlToMarkdown(body, { baseUrl: finalUrl });
+        title = md.title;
+        text = md.markdown;
+      }
+    } else {
+      text = body;
+    }
+    const rec = { url, finalUrl, title, text: text.slice(0, MAX_STORED), at: Date.now() };
+    writeCachedPage(rec, fmt);
+    return rec;
+  })();
+  pageMemo.set(key, p);
+  try {
+    return await p;
+  } finally {
+    pageMemo.delete(key);
+  }
+}
+
+// Shape a page for the model: a short header, then the text within the
+// budget. With `start` the text is read straight on (paging); from 0 a long
+// page keeps its head and tail and says exactly how to read what's missing.
+export function presentPage(page, cap, start = 0) {
+  const full = page.text || "";
+  const head = [];
+  if (page.title) head.push(`Title: ${page.title}`);
+  head.push(`URL: ${page.finalUrl || page.url}`);
+  if (!full.trim()) {
+    head.push("", "(the page has no readable text: it may be built by JavaScript. Try browser_navigate, then browser_snapshot.)");
+    return head.join("\n");
+  }
+  if (start > 0) {
+    if (start >= full.length) return head.concat("", `(start ${start} is past the end; the page has ${full.length} characters)`).join("\n");
+    const chunk = full.slice(start, start + cap);
+    const end = start + chunk.length;
+    head.push(`Characters ${start}–${end} of ${full.length}.`, "", chunk);
+    if (end < full.length) head.push("", `[MORE: call web_fetch again with start: ${end} for the next part]`);
+    return head.join("\n");
+  }
+  const b = budgetText(full, cap);
+  head.push("", b.text);
+  if (b.truncated) {
+    head.push(
+      "",
+      `[TRUNCATED: showed the start and end of ${full.length} characters. ` +
+        `The middle is characters ${b.omittedFrom}–${b.omittedTo}: call web_fetch again with the same url and start: ${b.omittedFrom} to read it (served from cache).]`,
+    );
+  }
+  return head.join("\n");
+}
+
 function htmlToText(html) {
   return decodeEntities(
     html
@@ -358,14 +525,16 @@ export default {
       function: {
         name: "web_fetch",
         description:
-          "Fetch an http(s) URL and return its readable text content (HTML stripped). Use after web_search to read documentation or articles. " +
+          "Fetch an http(s) URL and return the page's main content as Markdown (navigation, cookie banners and footers dropped; links, tables and code kept). Use after web_search to read documentation or articles. " +
           "YouTube URLs are automatically routed to youtube_transcript. " +
           "To read a dev server you started on localhost (e.g. checking your own API or page renders), pass allow_internal:true.",
         parameters: {
           type: "object",
           properties: {
             url: { type: "string", description: "Full http(s) URL to fetch" },
-            max_chars: { type: "integer", description: "Max characters to return, default 15000" },
+            max_chars: { type: "integer", description: "Max characters to return, default 15000. A longer page keeps its start and end, and says how to read the middle." },
+            start: { type: "integer", description: "Character offset to read from, to page through a long page (the truncation note gives it). Served from cache, no refetch." },
+            format: { type: "string", enum: ["markdown", "text"], description: "markdown (default): the main content with headings, links, lists, tables and code. text: every visible line of the whole page, tags stripped." },
             allow_internal: {
               type: "boolean",
               description: "Allow loopback/localhost URLs — use for a local dev server you started (default false). Private LAN and cloud-metadata addresses stay blocked regardless.",
@@ -396,14 +565,18 @@ export default {
   ],
   impl: {
     async web_search({ query, max_results = 8 }) {
-      try {
-        const lite = await ddgLite(query, max_results);
-        if (lite && lite !== "(no results)" && !lite.startsWith("search failed")) return lite;
-        const instant = await ddgInstant(query);
-        return instant || lite;
-      } catch (e) {
-        return "web_search error: " + e.message;
-      }
+      const n = Math.max(1, Math.min(Number(max_results) || 8, 30));
+      const key = String(query || "").trim().toLowerCase().replace(/\s+/g, " ") + "\u0000" + n;
+      return memo(searchMemo, key, SEARCH_TTL_MS, async () => {
+        try {
+          const lite = await ddgLite(query, n);
+          if (lite && lite !== "(no results)" && !lite.startsWith("search failed")) return { value: lite, keep: true };
+          const instant = await ddgInstant(query);
+          return { value: instant || lite, keep: !!instant };
+        } catch (e) {
+          return { value: "web_search error: " + e.message, keep: false };
+        }
+      });
     },
 
     async youtube_transcript(args) {
@@ -414,25 +587,20 @@ export default {
       }
     },
 
-    async web_fetch({ url, max_chars = 15000, allow_internal = false }) {
+    async web_fetch({ url, max_chars = 15000, start = 0, format = "markdown", allow_internal = false }) {
       try {
         if (!/^https?:\/\//i.test(String(url))) {
           return "web_fetch error: only http(s) URLs are supported";
         }
+        const cap = Math.max(500, Math.min(Number(max_chars) || 15000, 60000));
         // A YouTube page's HTML is useless as text — return the transcript instead.
         if (isYoutubeUrl(url) && extractVideoId(url)) {
-          return await youtubeTranscript({ url, max_chars });
+          return await youtubeTranscript({ url, max_chars: cap });
         }
-        const res = await safeFetch(url, {
-          headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
-          signal: AbortSignal.timeout(30000),
-        }, 5, { allowInternal: !!allow_internal });
-        if (!res.ok) return `web_fetch failed: HTTP ${res.status} ${res.statusText}`;
-        const type = res.headers.get("content-type") || "";
-        const body = await res.text();
-        const text = /html/i.test(type) ? htmlToText(body) : body;
-        const cap = Math.max(500, Math.min(Number(max_chars) || 15000, 60000));
-        return text.length > cap ? text.slice(0, cap) + "\n…[truncated]" : text;
+        const fmt = format === "text" ? "text" : "markdown";
+        const page = await getPage(url, fmt, !!allow_internal);
+        if (typeof page === "string") return page; // an error message
+        return presentPage(page, cap, Math.max(0, Number(start) || 0));
       } catch (e) {
         return "web_fetch error: " + (e.name === "TimeoutError" ? "request timed out (30s)" : e.message);
       }
