@@ -8,6 +8,42 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.20 — 2026-11-27
+
+- **Shipped:** this PR · TattooAI/browser-run-b4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`browser_run` does many browser steps in one call.** The model writes the
+  body of an async function that calls helpers (`goto`, `snap`, `click`,
+  `type`, `press`, `select`, `hover`, `scroll`, `wait`, `text`, `html`,
+  `extract`, `eval`, `shot`, `back`, `forward`, `tabs`, `dialog`,
+  `pageConsole`, `pageNetwork`, `upload`, `events`, `sleep`) and returns a
+  JSON result, with its `log()` lines. Filling a form, walking a list of
+  pages or collecting data takes one round trip instead of 5 to 15. A
+  helper that fails throws inside the script, so the script can catch it
+  and carry on; an error in the script's own code gives its line.
+  `shot()` images are attached for a vision model (the last 3), and share
+  the screenshot eviction budget. `allow_internal` covers the script's
+  `goto` and `tabs`. The other browser rules still apply (no password or
+  card fields, uploads from the workspace only).
+- **The script can't reach past its helpers.** It runs in a `node:vm`
+  context whose global belongs to its own realm, with code generation from
+  strings off (no `eval`, no `Function`) and no `process`, `require`,
+  timers, network or `Atomics`. Helper calls and results cross only as JSON
+  strings through one function the script can't see, which never throws a
+  host error into it. The context runs its own microtask queue under the
+  time limit, so an endless loop after an `await` is stopped too
+  (`timeout_ms`, default 60 s, max 5 min). Scripts that contain `import()`
+  are refused: its rejection is a host object, which would be a way out.
+  On a Node without `vm.constants.DONT_CONTEXTIFY` (before 22.8)
+  `browser_run` refuses rather than run with a weaker sandbox.
+- Tests: `tests/script-sandbox.test.mjs` pins the sandbox without a browser:
+  results, logs, errors with lines, endless loops before and after an
+  await, and each known way out of a vm context (the global's, a helper's
+  and a host error's constructor, `eval`/`Function`, `import()`, V8
+  CallSites, replacing helpers). `tests/browser-run.test.mjs` drives a real
+  Edge/Chrome: a login, refs from `snap()`, a loop over pages, caught and
+  uncaught helper errors, `allow_internal`, a dialog, `shot()` attachment,
+  the timeout and the sandbox from inside the tool.
+
 ## 3.6.19 — 2026-11-27
 
 - **Shipped:** [#81](https://github.com/tattooinmtl/omni/pull/81) · c34672e · TattooAI/serene-newton-c0fea4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403

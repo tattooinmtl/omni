@@ -15,7 +15,7 @@
 // A leaf module: no imports.
 
 // Tools whose images are screenshots, kept to the newest SCREENSHOT_KEEP.
-export const SCREENSHOT_TOOLS = ["browser_screenshot"];
+export const SCREENSHOT_TOOLS = ["browser_screenshot", "browser_run"];
 export const SCREENSHOT_KEEP = 3;
 export const SCREENSHOT_REMOVED = "[screenshot removed to save context]";
 

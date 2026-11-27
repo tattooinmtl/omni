@@ -30,6 +30,7 @@
 //   browser_network     [limit]              the page's requests, failures first
 //   browser_upload      ref|selector, paths  put workspace files into an <input type=file>
 //   browser_evaluate    expression           run JS in page context, return JSON-serializable result
+//   browser_run         script               a sandboxed async script calling goto/snap/click/type/... in one go
 //   browser_status                           { url, title, alive, tabs, downloads } of current session
 //   browser_close                             kill the browser
 //
@@ -56,6 +57,7 @@ import {
   snapshotExpression, locateExpression, focusExpression, selectExpression,
   scrollExpression, fileInputExpression, probeExpression,
 } from "../src/core/browser-snapshot.mjs";
+import { runSandboxed } from "../src/core/script-sandbox.mjs";
 
 // Where screenshots land by default. Must match vision-tools.js's readable
 // roots exactly, or read_media_file refuses the file we just wrote.
@@ -1436,6 +1438,25 @@ export default {
       expression: { type: "string", description: "JavaScript expression (required)" },
       await_promise: { type: "boolean", description: "Await the expression if it returns a Promise (default false)" },
     }, ["expression"]),
+    fn("browser_run",
+      "Run several browser steps in one call: the body of an async JavaScript function that calls helpers and returns a JSON " +
+      "result. Use it when you already know the steps (fill a form and submit, walk a list of pages, collect text), instead " +
+      "of one tool call per step. Every helper is async (await it); a target is a ref like \"e12\" or a CSS selector.\n" +
+      "goto(url) -> {url,title} · snap({selector, interactive_only}) -> snapshot text · click(target) · type(target, text, {submit, clear}) · " +
+      "press(keys, target?) · select(target, value) · hover(target) · scroll(\"down\"|\"up\"|target, amount?) · " +
+      "wait(ms | selector | {selector, text, url, network_idle, gone, timeout_ms}) · text(selector?) · html(selector?) · extract(selector) -> [text] · " +
+      "eval(expression) -> value in the page · shot({full_page, ref, selector}) -> screenshot (attached for a vision model) · back() · forward() · " +
+      "tabs(action, {tab, url}) · dialog(accept, text?) · pageConsole({level}) · pageNetwork({filter}) · upload(target, [paths]) · " +
+      "events() -> [notices] · sleep(ms) · log(...) or console.log(...) for notes.\n" +
+      "Example: await goto(\"https://example.com/login\"); await type(\"#user\", \"me\"); " +
+      "await click(\"button[type=submit]\"); await wait({ url: \"*/dashboard\" }); return await text(\"h1\");\n" +
+      "The script runs in a sandbox: no require, import, file system, network or timers of its own, only these helpers. " +
+      "It stops at timeout_ms. A failing helper throws (catch it to carry on). Password and card fields are still refused.",
+      {
+        script: { type: "string", description: "Body of an async function (required). Use await; return the result" },
+        timeout_ms: { type: "integer", description: "Stop the script after this long (default 60000, max 300000)" },
+        allow_internal: { type: "boolean", description: "Let goto() and tabs open loopback/localhost URLs (default false)" },
+      }, ["script"]),
     fn("browser_status", "Return { alive, url, title, port, tab, tabs, downloads } for the current browser session."),
     fn("browser_close", "Kill the headless browser and free the devtools port. The next browser_navigate will spawn a fresh one."),
   ],
@@ -1491,10 +1512,80 @@ export default {
     async browser_network(args) { return session.networkLog({ limit: args.limit, filter: args.filter, clear: !!args.clear }); },
     async browser_upload(args) { return session.upload({ ref: args.ref || null, selector: args.selector || null, paths: args.paths ?? args.path }); },
     async browser_evaluate(args) { return session.evaluate(args.expression, { awaitPromise: !!args.await_promise }); },
+    async browser_run(args, ctx) {
+      const vision = ctx?.vision === true;
+      const shots = [];
+      const timeoutMs = Math.max(1000, Math.min(300000, Number(args.timeout_ms) || 60000));
+      const res = await runSandboxed(args.script, { helpers: scriptHelpers({ allowInternal: !!args.allow_internal, vision, shots }), timeoutMs });
+      const out = { result: res.result, calls: res.calls, ms: res.ms };
+      if (res.logs.length) out.logs = res.logs;
+      if (shots.length) {
+        // The last three screenshots the script took, for a model that can see.
+        const last = shots.slice(-3);
+        out._omni_images = last.map((sh) => ({ mime: "image/png", base64: sh.base64 }));
+        out.detail = "auto";
+        out.text = `${last.length} screenshot(s) from shot() attached, in order${shots.length > 3 ? ` (the last 3 of ${shots.length})` : ""}.`;
+      }
+      return out;
+    },
     async browser_status() { return session.status(); },
     async browser_close() { return session.close(); },
   }).map(([name, f]) => [name, withEvents(f)])),
 };
+
+// The helpers a browser_run script can call. Arguments and results cross
+// the sandbox as JSON (src/core/script-sandbox.mjs); a target is a ref
+// ("e12") or a CSS selector, or { ref } / { selector }.
+function scriptHelpers({ allowInternal, vision, shots }) {
+  const tgt = (t) => {
+    if (t && typeof t === "object") return { ref: t.ref || null, selector: t.selector || null };
+    const v = String(t ?? "").trim();
+    if (!v) throw new Error("needs a target: a ref like \"e12\" or a CSS selector");
+    return /^e\d+$/.test(v) ? { ref: v, selector: null } : { ref: null, selector: v };
+  };
+  const opts = (o) => (o && typeof o === "object" ? o : {});
+  return {
+    goto: (url, o) => session.navigate(String(url ?? ""), { allow_internal: allowInternal, timeoutMs: Number(opts(o).timeout_ms) || 30000 }),
+    snap: (o) => { o = opts(o); return session.snapshot({ ref: o.ref || null, selector: o.selector || null, interactiveOnly: !!o.interactive_only, maxChars: o.max_chars }); },
+    click: (t) => session.click(tgt(t)),
+    type: (t, text, o) => { o = opts(o); return session.type({ ...tgt(t), text: String(text ?? ""), clear: o.clear !== false, submit: !!o.submit }); },
+    press: (keys, t, o) => session.press({ keys, ...(t ? tgt(t) : {}), repeat: opts(o).repeat }),
+    select: (t, value) => session.select({ ...tgt(t), value }),
+    hover: (t) => session.hover(tgt(t)),
+    scroll: (where, amount) => {
+      const w = String(where ?? "down").toLowerCase();
+      if (["up", "down", "left", "right"].includes(w)) return session.scroll({ direction: w, amount: amount ?? null });
+      return session.scroll(tgt(where));
+    },
+    wait: (c) => {
+      if (typeof c === "number") return session.wait({ ms: c });
+      if (typeof c === "string") return session.wait({ selector: c });
+      const o = opts(c);
+      return session.wait({ selector: o.selector || null, text: o.text || null, url: o.url || null, networkIdle: !!o.network_idle, gone: !!o.gone, ms: o.ms ?? null, timeoutMs: o.timeout_ms });
+    },
+    text: (sel) => session.getText({ selector: sel || undefined }),
+    html: (sel) => session.getHtml({ selector: sel || undefined }),
+    extract: (sel) => session.extract(sel),
+    eval: (expr) => session.evaluate(String(expr ?? "")),
+    evaluate: (expr) => session.evaluate(String(expr ?? "")),
+    shot: async (o) => {
+      o = opts(o);
+      const t = o.ref || o.selector ? tgt(o.ref || o.selector) : {};
+      const sh = await session.screenshot({ fullPage: !!o.full_page, ...t, forModel: vision });
+      if (vision) shots.push(sh);
+      return { path: sh.path, width: sh.width, height: sh.height, ...(vision ? { attached: true } : {}) };
+    },
+    back: () => session.history(-1),
+    forward: () => session.history(1),
+    tabs: (action, o) => { o = opts(o); return session.tabsAction({ action: action || "list", tab: o.tab, url: o.url, allow_internal: allowInternal }); },
+    dialog: (accept, text) => session.dialog({ accept: accept !== false, text }),
+    pageConsole: (o) => session.consoleLog(opts(o)),
+    pageNetwork: (o) => session.networkLog(opts(o)),
+    upload: (t, paths) => session.upload({ ...tgt(t), paths }),
+    events: async () => session.takeEvents(),
+    sleep: (ms) => sleep(Math.min(30000, Math.max(0, Number(ms) || 0))),
+  };
+}
 
 // A navigation's result with the page snapshot, unless snapshot:false or a
 // dialog is holding the page.
