@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.19 — 2026-11-27
 
-- **Shipped:** this PR · TattooAI/serene-newton-c0fea4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#81](https://github.com/tattooinmtl/omni/pull/81) · c34672e · TattooAI/serene-newton-c0fea4 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **The browser can do what a person does on a page.** New tools, each taking
   a `ref` from `browser_snapshot` or a CSS selector where they act on an
   element:
