@@ -8,6 +8,32 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.30 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/extension-hooks · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **In-process extension hooks** (`src/core/hooks.mjs`, wired in
+  `src/core/agent.mjs`). Extensions could already hook the seven command-hook
+  events; four extension-only events are new. A command hook for them is
+  refused (`EXTENSION_ONLY_EVENTS`), since they pass the whole conversation
+  or run for every token.
+  - `TransformToolResult` (matcher: tool name) returns `{ result }` to
+    replace a tool's result for the model and the history. Handlers chain,
+    and run before `PostToolUse`, which sees the new text. An image result
+    keeps its pixels.
+  - `PreModelCall` gets a copy of the step's messages and the tool names. It
+    returns `{ messages }` to send others, or `{ additionalContext }` to add
+    to the system message for that call. The history is not changed.
+  - `PostModelCall` gets the reply's content, tool-call names and usage. It
+    returns `{ content }` to change what is kept.
+  - `StreamToken` is called for every streamed token without being awaited
+    (`emitStreamToken`). A handler that throws ten times in a row is dropped.
+- **`SessionEnd`** (command or extension): runs when the REPL exits, before
+  teardown, and when a headless run finishes, with its stop reason.
+- `docs/EXTENDING.md` documents the events and has an example extension
+  that redacts keys from tool results. The README's hook paragraph lists them.
+- New `tests/extension-hooks.test.mjs` (8 checks against a mock model). The
+  `hooks` test passes unchanged.
+
 ## 3.6.29 — 2026-11-27
 
 - **Shipped:** [#91](https://github.com/tattooinmtl/omni/pull/91) · f877e57 · TattooAI/shell-backends · session fdbf92f2-27de-4fdf-a1cb-42da54823403

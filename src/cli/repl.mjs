@@ -33,7 +33,7 @@ import { applySkill, applySkills, resumeSessionInto, reportMissingKey, reportIns
 import { activeModelBlockedByHealth } from "./models.mjs";
 import { dispatchCommand, slashKind, parseSlashLine, recognizedSlashRanges, skillLoadedLine, slashTokenAt, slashMenuRows, acceptSlashRow } from "./commands.mjs";
 import { nextGoalStep } from "./goal.mjs";
-import { submitPromptHooks } from "../core/hooks.mjs";
+import { submitPromptHooks, runHooks } from "../core/hooks.mjs";
 import { expandTemplate } from "../core/templates.mjs";
 import { shouldOfferLearning, learnPrompt } from "../core/skill-learn.mjs";
 import { unreadCount } from "../core/scheduler.mjs";
@@ -1168,6 +1168,9 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
         }
       },
     ];
+    // SessionEnd hooks first, while everything they may touch is still up
+    // (each bounded by its own timeout).
+    await runHooks("SessionEnd", { reason: "exit", sessionFile: ctx.session?.file || null }).catch(() => {});
     for (const step of steps) {
       try { step(); } catch { /* best effort — keep closing */ }
     }

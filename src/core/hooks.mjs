@@ -9,6 +9,20 @@
 //   PreCompact        cancel the compaction, or add focus for the summary
 //   Stop              keep the agent going with a reason (e.g. "tests fail")
 //   SubagentStop      add a note to a finished sub-agent's result
+//   SessionEnd        the session is closing (observe; nothing to decide)
+//
+// Extension-only events (an extension's `hooks: { Event: fn }`; a command
+// hook is refused for these, since each passes the conversation or runs
+// per token):
+//   TransformToolResult  replace a tool's result before the model sees it:
+//                        return { result: "…" }              (matcher: tool name)
+//   PreModelCall         change what goes to the model this step: return
+//                        { messages: [...] } (a new array; the history itself
+//                        is untouched) or { additionalContext } for the system message
+//   PostModelCall        see the reply ({ content, toolCalls, usage }) and
+//                        optionally return { content } to change what is kept
+//   StreamToken          every streamed token, as it arrives ({ token });
+//                        called without waiting, its return value is ignored
 //
 // A command hook gets the event as JSON on stdin (and OMNI_HOOK_EVENT in its
 // env). It answers the way Claude Code hooks do, so existing scripts port:
@@ -33,8 +47,10 @@ import { publishActivity } from "../local/activity-bus.mjs";
 import { TOOLS_HUB_ID } from "../local/graph-ids.mjs";
 
 export const HOOK_EVENTS = [
-  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "SubagentStop",
+  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "SubagentStop", "SessionEnd",
+  "TransformToolResult", "PreModelCall", "PostModelCall", "StreamToken",
 ];
+export const EXTENSION_ONLY_EVENTS = new Set(["TransformToolResult", "PreModelCall", "PostModelCall", "StreamToken"]);
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_OUTPUT = 64 * 1024;
 
@@ -58,6 +74,9 @@ export function registerHook(def) {
   if (!def || typeof def !== "object") throw new Error("hook must be an object");
   const event = normalizeEvent(def.event || def.trigger);
   if (!def.command && typeof def.fn !== "function") throw new Error(`hook for ${event} needs a "command"`);
+  if (EXTENSION_ONLY_EVENTS.has(event) && typeof def.fn !== "function") {
+    throw new Error(`${event} hooks run inside Omni: an extension's hooks: { ${event}: fn }, not a command`);
+  }
   const entry = {
     name: String(def.name || (def.command ? String(def.command).split(/\s+/).slice(0, 2).join(" ") : "extension")).slice(0, 60),
     event,
@@ -201,7 +220,28 @@ function normalizeReply(r) {
     reason: r.reason != null ? String(r.reason) : undefined,
     args: r.args && typeof r.args === "object" ? r.args : (r.updatedInput && typeof r.updatedInput === "object" ? r.updatedInput : undefined),
     additionalContext: r.additionalContext != null ? String(r.additionalContext) : undefined,
+    result: typeof r.result === "string" ? r.result : undefined,
+    messages: Array.isArray(r.messages) ? r.messages : undefined,
+    content: typeof r.content === "string" ? r.content : undefined,
   };
+}
+
+// StreamToken: called for every token without waiting, so it can't slow the
+// stream down; an error is counted, not thrown, and a hook that throws ten
+// times in a row is dropped for the rest of the session.
+export function emitStreamToken(token) {
+  if (process.env.OMNI_NO_HOOKS) return;
+  for (const h of registry) {
+    if (h.event !== "StreamToken" || h.dead) continue;
+    try {
+      const r = h.fn({ event: "StreamToken", token });
+      if (r && typeof r.catch === "function") r.catch(() => { h.fails = (h.fails || 0) + 1; if (h.fails >= 10) h.dead = true; });
+      h.fails = 0;
+    } catch {
+      h.fails = (h.fails || 0) + 1;
+      if (h.fails >= 10) h.dead = true;
+    }
+  }
 }
 
 async function runOne(hook, payload) {
@@ -231,10 +271,11 @@ export async function submitPromptHooks(prompt) {
 }
 
 // Run every hook for `event` whose matcher fits `payload.tool` (if any).
-// Hooks run in registration order; a rewrite of `args` is handed to the next
-// one. Returns { denied, reason, by, args, context, errors, ran }.
+// Hooks run in registration order; a rewrite (args, result, messages,
+// content) is handed to the next one. Returns { denied, reason, by, args,
+// result, messages, content, context, errors, ran }.
 export async function runHooks(event, payload = {}) {
-  const outcome = { denied: false, reason: "", by: "", args: undefined, context: "", errors: [], ran: 0 };
+  const outcome = { denied: false, reason: "", by: "", args: undefined, result: undefined, messages: undefined, content: undefined, context: "", errors: [], ran: 0 };
   if (process.env.OMNI_NO_HOOKS) return outcome;
   const hooks = registry.filter((h) => h.event === event && (!h.matcher || h.matcher.test(String(payload.tool || ""))));
   if (!hooks.length) return outcome;
@@ -249,6 +290,18 @@ export async function runHooks(event, payload = {}) {
     if (r.args && event === "PreToolUse") {
       outcome.args = r.args;
       current = { ...current, args: r.args };
+    }
+    if (r.result !== undefined && event === "TransformToolResult") {
+      outcome.result = r.result;
+      current = { ...current, result: r.result };
+    }
+    if (r.messages && event === "PreModelCall") {
+      outcome.messages = r.messages;
+      current = { ...current, messages: r.messages };
+    }
+    if (r.content !== undefined && event === "PostModelCall") {
+      outcome.content = r.content;
+      current = { ...current, content: r.content };
     }
     if (r.additionalContext) notes.push(`[hook ${hook.name}] ${r.additionalContext.trim()}`);
     if (r.decision === "deny") {
