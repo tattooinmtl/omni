@@ -2,7 +2,7 @@
 // feed results back, repeat until the model answers with plain text.
 
 import { chatStream, completionStream } from "./provider.mjs";
-import { rotateAccount, activateAccount, resolveModel, redactForModel, saveSettings, SETTINGS_PATH } from "./config.mjs";
+import { activateAccount, resolveModel, redactForModel, saveSettings, SETTINGS_PATH } from "./config.mjs";
 import { renderTemplate } from "../integrations/router.mjs";
 import { tools, runTool, commandRisk } from "../tools/index.mjs";
 import {
@@ -25,6 +25,7 @@ import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { syntheticUser, recordFor } from "./synthetic.mjs";
 import { evictOldImages, imageLabel, toolResultContent } from "./image-context.mjs";
 import { UNTRUSTED_RULE } from "./untrusted.mjs";
+import { classifyFailure, triggerOf, fallbackConfig, buildChain, nextHop, hopLabel, hopMatchesModel, accountOf, rotateReadyAccount, coolDown, cooldownOf, clearCooldown, fmtWait } from "./failover.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
@@ -270,22 +271,12 @@ function stripImageParts(messages, modelKey = null, { quiet = false } = {}) {
   return out;
 }
 
-// Transient provider errors that are worth retrying automatically.
-const RETRYABLE = /ResourceExhausted|workers are busy|Service Unavailable|too many requests|rate.?limit/i;
-// The subset that means "this key is throttled" — worth failing over to
-// another account of the same provider before waiting it out.
-const RATE_LIMITED = /ResourceExhausted|too many requests|rate.?limit/i;
-// A 429 that says a daily quota is spent ("You've reached today's free-model
-// token quota", OpenAI's "exceeded your current quota"). Backing off for 93s
-// cannot outwait it — it resets in hours — so after account rotation and
-// failover have had their turn, give up at once instead of stalling the user.
-const QUOTA_SPENT = /today['’]?s\b[^.\n]*\bquota|\bdaily\b[^.\n]*\b(?:quota|token limit)\b|exceeded your (?:current )?quota/i;
-
+// Provider failures are classified, cooled down and failed over in
+// failover.mjs; this is the loop that acts on it.
 const MAX_RETRIES  = 5;
 const BASE_DELAY   = 3000;  // 3s → 6s → 12s → 24s → 48s
 const MAX_ROTATIONS = 4;    // account hops per request before plain backoff
-const AGNES_FAILOVER_MODEL = "agnes/agnes-2.5-flash";
-const OPENROUTER_FAILOVER_MODEL = "openrouter/llama-3-8b";
+const SAME_HOP_RETRIES = 1; // a 5xx or a dropped connection is tried once more where it happened
 
 function applyResolvedModel(target, resolved) {
   target.key = resolved.key;
@@ -299,41 +290,8 @@ function applyResolvedModel(target, resolved) {
   target.chatTemplate = resolved.chatTemplate;
   target.reasoning = resolved.reasoning;
   target.nativeTools = resolved.nativeTools;
-}
-
-function hasUsableKey(provider, accountName = null) {
-  if (!provider) return false;
-  if (accountName) {
-    return Boolean(String(provider.accounts?.[accountName] || "").trim());
-  }
-  return Boolean(String(provider.apiKey || "").trim());
-}
-
-function buildRateLimitChain(settings) {
-  if (!settings) return [];
-  const desired = [
-    { providerName: "nvidia", account: "nvidia1", modelKey: "nvidia/nemotron-3-ultra-550b-a55b" },
-    { providerName: "agnes", account: "agnes1", modelKey: AGNES_FAILOVER_MODEL },
-    { providerName: "nvidia", account: "nvidia2", modelKey: "nvidia/nemotron-3-ultra-550b-a55b" },
-    { providerName: "agnes", account: "agnes2", modelKey: AGNES_FAILOVER_MODEL },
-    { providerName: "openrouter", account: null, modelKey: OPENROUTER_FAILOVER_MODEL },
-  ];
-
-  return desired.filter((hop) => {
-    const provider = settings.providers?.[hop.providerName];
-    if (!provider) return false;
-    if (!settings.models?.[hop.modelKey]) return false;
-    if (!hasUsableKey(provider, hop.account)) return false;
-    return true;
-  });
-}
-
-function hopMatchesModel(hop, model) {
-  if (!hop || !model) return false;
-  if (hop.providerName !== model.providerName) return false;
-  if (hop.modelKey !== model.key) return false;
-  if (!hop.account) return true;
-  return (model.provider?.activeAccount || "") === hop.account;
+  target.vision = resolved.vision;
+  target.maxToolIterations = resolved.maxToolIterations;
 }
 
 function switchModelToHop(model, settings, hop) {
@@ -365,26 +323,12 @@ function switchModelToHop(model, settings, hop) {
 // internal (the chatStreamWithRetry failover path).
 export { switchModelToHop };
 
-// provider.mjs formats HTTP failures as "Provider <status> <statusText>: …".
-// When that prefix is present it is authoritative: classify on the status
-// alone, so digits inside the provider's own error body (request ids like
-// …806L8J97LPL, quota numbers) can't masquerade as a 429/503 and route a hard
-// auth failure into the retry/failover machinery.
-function providerStatus(msg) {
-  const m = /^Provider (\d{3})\b/.exec(msg || "");
-  return m ? Number(m[1]) : null;
-}
-
-function isRateLimited(msg) {
-  const status = providerStatus(msg);
-  return status === null ? RATE_LIMITED.test(msg) : status === 429;
-}
-
-function isRetryable(err) {
-  const msg = err.message || String(err);
-  const status = providerStatus(msg);
-  if (status !== null) return status === 429 || (status >= 502 && status <= 504);
-  return RETRYABLE.test(msg);
+// Back to the model the user chose, on the live provider object (a hop
+// pointed the model at a clone). The account it had is restored too.
+function returnToPrimary(model, settings, primary) {
+  const live = settings.providers?.[primary.providerName];
+  if (primary.account && live?.accounts) activateAccount(live, primary.account);
+  applyResolvedModel(model, resolveModel(settings, primary.modelKey));
 }
 
 function abortableSleep(ms, signal) {
@@ -394,12 +338,25 @@ function abortableSleep(ms, signal) {
   });
 }
 
-// chatStream wrapper with exponential backoff. Retries up to MAX_RETRIES
-// times on transient 429/503/ResourceExhausted errors, showing a countdown
-// so the user knows why the agent paused. When the provider has multiple
-// accounts (settings.providers.<name>.accounts), a rate-limit error first
-// rotates to the next account and retries almost immediately — backoff only
-// kicks in once every account has been tried.
+const KIND_TEXT = {
+  "rate-limit": "rate-limited",
+  quota: "out of quota",
+  server: "provider error",
+  timeout: "no reply",
+  network: "connection failed",
+  auth: "key rejected",
+};
+
+// chatStream wrapper: retries, account rotation and provider failover.
+//   - A 429 first tries the provider's other accounts (when the model isn't
+//     pinned to one), then the next hop of the fallback chain.
+//   - A 5xx, a timeout or a dropped connection is tried once more on the
+//     same hop, then on the next hop with a different endpoint.
+//   - A rejected key (401/403) or an empty balance (402) moves on at once.
+// Every failing key is put on a cooldown (failover.mjs), so later requests
+// skip it, and once the user's own model has cooled down the next request
+// goes back to it. With nowhere left to go, a 429 or 5xx falls back to plain
+// exponential backoff on a one-hop chain, and ends the turn on a longer one.
 // `allowFailover: false` keeps the request on this model (account rotation
 // and backoff still apply): a vision-fallback step carries image parts that a
 // failover model may not be able to see.
@@ -409,10 +366,69 @@ function abortableSleep(ms, signal) {
 async function chatStreamWithRetry({ model, settings, session, messages, tools, signal, onToken, _templatePrompt, allowFailover = true, rateLimitFailFast = false }) {
   let attempt = 0;
   let rotations = 0;
-  const failoverChain = allowFailover ? buildRateLimitChain(settings) : [];
-  let failoverIndex = failoverChain.findIndex((hop) => hopMatchesModel(hop, model));
-  const failoverActive = failoverIndex >= 0;
+  let sameHopTries = 0;
+  const cfg = fallbackConfig(settings);
+  // A fail-fast caller (self_review) has its own better place to go than the chain.
+  const failover = allowFailover && cfg.enabled && !rateLimitFailFast;
+  const tried = new Set();
   let checkpointOpened = false;
+  let checkpointReason = "429";
+  const where = () => `${model.providerName}${accountOf(model) ? `:${accountOf(model)}` : ""}`;
+
+  // Back on the user's own model once its cooldown is over.
+  if (failover && cfg.returnToPrimary && model._failoverPrimary) {
+    const p = model._failoverPrimary;
+    if (hopMatchesModel(p, model)) delete model._failoverPrimary;
+    else if (!cooldownOf(p.providerName, p.account)) {
+      try {
+        returnToPrimary(model, settings, p);
+        delete model._failoverPrimary;
+        warnLine(`${hopLabel(p)} (${p.modelKey}) is available again — back on it`);
+      } catch { /* the model or provider was removed: stay where we are */ }
+    }
+  }
+
+  let chain = failover ? buildChain(settings, model) : { hops: [], index: -1 };
+  const markTried = () => { tried.add(`${where()} ${model.key}`); tried.add(`${model.providerName} ${model.key}`); };
+  const goTo = async (hop, kind, msg) => {
+    if (!model._failoverPrimary) {
+      model._failoverPrimary = { modelKey: model.key, providerName: model.providerName, account: accountOf(model) };
+    }
+    chain = { ...chain, index: chain.hops.indexOf(hop) };
+    checkpointOpened = true;
+    checkpointReason = kind === "rate-limit" || kind === "quota" ? "429" : kind;
+    if (session) {
+      await session.append({
+        type: "interrupt_checkpoint",
+        status: "active",
+        reason: checkpointReason,
+        hop: chain.index + 1,
+        totalHops: chain.hops.length,
+        provider: hop.providerName,
+        account: hop.account || null,
+        modelKey: hop.modelKey,
+        message: msg.split("\n")[0].slice(0, 200),
+      });
+    }
+    switchModelToHop(model, settings, hop);
+    sameHopTries = 0;
+  };
+
+  // This model's key is cooling down from an earlier request (another step,
+  // a sub-agent): start on the next ready hop instead of hitting it again.
+  if (chain.hops.length > 1) {
+    const cd = cooldownOf(model.providerName, accountOf(model));
+    if (cd) {
+      const { hop } = nextHop(chain, settings, { tried });
+      if (hop) {
+        markTried();
+        warnLine(`${where()} is cooling down for ${fmtWait(cd.until - Date.now())} (${cd.kind}) — using ${hopLabel(hop)} (${hop.modelKey})`);
+        await goTo(hop, cd.kind, cd.message || cd.kind);
+      }
+    }
+  }
+
+  const timeoutMs = cfg.timeoutMs;
   // The provider refused max_tokens and named its limit (provider.mjs): keep
   // that limit in settings, so the next session doesn't hit the same 400.
   const onTokenCap = (cap) => {
@@ -425,26 +441,15 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
 
   while (true) {
     try {
-      if (_templatePrompt != null) {
-        const out = await completionStream({ model, prompt: _templatePrompt, signal, onToken, onTokenCap });
-        if (checkpointOpened && session) {
-          await session.append({
-            type: "interrupt_checkpoint",
-            status: "resolved",
-            reason: "429",
-            provider: model.providerName,
-            account: model.provider?.activeAccount || null,
-            modelKey: model.key,
-          });
-        }
-        return out;
-      }
-      const out = await chatStream({ model, messages, tools, signal, onToken, onTokenCap });
+      const out = _templatePrompt != null
+        ? await completionStream({ model, prompt: _templatePrompt, signal, onToken, onTokenCap, timeoutMs })
+        : await chatStream({ model, messages, tools, signal, onToken, onTokenCap, timeoutMs });
+      clearCooldown(model.providerName, accountOf(model));
       if (checkpointOpened && session) {
         await session.append({
           type: "interrupt_checkpoint",
           status: "resolved",
-          reason: "429",
+          reason: checkpointReason,
           provider: model.providerName,
           account: model.provider?.activeAccount || null,
           modelKey: model.key,
@@ -454,74 +459,85 @@ async function chatStreamWithRetry({ model, settings, session, messages, tools, 
     } catch (e) {
       // Aborted by user (Ctrl-C / Esc) — propagate immediately, no retry.
       if (e.name === "AbortError" || signal?.aborted) throw e;
-      if (!isRetryable(e) || attempt >= MAX_RETRIES) throw e;
+      const kind = classifyFailure(e);
+      if (!kind) throw e;
       const msg = e.message || String(e);
+      const head = msg.split("\n")[0];
+      const failedBaseUrl = model.provider?.baseUrl || null;
+      coolDown(model.providerName, accountOf(model), kind, { retryAfter: e.retryAfter, message: head });
+      const moving = failover && cfg.on.has(triggerOf(kind));
+      const outage = kind === "server" || kind === "timeout" || kind === "network";
+      const keyProblem = kind === "rate-limit" || kind === "quota" || kind === "auth";
 
-      if (isRateLimited(msg) && failoverActive) {
-        const nextHop = failoverChain[failoverIndex + 1] || null;
-        if (nextHop) {
-          failoverIndex++;
-          checkpointOpened = true;
-          warnLine(`rate-limited (${msg.split("\n")[0].slice(0, 60)})`);
-          warnLine(`switching to ${nextHop.providerName}${nextHop.account ? `:${nextHop.account}` : ""} (${nextHop.modelKey}) and retrying…`);
-          mascotLine("provider", false);
-          if (session) {
-            await session.append({
-              type: "interrupt_checkpoint",
-              status: "active",
-              reason: "429",
-              hop: failoverIndex + 1,
-              totalHops: failoverChain.length,
-              provider: nextHop.providerName,
-              account: nextHop.account || null,
-              modelKey: nextHop.modelKey,
-              message: msg.split("\n")[0].slice(0, 200),
-            });
-          }
-          switchModelToHop(model, settings, nextHop);
-          await abortableSleep(1200, signal);
-          continue;
-        }
-
-        const chainText = failoverChain
-          .map((hop) => `${hop.providerName}${hop.account ? `:${hop.account}` : ""}`)
-          .join(" -> ");
-        if (session) {
-          await session.append({
-            type: "interrupt_checkpoint",
-            status: "exhausted",
-            reason: "429",
-            provider: model.providerName,
-            account: model.provider?.activeAccount || null,
-            modelKey: model.key,
-            chain: chainText,
-            message: msg.split("\n")[0].slice(0, 200),
-          });
-        }
-        throw new Error(
-          `Provider 429 Too Many Requests: failover chain exhausted (${chainText}). Last error: ${msg.split("\n")[0].replace(/^Provider 429 Too Many Requests:\s*/, "").slice(0, 200)} — switch provider/account manually with /provider or /switch-provider, then retry.`
-        );
+      // A blip: one more try where it happened before moving on.
+      if (outage && sameHopTries < SAME_HOP_RETRIES && (kind !== "server" || (moving && chain.hops.length > 1))) {
+        sameHopTries++;
+        warnLine(`${KIND_TEXT[kind]} from ${where()} (${head.slice(0, 80)}) — trying once more…`);
+        mascotLine("provider", false);
+        await abortableSleep(2000, signal);
+        continue;
       }
 
-      if (isRateLimited(msg) && rotations < MAX_ROTATIONS) {
-        // model.provider is the live settings object, so the rotated key is
-        // picked up by authHeaders on the very next request. Session-only —
-        // the on-disk activeAccount changes via /switch-provider, not here.
-        const next = rotateAccount(model.provider);
+      // Another account of the same provider, when this hop isn't pinned to
+      // one. (A rate limit always does this; a rejected key only when failing
+      // over on auth is on.)
+      const floating = !failover || chain.hops[chain.index]?.current || !chain.hops[chain.index]?.account;
+      if (keyProblem && floating && rotations < MAX_ROTATIONS && (kind !== "auth" || moving)) {
+        const next = rotateReadyAccount(model.provider, model.providerName);
         if (next) {
           rotations++;
-          warnLine(`rate-limited (${msg.split("\n")[0].slice(0, 60)})`);
+          markTried();
+          warnLine(`${KIND_TEXT[kind]} (${head.slice(0, 60)})`);
           warnLine(`switching to account ${next} and retrying…`);
           mascotLine("provider", false);
           await abortableSleep(1200, signal);
           continue;
         }
       }
-      if (isRateLimited(msg) && (rateLimitFailFast || QUOTA_SPENT.test(msg))) throw e;
+
+      if (moving && chain.hops.length > 1) {
+        markTried();
+        const { hop, skipped } = nextHop(chain, settings, { tried, avoidBaseUrl: outage ? failedBaseUrl : null });
+        if (hop) {
+          warnLine(`${KIND_TEXT[kind]} (${head.slice(0, 60)})`);
+          warnLine(`switching to ${hopLabel(hop)} (${hop.modelKey}) and retrying…`);
+          mascotLine("provider", false);
+          await goTo(hop, kind, msg);
+          await abortableSleep(1200, signal);
+          continue;
+        }
+        const chainText = chain.hops.map(hopLabel).join(" -> ");
+        const cooling = skipped.filter((s) => /cooling down/.test(s));
+        if (session) {
+          await session.append({
+            type: "interrupt_checkpoint",
+            status: "exhausted",
+            reason: kind === "rate-limit" || kind === "quota" ? "429" : kind,
+            provider: model.providerName,
+            account: model.provider?.activeAccount || null,
+            modelKey: model.key,
+            chain: chainText,
+            message: head.slice(0, 200),
+          });
+        }
+        const last = head.replace(/^Provider 429 Too Many Requests:\s*/, "").slice(0, 200);
+        const prefix = kind === "rate-limit" || kind === "quota" ? "Provider 429 Too Many Requests: " : "";
+        throw new Error(
+          `${prefix}failover chain exhausted (${chainText}). Last error: ${last}` +
+          (cooling.length ? `. Cooling down: ${cooling.join("; ")} (/fallback clear to try them now)` : "") +
+          ` — switch provider/account manually with /provider or /switch-provider, then retry (/fallback shows the chain).`
+        );
+      }
+
+      // Nowhere else to go: wait it out, for what waiting can fix (a 429 or
+      // a 5xx; a timeout already waited, and a refused connection won't heal).
+      if (kind !== "rate-limit" && kind !== "server") throw e;
+      if (attempt >= MAX_RETRIES) throw e;
+      if (kind === "rate-limit" && rateLimitFailFast) throw e;
       attempt++;
       const delay = BASE_DELAY * Math.pow(2, attempt - 1);
       const secs  = Math.round(delay / 1000);
-      warnLine(`provider unavailable (${msg.split("\n")[0].slice(0, 80)})`);
+      warnLine(`provider unavailable (${head.slice(0, 80)})`);
       warnLine(`retrying in ${secs}s… (attempt ${attempt}/${MAX_RETRIES})`);
       mascotLine("provider", false);
       await abortableSleep(delay, signal);
