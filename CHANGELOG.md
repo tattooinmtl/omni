@@ -8,6 +8,35 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.34 — 2026-11-28
+
+- **Shipped:** — · — · TattooAI/acp · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`omni --acp`: the Agent Client Protocol for editors** (new
+  `src/cli/acp.mjs`). It is JSON-RPC on stdio like `--rpc`, sharing its
+  stdout capture, with the UI on stderr.
+  - **`initialize`:** protocol 1, text and embedded-context prompts, no
+    image or audio, no `loadSession`.
+  - **`session/new`:** a fresh conversation in the editor's `cwd`. Omni
+    changes to that folder and updates the working-directory line of its
+    system prompt.
+  - **`session/prompt`:** text, `resource` (passed as context) and
+    `resource_link` blocks become one user message.
+  - **Updates while a turn runs:** `agent_message_chunk` streams the reply
+    (think blocks filtered). `tool_call` shows each call with a title, a
+    kind (read, edit, delete, move, search, execute, fetch, other) and the
+    files it touches. `tool_call_update` reports `completed` or `failed`
+    with the result.
+  - The turn ends with `end_turn`, `max_turn_requests` or `cancelled`
+    (`session/cancel`). An error is shown in the panel.
+  - **Permissions:** a tool that needs the user's OK becomes
+    `session/request_permission` with allow once / allow always / reject.
+    A cancelled dialog is a no.
+  - The agent's `ask_user` explains that the panel can't answer. Unknown
+    methods get -32601; prompts run one at a time.
+- New `tests/acp.test.mjs` (7 checks, the test playing the editor, with a
+  mock model). Checked live: the real `--acp` answers `initialize`,
+  `session/new` and an unknown method with nothing but JSON-RPC on stdout.
+
 ## 3.6.33 — 2026-11-28
 
 - **Shipped:** [#95](https://github.com/tattooinmtl/omni/pull/95) · f04ed5c · TattooAI/api-server · session fdbf92f2-27de-4fdf-a1cb-42da54823403

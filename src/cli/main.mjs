@@ -111,8 +111,14 @@ export async function main(args) {
   // --rpc: JSON lines over stdio (rpc.mjs). Like json output, it needs stdout
   // to itself, so the terminal UI goes to stderr.
   const rpcIdx = args.indexOf("--rpc");
-  const rpcMode = rpcIdx !== -1;
-  if (rpcMode) args.splice(rpcIdx, 1);
+  const rpcFlag = rpcIdx !== -1;
+  if (rpcFlag) args.splice(rpcIdx, 1);
+  // --acp: the Agent Client Protocol over stdio, for editors (acp.mjs). Like
+  // --rpc it owns stdout, so it shares the RPC setup below.
+  const acpIdx = args.indexOf("--acp");
+  const acpMode = acpIdx !== -1;
+  if (acpMode) args.splice(acpIdx, 1);
+  const rpcMode = rpcFlag || acpMode;
   const rpcOut = rpcMode ? captureStdout() : null;
   // --serve [--port n] [--token t]: an OpenAI-compatible API on 127.0.0.1 (serve.mjs).
   const serveIdx = args.indexOf("--serve");
@@ -490,6 +496,13 @@ export async function main(args) {
     persistModelOnExit = false;
     const { startServe } = await import("./serve.mjs");
     try { await startServe(ctx, serveOpt); } catch (e) { errorLine(`--serve: ${e.message}`); stopBackgroundChildren(); await shutdown(1); }
+    return;
+  }
+
+  if (acpMode) {
+    persistModelOnExit = false;
+    const { startAcp } = await import("./acp.mjs");
+    startAcp(ctx, { emit: rpcOut.emit, onExit: () => { stopBackgroundChildren(); shutdown(0); } });
     return;
   }
 
