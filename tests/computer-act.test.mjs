@@ -70,6 +70,10 @@ $f.Size = New-Object System.Drawing.Size(520, 360)
 $f.TopMost = $true
 $script:n = 0
 $q = New-Object System.Windows.Forms.TextBox; $q.AccessibleName = 'Query'; $q.Text = 'hello'; $q.Location = New-Object System.Drawing.Point(10, 10); $q.Width = 150; $f.Controls.Add($q)
+# Setting a value through UI Automation focuses the box, so keys the user is
+# typing elsewhere at that moment would land here ("nomni was here"). Only
+# the OMNI_TEST_INPUT checks type for real; otherwise the box takes no keys.
+if (-not $env:OMNI_TEST_INPUT) { $q.Add_KeyPress({ $_.Handled = $true }); $q.Add_KeyDown({ $_.SuppressKeyPress = $true }) }
 $pw = New-Object System.Windows.Forms.TextBox; $pw.AccessibleName = 'Password'; $pw.UseSystemPasswordChar = $true; $pw.Location = New-Object System.Drawing.Point(10, 40); $pw.Width = 150; $f.Controls.Add($pw)
 $cb = New-Object System.Windows.Forms.CheckBox; $cb.Text = 'Remember me'; $cb.Checked = $true; $cb.Location = New-Object System.Drawing.Point(10, 70); $f.Controls.Add($cb)
 $st = New-Object System.Windows.Forms.Label; $st.Text = 'idle'; $st.Location = New-Object System.Drawing.Point(10, 110); $st.Width = 200; $f.Controls.Add($st)

@@ -541,8 +541,13 @@ the iteration cap is hit, or the token budget runs out.
   `/expand-skill` and `/expand <hash>` bring back a full body when needed, and
   `/compare-personality` shows the average token cost of each mode. An
   `omni.config.json` in the project folder can set the mode per project.
-- **`/context 200k`** overrides a model's context window; `/context auto` goes
-  back to the detected value.
+- **`/context`** shows what fills the context window, by kind: system
+  prompt, tool definitions, skills and notes, your messages, the agent's
+  replies, tool calls and tool results. It names the largest tool results,
+  with a gauge of how much of the window is used. The numbers are estimates,
+  next to the provider's own count when it sent one. `/context 200k`
+  overrides a model's context window; `/context auto` goes back to the
+  detected value.
 
 ### Project instructions (OMNI.md)
 
