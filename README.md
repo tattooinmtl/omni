@@ -1048,6 +1048,15 @@ brain's own config.
 - **OmniBots:** `/omnibots` starts the tray app (or brings its window forward).
   `/omnibots status` and `/omnibots stop` check or close it.
 - **Vision:** `read_media_file`, `read_video_file` (see below)
+- **Speech, on this PC only:**
+  - `text_to_speech` writes a WAV with Windows' own voices (`list_voices`
+    shows them; `voice`, `rate`, `play` to hear it).
+  - `speech_to_text` transcribes a recording. It uses whisper.cpp when
+    installed (`whisper-cli` on PATH or `OMNI_WHISPER_BIN`, with a model in
+    `OMNI_WHISPER_MODEL`), otherwise Windows' offline dictation, which is
+    rough for names and jargon.
+  - Formats other than WAV are converted with ffmpeg first. No cloud voice
+    or transcription service.
 - **Files:** `move_file`, `copy_file`, `delete_path`, `make_dir`
 - **Interaction and goals:** `ask_user`, `goal_complete`
 - **MCP:** one `mcp` proxy tool reaches any configured MCP server lazily. The

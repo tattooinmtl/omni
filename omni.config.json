@@ -8,6 +8,7 @@
     "extensions/browser-use.js",
     "extensions/computer-use.js",
     "extensions/scheduling.js",
+    "extensions/media-tools.js",
     "extensions/vision-tools.js",
     "extensions/git-ops.js",
     "extensions/http-request.js",

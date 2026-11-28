@@ -8,6 +8,26 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.35 — 2026-11-28
+
+- **Shipped:** — · — · TattooAI/media-tools · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Local speech tools** (new `extensions/media-tools.js`, on by default in
+  `omni.config.json`). Nothing goes to a cloud service.
+  - **`text_to_speech`** uses Windows' own speech engine (SAPI). It writes a
+    WAV to a workspace path or `~/.omni/media/`, and can play it aloud;
+    `list_voices` lists what is installed. The text reaches PowerShell on
+    stdin and the voice, rate and path through the environment, so nothing
+    the model writes becomes part of a command line.
+  - **`speech_to_text`** uses whisper.cpp when installed (`whisper-cli`, or
+    `OMNI_WHISPER_BIN` plus `OMNI_WHISPER_MODEL`), otherwise Windows' offline
+    dictation. A file that isn't 16-bit PCM WAV is converted with ffmpeg
+    first. Paths stay inside the workspace. It counts as read-only in plan
+    mode.
+- New `tests/media-tools.test.mjs` (5 checks). Zira says a sentence into a
+  WAV, Windows transcribes it, and the same again through an MP3 with
+  ffmpeg. Dictation is rough ("build a screen" for "build is green"), so the
+  test checks the words it reliably catches.
+
 ## 3.6.34 — 2026-11-28
 
 - **Shipped:** [#96](https://github.com/tattooinmtl/omni/pull/96) · a9924d0 · TattooAI/acp · session fdbf92f2-27de-4fdf-a1cb-42da54823403
