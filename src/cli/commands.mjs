@@ -49,6 +49,7 @@ import { runtimeCommand } from "./runtime-cmd.mjs";
 import { updateCommand } from "./update-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runComputerCommand } from "./computer-cmd.mjs";
+import { runWebCommand } from "./web-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -1310,6 +1311,11 @@ export const COMMANDS = [
     name: "computer", aliases: [], usage: "/computer [on|off|status|deny <app…>|undeny <app…>|doctor]", category: "Tools",
     summary: "let the agent see and use your Windows PC (screenshots, UI tree, clicks, typing); off until /computer on, asks per app, deny list, Ctrl+Alt+Esc stops it",
     handler: (ctx, arg) => runComputerCommand(ctx, arg),
+  },
+  {
+    name: "web", aliases: [], usage: "/web [test | order <id,id,…> | searxng <url>|off]", category: "Tools",
+    summary: "the search engines web_search tries in turn (DuckDuckGo, Mojeek, your own SearXNG): show, test, reorder",
+    handler: (ctx, arg) => runWebCommand(ctx, arg),
   },
   {
     name: "runtime", aliases: ["pack"], usage: "/runtime [install [names|recommended|all] | remove <name>]", category: "Tools",

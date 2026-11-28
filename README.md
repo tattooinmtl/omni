@@ -375,7 +375,7 @@ Enter puts it in and sends. `/help` lists everything with usage strings. Unknown
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` `/computer` `/runtime` `/update-omni` `/omnibots` |
+| Tools | `/browser` `/computer` `/web` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
 
 Every installed skill is also a `/slash-command`.
@@ -799,8 +799,17 @@ brain's own config.
 - **System diagnostics:** `system_info` (OS/CPU/RAM/GPU/disks),
   `dev_env_report` (about 85 toolchains probed in parallel, including
   broken-PATH detection), `where_is`
-- **Web (no API keys):** `web_search` (DuckDuckGo), `web_fetch`,
-  `youtube_transcript`, `http_request`. `web_fetch` returns a page's main
+- **Web (no API keys):** `web_search`, `web_fetch`, `youtube_transcript`,
+  `http_request`. `web_search` tries keyless engines in turn: DuckDuckGo
+  lite, DuckDuckGo html, Mojeek, and your own SearXNG if you set one
+  (`/web searxng http://localhost:8080`). When one is blocked (rate limit,
+  CAPTCHA) or finds nothing it moves on, and the result says which engine
+  answered and why the others were skipped. `site`, `recency`
+  (day/week/month/year) and `region` (e.g. `fr-fr`) narrow a search, and the
+  same page twice is listed once. `/web` shows the engines, `/web test` asks
+  each one, `/web order` changes the order. Omni never disguises itself to
+  get past a CAPTCHA: a local SearXNG is the dependable choice when the
+  public engines rate-limit you. `web_fetch` returns a page's main
   content as Markdown (links, tables and code kept; menus, cookie banners and
   footers dropped). A long page keeps its start and end, and `start` reads
   the middle from a 15-minute cache. A page that builds its content with

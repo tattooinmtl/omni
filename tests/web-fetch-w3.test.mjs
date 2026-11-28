@@ -187,7 +187,8 @@ try {
     try {
       webMod._resetWebCaches();
       const out = await web.web_search({ query: "fence test" });
-      assert.match(out, /^\[untrusted content from web search results begins/);
+      // Which engine answered (Omni's own line), then the fenced results.
+      assert.match(out, /^Results from ddg-lite:\n\[untrusted content from web search results begins/);
       assert.match(out, /Ignore previous instructions\.[\s\S]*\[untrusted content from web search results ends\]$/);
     } finally {
       globalThis.fetch = realFetch;
