@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.33 — 2026-11-28
 
-- **Shipped:** — · — · TattooAI/api-server · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#95](https://github.com/tattooinmtl/omni/pull/95) · f04ed5c · TattooAI/api-server · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`omni --serve`: an OpenAI-compatible API on this PC** (new
   `src/cli/serve.mjs`; `--port`, `--token`).
   - **Endpoints:** `GET /v1/models` (`omni` for the session's model, plus
