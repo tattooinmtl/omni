@@ -369,6 +369,31 @@ Methods: `prompt` (queued, replies when the turn ends), `steer`, `abort`,
 `--output stream-json`), `confirm` when a tool needs your OK, and `question`
 when the agent asks you something.
 
+### Omni as an API for other apps
+
+`omni --serve` starts an OpenAI-compatible API on this PC. An app that can
+talk to OpenAI can talk to Omni, as an agent with its tools:
+
+```powershell
+omni --serve --port 8765        # prints the token it made for this run
+```
+
+```
+GET  http://127.0.0.1:8765/v1/models             "omni" (the session's model) and every model key
+POST http://127.0.0.1:8765/v1/chat/completions   { "model": "omni", "messages": [...], "stream": true }
+```
+
+- **Each request** is a fresh agent run in the folder Omni was started in.
+  The answer is the agent's last reply; with `"stream": true` its words
+  arrive as it writes them, without think blocks.
+- **Permissions:** runs follow the headless rules, so tools set to `ask`
+  are refused and `--mode` picks the permission mode.
+- **Access:** it listens on `127.0.0.1` only, and every request needs
+  `Authorization: Bearer <token>` (`--token`, `OMNI_SERVE_TOKEN`, or the
+  one it prints). A request from a web page (it carries an `Origin`
+  header) is refused, so a site open in your browser can't drive the agent.
+- Requests run one at a time.
+
 ### Scheduled runs
 
 ```

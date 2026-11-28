@@ -114,6 +114,14 @@ export async function main(args) {
   const rpcMode = rpcIdx !== -1;
   if (rpcMode) args.splice(rpcIdx, 1);
   const rpcOut = rpcMode ? captureStdout() : null;
+  // --serve [--port n] [--token t]: an OpenAI-compatible API on 127.0.0.1 (serve.mjs).
+  const serveIdx = args.indexOf("--serve");
+  const serveMode = serveIdx !== -1;
+  let serveOpt = null;
+  if (serveMode) {
+    args.splice(serveIdx, 1);
+    try { serveOpt = (await import("./serve.mjs")).parseServeArgs(args); } catch (e) { errorLine(e.message); process.exit(1); }
+  }
   const jsonOut = rpcMode || headless.output === "text" ? null : captureStdout();
 
   const settings = await loadSettings();
@@ -476,6 +484,13 @@ export async function main(args) {
     // CLI exited (shutdown() force-exits after 250ms, orphaning them).
     // finish() does that, and errors were already printed by runTurn.
     return finish(outcome?.stop || "done", jsonOut ? outcome?.error || null : null);
+  }
+
+  if (serveMode) {
+    persistModelOnExit = false;
+    const { startServe } = await import("./serve.mjs");
+    try { await startServe(ctx, serveOpt); } catch (e) { errorLine(`--serve: ${e.message}`); stopBackgroundChildren(); await shutdown(1); }
+    return;
   }
 
   if (rpcMode) {
