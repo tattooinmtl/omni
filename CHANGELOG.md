@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.31 — 2026-11-28
 
-- **Shipped:** — · — · TattooAI/mcp-sse-sampling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#93](https://github.com/tattooinmtl/omni/pull/93) · 381174a · TattooAI/mcp-sse-sampling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **MCP: the older HTTP+SSE transport** (`src/integrations/mcp.mjs`). It is
   used for a `url` ending in `/sse`, or `"transport": "sse"`.
   - A GET event stream gives the POST endpoint (the `endpoint` event).
