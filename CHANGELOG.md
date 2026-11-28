@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.28 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/agent-scheduling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#90](https://github.com/tattooinmtl/omni/pull/90) · 4914d86 · TattooAI/agent-scheduling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **The agent can schedule (`schedule` tool, new `extensions/scheduling.js`).**
   Before, it could only tell the user to type `/schedule`.
   - `list` shows the jobs; `inbox` shows the latest finished runs, inside
