@@ -68,7 +68,7 @@ export const READ_ONLY_TOOLS = new Set([
   "web_search", "web_fetch", "youtube_transcript",
   "memory_search", "memory_list", "memory_explain", "memory_atoms", "session_search",
   "find_skill", "invoke_skill", "ask_user", "agent_status", "process_status",
-  "read_media_file", "read_video_file", "self_review", "project_todo", "spawn_agent",
+  "read_media_file", "read_video_file", "speech_to_text", "self_review", "project_todo", "spawn_agent",
   "browser_navigate", "browser_snapshot", "browser_get_text", "browser_get_html", "browser_screenshot", "browser_extract", "browser_status",
   // Looking around a page without changing anything on it (navigating is
   // already reading, above). browser_tabs is read-only only for "list".
