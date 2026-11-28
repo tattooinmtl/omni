@@ -8,6 +8,28 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.32 — 2026-11-28
+
+- **Shipped:** — · — · TattooAI/context-breakdown · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`/context` shows what fills the window** (new
+  `src/core/context-breakdown.mjs`).
+  - It splits the conversation by kind, as estimates at ~4 characters a
+    token: system prompt, tool definitions on offer this step, skills and
+    notes, your messages, the agent's replies, tool calls, tool results.
+  - Each kind gets a bar and its share, and the three largest results are
+    named by tool. Images are counted apart.
+  - The gauge measures against the model's window. It uses the provider's
+    count from the last request when there is one, and says when that count
+    and the estimate differ widely.
+  - Live, a fresh session already spends ~9.6k tokens (~3.5k system prompt,
+    ~6k tool definitions).
+- **The flaky `computer-act` typing check is fixed.** Setting a text box's
+  value through UI Automation focuses the box, so keys typed in another
+  window at that moment landed in the test form: it failed twice with
+  "nomni was here". Outside the `OMNI_TEST_INPUT` keyboard checks, the test
+  form's box now ignores keyboard input.
+- New `tests/context-breakdown.test.mjs` (3 checks).
+
 ## 3.6.31 — 2026-11-28
 
 - **Shipped:** [#93](https://github.com/tattooinmtl/omni/pull/93) · 381174a · TattooAI/mcp-sse-sampling · session fdbf92f2-27de-4fdf-a1cb-42da54823403

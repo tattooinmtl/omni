@@ -17,6 +17,8 @@ import {
   activateAccount, findAccountProvider, setProviderKey,
 } from "../core/config.mjs";
 import { runTool, tools, refreshAgentCatalog } from "../tools/index.mjs";
+import { offeredTools } from "../core/tool-deferral.mjs";
+import { contextBreakdown, formatBreakdown } from "../core/context-breakdown.mjs";
 import { estimateTokens, getLastThinking, steeringMessage } from "../core/agent.mjs";
 import {
   resolveProviderName, providers as memoryProviders, currentAtoms,
@@ -1049,7 +1051,7 @@ export const COMMANDS = [
   },
   {
     name: "context", aliases: ["ctx"], usage: "/context [<size>|auto]", category: "Models & Providers",
-    summary: "show or set the active model's context window (e.g. /context 200k)",
+    summary: "what fills the context window, by kind; or set its size (e.g. /context 200k)",
     handler: async (ctx, arg) => {
       const a = arg.trim().toLowerCase();
       const entry = ctx.settings.models[ctx.model.key];
@@ -1057,7 +1059,13 @@ export const COMMANDS = [
         infoLine(`context window: ${ctx.model.contextWindow.toLocaleString()} tokens (${formatContextSize(ctx.model.contextWindow)}) — source: ${ctx.model.contextWindowSource}`);
         infoLine(`output cap:     ${ctx.model.maxTokens.toLocaleString()} tokens (max_tokens per response)`);
         infoLine(`conversation:   ~${(ctx.session.contextTokens || 0).toLocaleString()} tokens in use`);
-        infoLine("set a size with /context 200k (or 131072, 1m); /context auto re-detects from the provider");
+        // What fills it, by kind (estimates; the provider's own count when it sent one).
+        const { offered } = offeredTools(tools, { settings: ctx.settings });
+        const b = contextBreakdown(ctx.messages || [], { toolDefs: offered });
+        console.log("");
+        for (const line of formatBreakdown(b, { window: ctx.model.contextWindow, reported: ctx.session.contextTokens || 0 })) infoLine(line);
+        console.log("");
+        infoLine("set a size with /context 200k (or 131072, 1m); /context auto re-detects from the provider; /compact frees space");
         return;
       }
       if (a === "auto" || a === "detect") {
