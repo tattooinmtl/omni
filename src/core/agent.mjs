@@ -24,6 +24,7 @@ import { extractAtomsFromMessages, captureToolActivity } from "./memory-provider
 import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { syntheticUser, recordFor } from "./synthetic.mjs";
 import { evictOldImages, imageLabel, toolResultContent } from "./image-context.mjs";
+import { UNTRUSTED_RULE } from "./untrusted.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
@@ -551,6 +552,7 @@ export function systemPrompt() {
     "Use the provided tools to inspect projects, read files, patch code, manage project todos, inspect git, manage dev processes, run shell commands, and run tests.",
     "You can build complete applications end to end: scaffold with run_shell (raise timeout_ms — create-* and installs exceed the 120s default), write the code, install dependencies, start the dev server with start_process, then actually check your work — web_fetch or http_request with allow_internal:true to hit your own endpoints, browser_navigate with allow_internal:true, then browser_snapshot to read the page and browser_screenshot to see it render (a vision model gets the image attached).",
     "Prefer making concrete changes with tools over describing them.",
+    UNTRUSTED_RULE,
     "When you run shell commands, the shell is PowerShell on Windows.",
     "",
     "# Task workflow",
