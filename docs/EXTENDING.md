@@ -154,6 +154,23 @@ Add a standard MCP server definition either to `omni.config.json`:
 standard; it wins on name collisions). The agent reaches every server through
 the single lazy `mcp` proxy tool, so added servers cost almost no context.
 
+A remote server is `{ "url": "https://…", "headers": { … } }`. That is
+streamable HTTP, unless the URL ends in `/sse` or the definition says
+`"transport": "sse"`. Then it uses the older HTTP+SSE transport: a GET event
+stream, and a POST endpoint the stream names.
+
+Omni answers these requests from a server, on every transport:
+
+- `ping`
+- `roots/list`: the working folder
+- `sampling/createMessage`: the user OKs each request. It is answered on the
+  session's model with no tools and none of the conversation.
+- `elicitation/create`: a form the user fills in, field by field.
+
+The last two are offered in `initialize` only when someone is at the REPL
+(`setMcpClientHandlers`; `src/cli/mcp-client-ui.mjs`). A form asking for a
+password, key, token or card number is declined.
+
 ## Hooks
 
 A hook runs your code at a fixed point in the agent loop

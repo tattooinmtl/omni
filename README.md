@@ -1185,6 +1185,16 @@ Three extension points and one package format. The full guide is
   `/slash-command`.
 - **MCP servers:** add to `mcpServers` in the config or a project-local
   `.mcp.json`. `/mcp` shows status and reconnects.
+  - **Transports:** stdio, streamable HTTP (`"url"`), and the older HTTP+SSE
+    (a `url` ending in `/sse`, or `"transport": "sse"`).
+  - **Sampling:** a server can ask your model a question. Omni shows you what
+    it asks and waits for your OK (`a` allows that server for the session).
+    The answer comes from your current model, with no tools and none of
+    your conversation.
+  - **Forms (elicitation):** a server can ask you to fill in a small form,
+    asked field by field. Omni declines any form that asks for a password,
+    key, token or card number.
+  - Headless runs offer neither sampling nor forms.
 - **Connected services:** `/connect` sets up an MCP server as a service, one
   definition file each in `agent/mcp/`, with its sign-in saved beside it.
 
