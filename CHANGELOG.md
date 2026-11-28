@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.35 — 2026-11-28
 
-- **Shipped:** — · — · TattooAI/media-tools · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#97](https://github.com/tattooinmtl/omni/pull/97) · 0378548 · TattooAI/media-tools · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Local speech tools** (new `extensions/media-tools.js`, on by default in
   `omni.config.json`). Nothing goes to a cloud service.
   - **`text_to_speech`** uses Windows' own speech engine (SAPI). It writes a
