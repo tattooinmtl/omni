@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.25 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/web-fetch-w3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#87](https://github.com/tattooinmtl/omni/pull/87) · 772af94 · TattooAI/web-fetch-w3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **What comes from the web is fenced as untrusted (W3).** `web_fetch` pages
   and PDFs, `youtube_transcript` and `web_search` results go out between
   `[untrusted content from <host> begins: …]` and `[untrusted content from
