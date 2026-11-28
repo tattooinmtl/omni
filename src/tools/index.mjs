@@ -34,6 +34,7 @@ import { registerExtensionCommand, registerStatusItem, clearExtension } from "..
 import { createAgentWorktree, runHeadlessAgent, commitAgentWork, branchDiff, mergeAgentBranch, removeAgentWorktree } from "../core/worktree-agent.mjs";
 import { publishActivity } from "../local/activity-bus.mjs";
 import { SESSIONS_HUB_ID } from "../local/graph-ids.mjs";
+import { currentBackend, remoteInvocation, forgetContainer } from "../core/shell-backend.mjs";
 
 const MAX_OUTPUT = 30000;
 const PROCESS_LOG_LIMIT = 20000;
@@ -366,14 +367,18 @@ const NATIVE_STDERR_NOTE =
 // screen during every long build. Now the command runs in the background,
 // Esc (the turn's abort signal) or the timeout kills the whole process tree,
 // and stdin is closed so nothing can sit waiting for input.
-function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false, signal = null }) {
+// With a Docker or SSH backend (core/shell-backend.mjs, /backend) the same
+// command runs there instead, and the output says where it ran.
+async function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, dry_run = false, signal = null }) {
   const risk = commandRisk(command);
+  const backend = currentBackend();
   if (dry_run) {
     return [
       `DRY RUN: ${command}`,
       `risk: ${risk.level}`,
       `reason: ${risk.reason}`,
       `cwd: ${process.cwd()}`,
+      ...(backend.kind === "local" ? [] : [`runs on: ${backend.kind === "docker" ? `docker (${backend.image})` : `ssh ${backend.host}`}`]),
     ].join("\n");
   }
   if (!allow_unsafe && risk.level === "blocked") {
@@ -384,11 +389,17 @@ function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, d
       `Command: ${command}`,
     ].join("\n");
   }
-  const isWin = process.platform === "win32";
-  const shell = isWin ? "powershell.exe" : "/bin/sh";
+  let inv = null;
+  if (backend.kind !== "local") {
+    inv = await remoteInvocation(command, { cwd: process.cwd(), backend });
+    if (inv.error) return `[${inv.error}]\n[exit code: null]`;
+  }
+  // isWin: the local PowerShell path (its wrapper and stderr clean-up).
+  const isWin = !inv && process.platform === "win32";
+  const shell = inv ? inv.file : isWin ? "powershell.exe" : "/bin/sh";
   // Plain -Command, not -EncodedCommand: the encoded form makes Windows
   // PowerShell serialize the error stream as "#< CLIXML" XML.
-  const args = isWin
+  const args = inv ? inv.args : isWin
     ? ["-NoProfile", "-NonInteractive", "-Command", wrapPowerShellCommand(command)]
     : ["-c", command];
   const MAX_BYTES = 1024 * 1024 * 16;
@@ -409,7 +420,7 @@ function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, d
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
-        detached: !isWin, // own process group, so the whole tree can be killed
+        detached: process.platform !== "win32", // own process group, so the whole tree can be killed
       });
     } catch (e) {
       resolveRun(clip(`[spawn error: ${e.message}]\n[exit code: null]`));
@@ -424,8 +435,11 @@ function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, d
     child.stdout.on("data", take("out"));
     child.stderr.on("data", take("err"));
 
-    const timer = setTimeout(() => { timedOut = true; killProcessTree(child); }, Math.max(1, Number(timeout_ms) || 120000));
-    const onAbort = () => { aborted = true; killProcessTree(child); };
+    // A remote run is killed on the far side too: the local docker/ssh
+    // client going away doesn't stop what it started there.
+    const stopAll = () => { killProcessTree(child); inv?.kill?.().catch?.(() => {}); };
+    const timer = setTimeout(() => { timedOut = true; stopAll(); }, Math.max(1, Number(timeout_ms) || 120000));
+    const onAbort = () => { aborted = true; stopAll(); };
     if (signal) {
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
@@ -447,6 +461,10 @@ function runShellCommand({ command, timeout_ms = 120000, allow_unsafe = false, d
       if (timedOut) out += `\n[timeout: command exceeded ${Math.round(timeout_ms / 1000)}s and was stopped, including any programs it started. For long builds pass a larger timeout_ms, or use start_process.]`;
       if (aborted) out += "\n[interrupted by the user — the command and any programs it started were stopped]";
       out += `\n[exit code: ${timedOut || aborted ? "null" : (exitCode ?? "null")}]`;
+      if (inv) {
+        if (inv.kind === "docker" && /No such container/i.test(out)) forgetContainer(inv.container);
+        out = `[ran in ${inv.where}${inv.created ? "; container just created" : ""}]\n` + out.trim();
+      }
       resolveRun(clip(out.trim()));
     };
 
@@ -3036,15 +3054,21 @@ function appendProcessLog(rec, chunk) {
   if (rec.log.length > PROCESS_LOG_LIMIT) rec.log = rec.log.slice(-PROCESS_LOG_LIMIT);
 }
 
-function startManagedProcess({ command, cwd = ".", name, allow_unsafe = false }) {
+async function startManagedProcess({ command, cwd = ".", name, allow_unsafe = false }) {
   const risk = commandRisk(command);
   if (!allow_unsafe && risk.level === "blocked") {
     return `BLOCKED: ${risk.reason}\nCommand: ${command}`;
   }
   const procCwd = resolve(cwd);
+  const backend = currentBackend();
+  let inv = null;
+  if (backend.kind !== "local") {
+    inv = await remoteInvocation(command, { cwd: procCwd, interactive: true, backend });
+    if (inv.error) return `[${inv.error}]`;
+  }
   const isWin = process.platform === "win32";
-  const shell = isWin ? "powershell.exe" : "/bin/sh";
-  const args = isWin ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command];
+  const shell = inv ? inv.file : isWin ? "powershell.exe" : "/bin/sh";
+  const args = inv ? inv.args : isWin ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command];
   const child = spawn(shell, args, {
     cwd: procCwd,
     stdio: ["pipe", "pipe", "pipe"], // stdin piped so process_input can answer prompts / drive REPLs
@@ -3065,6 +3089,8 @@ function startManagedProcess({ command, cwd = ".", name, allow_unsafe = false })
     exitCode: null,
     log: "",
     child,
+    where: inv?.where || null,
+    remoteKill: inv?.kill || null,
   };
   child.stdout.on("data", (d) => appendProcessLog(rec, String(d)));
   child.stderr.on("data", (d) => appendProcessLog(rec, String(d)));
@@ -3078,7 +3104,7 @@ function startManagedProcess({ command, cwd = ".", name, allow_unsafe = false })
     appendProcessLog(rec, `\n[exited code=${code} signal=${signal || ""}]`);
   });
   managedProcesses.set(id, rec);
-  return `started ${id}: ${rec.name}\nrisk: ${risk.level} (${risk.reason})\ncwd: ${procCwd}`;
+  return `started ${id}: ${rec.name}\nrisk: ${risk.level} (${risk.reason})\ncwd: ${procCwd}${rec.where ? `\nruns in: ${rec.where}` : ""}`;
 }
 
 function summarizeProcess(rec, includeLogs = false) {
@@ -3107,6 +3133,7 @@ function stopManagedProcess(id) {
   if (!rec) throw new Error(`process not found: ${id}`);
   if (rec.status === "running") {
     rec.child.kill();
+    rec.remoteKill?.().catch?.(() => {});
     rec.status = "stopping";
     return `stopping ${id}`;
   }

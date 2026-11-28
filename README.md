@@ -426,6 +426,39 @@ allow, it does in this folder. When it ends, a line here says so, the result
 goes to `/inbox`, and Windows shows a notification. Up to three run at once,
 and leaving Omni stops the ones still running.
 
+### Where commands run: this PC, Docker or SSH
+
+`run_shell`, `run_test`, `start_process` and the tools built on them
+normally run PowerShell on this PC. `/backend` sends them somewhere else:
+
+```
+/backend                              which one, and whether it answers
+/backend docker [image]               a container for this project (default node:22-bookworm)
+/backend docker ports 3000,5173       publish ports to this PC
+/backend docker network none          no network in the container
+/backend docker stop                  remove this project's container
+/backend ssh <host> [dir]             a Host from ~/.ssh/config, or user@host
+/backend test                         run uname -a; pwd there
+/backend local                        back to this PC
+```
+
+- **Docker** keeps one container per project folder, named
+  `omni-<folder>-<hash>`, and mounts the folder at `/workspace`. The agent's
+  file edits and its commands see the same files. What a command installs
+  stays in the container until `/backend docker stop`. The first command
+  makes the container (the first image pull can take a few minutes). A dev
+  server has to listen on `0.0.0.0` to be reachable on a published port.
+  Docker Desktop has to be installed and running.
+- **SSH** uses the system `ssh` client with key login only: Omni never asks
+  for or types a password. `/backend ssh` checks that the key works before
+  it switches. The agent's file tools still work on this PC's folder, so on
+  the host it reads and changes files with commands.
+- Commands use `sh` there, not PowerShell, and each turn the agent is told
+  where its commands run. Every result starts with `[ran in …]`.
+- A command stopped by its timeout or by Esc is also killed on the far side.
+- Only you can switch the backend. The choice is saved and applies to every
+  session until you change it.
+
 ## Commands
 
 Typing `/` opens a live menu, at the start of the prompt or after any space,
@@ -437,7 +470,7 @@ Enter puts it in and sends. `/help` lists everything with usage strings. Unknown
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/loop` `/bg` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/fallback` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
-| Tools | `/browser` `/computer` `/web` `/runtime` `/update-omni` `/omnibots` |
+| Tools | `/browser` `/computer` `/web` `/backend` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
 
 Every installed skill is also a `/slash-command`.

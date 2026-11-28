@@ -8,6 +8,47 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.29 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/shell-backends · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Docker and SSH backends for the agent's commands.** New
+  `src/core/shell-backend.mjs`: `settings.shell.backend` is `local` (the
+  default, unchanged), `docker` or `ssh`. `run_shell`, `run_test`,
+  `start_process`, and every tool built on `runShellCommand`
+  (`src/tools/index.mjs`), run there.
+  - **Docker:** one long-lived container per project folder
+    (`omni-<folder>-<hash>`, labelled `omni=1`), made on first use with the
+    folder mounted at `/workspace`, so file tools and commands share files.
+    It is started again when stopped. Commands run as `docker exec … sh -lc
+    <command>` in the matching `/workspace/…` folder; a folder outside the
+    mount is refused. A container on a different image is reported, not
+    used. Ports and `--network none` are optional. `start_process` uses
+    `exec -i`, so `process_input` still works.
+  - **SSH:** the system `ssh` with `BatchMode=yes` (key login only, never a
+    password prompt), `ConnectTimeout` and `ServerAliveInterval`, in the
+    configured folder (POSIX-quoted, `~/` kept).
+  - **Stopping:** a run stopped by its timeout, Esc or `stop_process` is also
+    killed on the far side. Each run carries `OMNI_RUN=<id>`, and a kill
+    script finds the processes with it through `/proc`, so it doesn't need
+    `pkill` in the image.
+  - Results start with `[ran in …]`, and a dry run says where it would run.
+    The risk gate is unchanged: the same command text is checked.
+  - **What the model is told:** each turn, a note in the system message
+    (`syncBackendGuidance`, next to the permission-mode note) says commands
+    run in sh, not PowerShell. For Docker it names the mount, network and
+    ports, and says a dev server must listen on `0.0.0.0`. For SSH it says
+    the file tools still work on this PC's folder.
+  - A worktree agent removes the container it made when it exits; a `/bg`
+    or scheduled run shares the user's.
+- **`/backend`** (alias `/sandbox`): status (Docker version and container
+  state), `local`, `docker [image]`, `docker ports <list>`, `docker network
+  none|bridge` (both make the container again), `docker stop`, `ssh <host>
+  [dir]` (switches only after a key login answers), and `test`. Only the
+  user can switch the backend: there is no tool for it.
+- New `tests/shell-backends.test.mjs` (10 checks) uses stand-in `docker` and
+  `ssh` programs (no Docker on this PC, and no real host contacted).
+  `shell-exec` and `agent-risk-gate` pass unchanged.
+
 ## 3.6.28 — 2026-11-27
 
 - **Shipped:** [#90](https://github.com/tattooinmtl/omni/pull/90) · 4914d86 · TattooAI/agent-scheduling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
