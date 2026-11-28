@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.30 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/extension-hooks · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#92](https://github.com/tattooinmtl/omni/pull/92) · a6cc610 · TattooAI/extension-hooks · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **In-process extension hooks** (`src/core/hooks.mjs`, wired in
   `src/core/agent.mjs`). Extensions could already hook the seven command-hook
   events; four extension-only events are new. A command hook for them is
