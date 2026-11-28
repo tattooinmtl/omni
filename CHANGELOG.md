@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.29 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/shell-backends · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#91](https://github.com/tattooinmtl/omni/pull/91) · f877e57 · TattooAI/shell-backends · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Docker and SSH backends for the agent's commands.** New
   `src/core/shell-backend.mjs`: `settings.shell.backend` is `local` (the
   default, unchanged), `docker` or `ssh`. `run_shell`, `run_test`,
