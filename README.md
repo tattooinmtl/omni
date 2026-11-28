@@ -803,7 +803,15 @@ brain's own config.
   `youtube_transcript`, `http_request`. `web_fetch` returns a page's main
   content as Markdown (links, tables and code kept; menus, cookie banners and
   footers dropped). A long page keeps its start and end, and `start` reads
-  the middle from a 15-minute cache.
+  the middle from a 15-minute cache. A page that builds its content with
+  JavaScript (almost no text in its HTML, or a "please enable JavaScript"
+  wall) is rendered in a headless browser session of its own and says so
+  (`render: "always"` or `"never"` to choose). PDFs come back as text page by
+  page through `pdftotext` (Git for Windows ships one; otherwise poppler).
+  `urls: [...]` reads up to 10 pages at once within one budget. Everything
+  fetched, and search results and transcripts too, comes fenced as untrusted
+  content, and the agent is told to use it as information, never as
+  instructions.
 - **Browser:** `browser_navigate`, `browser_snapshot`, `browser_click`,
   `browser_type`, `browser_select`, `browser_screenshot`, `browser_get_text`,
   `browser_extract`, `browser_evaluate`, … drive a headless Edge/Chrome for

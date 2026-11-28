@@ -8,6 +8,42 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.25 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/web-fetch-w3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **What comes from the web is fenced as untrusted (W3).** `web_fetch` pages
+  and PDFs, `youtube_transcript` and `web_search` results go out between
+  `[untrusted content from <host> begins: …]` and `[untrusted content from
+  <host> ends]` markers (`src/core/untrusted.mjs`). Marker text inside the
+  content is changed so a page can't close the fence early, and Omni's own
+  notes (paging, truncation) stay outside it. Both system prompts (built-in
+  and `prompts/default.md`) tell the model to use fenced text as
+  information, never as instructions, and to tell the user instead of
+  running, changing or contacting anything it asks for.
+- **Pages that need JavaScript are rendered.** When a page's HTML has almost
+  no text and has scripts, or shows a "please enable JavaScript" wall,
+  `web_fetch` loads it in a headless browser session of its own
+  (`web-fetch`, never the user's connected browser; it closes after 2 idle
+  minutes) and says so. `render: "always"` or `"never"` chooses; if
+  rendering fails it says why and returns the static page.
+- **PDFs are read.** Text through `pdftotext -layout`, with `--- page N ---`
+  markers and a `(PDF, N page(s))` note, cached like pages. pdftotext is
+  found in Omni's `vendor/`, on PATH, or in Git for Windows' `mingw64\bin`
+  (most Windows PCs with Git already have it); without it the message says
+  how to get it. A PDF sent as octet-stream with a .pdf URL is read too, a
+  "PDF" that isn't one is refused, and the limit is 50 MB.
+- **`urls: [...]` reads several pages at once.** Up to 10 distinct URLs,
+  four at a time, in order in the result, sharing `max_chars` (default
+  30000 for a batch); each page has its own header and fence, and an error
+  on one doesn't stop the others.
+- Tests: `tests/web-fetch-w3.test.mjs` (12 cases): the fence and its
+  neutralizing, the prompt rule, `needsRender`, an injected closing marker
+  kept inside, batches (order, budget, dedupe, the 10-URL cap, errors), a
+  two-page PDF built in the test, an octet-stream PDF and a fake one, a
+  JavaScript app and a JavaScript wall rendered in the `web-fetch` session
+  (the default browser untouched), `render: never` and `always`, and fenced
+  search results. `tests/web-fetch-markdown.test.mjs` updated for the fence.
+
 ## 3.6.24 — 2026-11-27
 
 - **Shipped:** [#86](https://github.com/tattooinmtl/omni/pull/86) · 28fdc51 · TattooAI/computer-use-c3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
