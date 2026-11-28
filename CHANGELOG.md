@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.27 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/provider-fallback · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#89](https://github.com/tattooinmtl/omni/pull/89) · 9025a42 · TattooAI/provider-fallback · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **Provider fallback builds on the 429 chain.** Before, it only moved on
   after a 429, only when the session was already on a model in the
   hardcoded nvidia → agnes → openrouter chain, and it never returned. New
