@@ -8,6 +8,33 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.33 — 2026-11-28
+
+- **Shipped:** — · — · TattooAI/api-server · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`omni --serve`: an OpenAI-compatible API on this PC** (new
+  `src/cli/serve.mjs`; `--port`, `--token`).
+  - **Endpoints:** `GET /v1/models` (`omni` for the session's model, plus
+    every configured key), `POST /v1/chat/completions`, and `GET /health`.
+  - **Each completion** is a fresh agent run in the launch folder: Omni's
+    system prompt, then the client's messages (its system messages are
+    labelled "Instructions from the API client").
+  - Runs follow the headless rules: tools set to `ask` are refused, and
+    `--mode` applies.
+  - **Replies:** the agent's last reply in OpenAI's shape, with usage and an
+    `omni` field (stop reason, session file). With `stream: true` the words
+    stream as chunks (think blocks filtered, even when split across tokens),
+    then the finish, usage and `[DONE]`.
+  - **Access:** it binds 127.0.0.1 only and needs a bearer token (`--token`
+    of at least 16 characters, `OMNI_SERVE_TOKEN`, or a random one printed
+    at start), compared in constant time. A request with an `Origin` header
+    (a web page) is refused. Bodies are capped at 5 MB.
+  - Requests run one at a time, and a client that disconnects stops its run.
+  - Errors use OpenAI's shape: `model_not_found` is a 404, and a bad body or
+    no user message is a 400.
+- New `tests/api-server.test.mjs` (10 checks over real HTTP, with a mock
+  model behind it). Checked live: `/health` answers, `/v1/models` is 401
+  without the token and lists the models with it.
+
 ## 3.6.32 — 2026-11-28
 
 - **Shipped:** [#94](https://github.com/tattooinmtl/omni/pull/94) · 2f88094 · TattooAI/context-breakdown · session fdbf92f2-27de-4fdf-a1cb-42da54823403
