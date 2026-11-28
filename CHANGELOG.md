@@ -8,6 +8,38 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.31 — 2026-11-28
+
+- **Shipped:** — · — · TattooAI/mcp-sse-sampling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **MCP: the older HTTP+SSE transport** (`src/integrations/mcp.mjs`). It is
+  used for a `url` ending in `/sse`, or `"transport": "sse"`.
+  - A GET event stream gives the POST endpoint (the `endpoint` event).
+    Replies and the server's own requests arrive as `message` events.
+  - Notifications and replies go to that endpoint; disconnecting closes the
+    stream.
+- **MCP: requests from the server** are answered on stdio, streamable HTTP
+  and SSE. They used to be ignored.
+  - Streamable HTTP replies are now read as they stream (`readSse`), so a
+    request in the middle of a reply is answered and the reply still arrives.
+  - `ping` and `roots/list` (the working folder) are always answered.
+  - `sampling/createMessage` and `elicitation/create` go to handlers a front
+    end sets (`setMcpClientHandlers`). `initialize` advertises them only
+    then, so headless runs answer them with an error.
+- **REPL handlers** (new `src/cli/mcp-client-ui.mjs`):
+  - **Sampling** shows what the server asks and waits for the user's OK
+    (`a`: that server for the session). It answers on the session's model,
+    with no tools and none of the conversation, capped at the model's
+    output limit, with think blocks stripped.
+  - **Forms** are asked field by field, with enum, boolean, number, integer,
+    length and email checks, and can be declined or cancelled.
+  - A form asking for a password, PIN, key, token, credential or card number
+    is declined without asking anything.
+- Removed the old whole-body `parseSse`. Fixed a comment that a 3.6.28 edit
+  had pulled away from `askLine` in `repl.mjs`.
+- New `tests/mcp-sse-sampling.test.mjs` (9 checks, with local mock servers
+  for all three transports). The `mcp-lifecycle`, `mcp-quoting` and
+  `mcp-services` tests pass unchanged.
+
 ## 3.6.30 — 2026-11-27
 
 - **Shipped:** [#92](https://github.com/tattooinmtl/omni/pull/92) · a6cc610 · TattooAI/extension-hooks · session fdbf92f2-27de-4fdf-a1cb-42da54823403

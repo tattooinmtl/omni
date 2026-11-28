@@ -9,13 +9,22 @@
 // Optional `directTools` promotes selected tools to first-class Omni Agent tools
 // (named mcp__<server>__<tool>) registered from the cache.
 //
-// Transports: stdio (command/args/env) and StreamableHTTP (url/headers).
+// Transports: stdio (command/args/env), StreamableHTTP (url/headers), and the
+// older HTTP+SSE one (a GET event stream plus a POST endpoint it names;
+// "transport": "sse", or a url ending in /sse).
+//
+// Requests a server sends us: ping, roots/list (this folder),
+// sampling/createMessage (the server asks Omni's model; the user OKs each
+// one) and elicitation/create (the server asks the user to fill in a form).
+// The last two are only offered when a front end with a person at it set
+// handlers (setMcpClientHandlers); a headless run doesn't advertise them.
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { HOME } from "../core/config.mjs";
 import { tools, impl } from "../tools/index.mjs";
 import { INSTALL_ROOT } from "../paths.mjs";
@@ -43,6 +52,95 @@ const connections = new Map(); // name -> conn
 // to connect rather than silently proceeding.
 export function setMcpConfirm(fn) {
   confirmServer = fn;
+}
+
+// ---- requests from the server ------------------------------------------------
+// handlers.sample(serverName, params) → { role, content, model, stopReason }
+// handlers.elicit(serverName, params) → { action: "accept"|"decline"|"cancel", content? }
+// Either may throw to refuse (the server gets a JSON-RPC error).
+let clientHandlers = { sample: null, elicit: null };
+export function setMcpClientHandlers(handlers = {}) {
+  clientHandlers = { sample: handlers.sample || null, elicit: handlers.elicit || null };
+}
+
+export function clientCapabilities() {
+  return {
+    roots: { listChanged: false },
+    ...(clientHandlers.sample ? { sampling: {} } : {}),
+    ...(clientHandlers.elicit ? { elicitation: {} } : {}),
+  };
+}
+
+// → { result } or { error: { code, message } }
+export async function answerServerRequest(serverName, msg) {
+  const fail = (code, message) => ({ error: { code, message } });
+  try {
+    switch (msg.method) {
+      case "ping":
+        return { result: {} };
+      case "roots/list": {
+        const cwd = process.cwd();
+        return { result: { roots: [{ uri: pathToFileURL(cwd).href, name: path.basename(cwd) || cwd }] } };
+      }
+      case "sampling/createMessage":
+        if (!clientHandlers.sample) return fail(-32601, "this Omni session can't sample (no one is there to approve it)");
+        return { result: await clientHandlers.sample(serverName, msg.params || {}) };
+      case "elicitation/create":
+        if (!clientHandlers.elicit) return fail(-32601, "this Omni session can't ask the user (no one is there)");
+        return { result: await clientHandlers.elicit(serverName, msg.params || {}) };
+      default:
+        return fail(-32601, `method not supported: ${msg.method}`);
+    }
+  } catch (e) {
+    return fail(-1, e?.message || String(e));
+  }
+}
+
+const isRequest = (m) => m && typeof m.method === "string" && m.id != null;
+
+// Answer a server's request on whichever way back the transport has.
+async function replyToServer(conn, msg) {
+  const answer = await answerServerRequest(conn.name, msg);
+  const body = JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...answer });
+  if (conn.transport === "stdio") {
+    if (!conn.dead) conn.proc.stdin.write(body + "\n");
+    return;
+  }
+  const url = conn.transport === "sse" ? conn.endpoint : conn.url;
+  if (!url) return;
+  const headers = await httpHeaders(conn, { "Content-Type": "application/json", Accept: "application/json, text/event-stream" });
+  await fetch(url, { method: "POST", headers, body }).then((r) => r.body?.cancel?.()).catch(() => {});
+}
+
+// Read an SSE body as it arrives, calling onEvent({ event, data }) per event.
+// Resolves when the stream ends or onEvent returns true (stop reading).
+async function readSse(body, onEvent, signal) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      if (signal?.aborted) break;
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        let event = "message";
+        const data = [];
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        }
+        if (!data.length) continue;
+        if (await onEvent({ event, data: data.join("\n") })) return;
+      }
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* already closed */ }
+  }
 }
 
 // ---- per-project trust cache ------------------------------------------------
@@ -247,13 +345,93 @@ function handleStdioMessage(conn, line) {
   } catch {
     return; // ignore non-JSON (some servers log to stdout)
   }
-  if (msg.id != null && conn.pending.has(msg.id)) {
+  handleIncoming(conn, msg);
+}
+
+// One JSON-RPC message from a server: a reply to one of ours, or a request
+// of its own (answered on the way back). Notifications are ignored.
+function handleIncoming(conn, msg) {
+  if (isRequest(msg)) {
+    replyToServer(conn, msg).catch(() => {});
+    return;
+  }
+  if (msg.id != null && conn.pending?.has(msg.id)) {
     const { resolve, reject } = conn.pending.get(msg.id);
     conn.pending.delete(msg.id);
     if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
     else resolve(msg.result);
   }
-  // server->client requests/notifications are ignored in v1
+}
+
+// The older HTTP+SSE transport (MCP 2024-11-05): a GET opens an event
+// stream whose first "endpoint" event names where to POST; replies and the
+// server's own requests come back as "message" events on the stream.
+export function usesSseTransport(def) {
+  if (!def?.url) return false;
+  if (def.transport) return String(def.transport).toLowerCase() === "sse";
+  try { return /\/sse\/?$/i.test(new URL(def.url).pathname); } catch { return false; }
+}
+
+function connectSse(name, def) {
+  const conn = {
+    name, transport: "sse", url: def.url, headers: def.headers || {}, service: serviceNames.has(name),
+    pending: new Map(), nextId: 1, tools: [], endpoint: null, controller: new AbortController(),
+  };
+  let gotEndpoint, failEndpoint;
+  conn.endpointReady = new Promise((res, rej) => { gotEndpoint = res; failEndpoint = rej; });
+  conn.endpointReady.catch(() => {});
+  const failAll = (msg) => {
+    conn.dead = true;
+    failEndpoint(new Error(msg));
+    for (const { reject } of conn.pending.values()) reject(new Error(msg));
+    conn.pending.clear();
+  };
+  (async () => {
+    const headers = await httpHeaders(conn, { Accept: "text/event-stream" });
+    const res = await fetch(conn.url, { headers, signal: conn.controller.signal });
+    if (res.status === 401) throw new Error(conn.service ? `MCP HTTP 401: "${name}" needs you to sign in. Run /connect ${name}` : `MCP HTTP 401: "${name}" needs a sign-in`);
+    if (!res.ok || !res.body) throw new Error(`MCP SSE ${res.status}: ${conn.url}`);
+    await readSse(res.body, ({ event, data }) => {
+      if (event === "endpoint") {
+        conn.endpoint = new URL(data.trim(), conn.url).href;
+        gotEndpoint(conn.endpoint);
+        return false;
+      }
+      let msg;
+      try { msg = JSON.parse(data); } catch { return false; }
+      handleIncoming(conn, msg);
+      return false;
+    }, conn.controller.signal);
+    failAll(`MCP server "${name}" closed its event stream`);
+  })().catch((e) => { if (!conn.controller.signal.aborted) failAll(e.message || String(e)); });
+  return conn;
+}
+
+async function rpcSse(conn, method, params) {
+  if (conn.dead) throw new Error("MCP server not running");
+  let wait;
+  const endpoint = await Promise.race([
+    conn.endpointReady,
+    new Promise((_, rej) => { wait = setTimeout(() => rej(new Error(`MCP "${conn.name}" sent no endpoint event within ${RPC_TIMEOUT / 1000}s`)), RPC_TIMEOUT); }),
+  ]).finally(() => clearTimeout(wait));
+  const id = conn.nextId++;
+  const answer = new Promise((resolve, reject) => {
+    let timer;
+    const settle = (fn) => (v) => { clearTimeout(timer); fn(v); };
+    conn.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
+    timer = setTimeout(() => {
+      if (conn.pending.has(id)) { conn.pending.delete(id); reject(new Error(`MCP "${method}" timed out`)); }
+    }, RPC_TIMEOUT);
+    timer.unref?.();
+  });
+  const headers = await httpHeaders(conn, { "Content-Type": "application/json" });
+  const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
+  res.body?.cancel?.().catch?.(() => {});
+  if (!res.ok && res.status !== 202) {
+    conn.pending.delete(id);
+    throw new Error(`MCP SSE POST ${res.status}`);
+  }
+  return answer;
 }
 
 function connectHttp(name, def) {
@@ -295,30 +473,11 @@ function hasHeader(headers, name) {
   return Object.keys(headers).some((k) => k.toLowerCase() === name);
 }
 
-// Parse a StreamableHTTP SSE body, returning the JSON-RPC payload for `id`.
-function parseSse(text, id) {
-  let last = null;
-  for (const block of text.split(/\n\n/)) {
-    const dataLines = block
-      .split(/\n/)
-      .filter((l) => l.startsWith("data:"))
-      .map((l) => l.slice(5).trim());
-    if (!dataLines.length) continue;
-    try {
-      const obj = JSON.parse(dataLines.join("\n"));
-      if (obj.id === id) return obj;
-      last = obj;
-    } catch {
-      /* skip */
-    }
-  }
-  return last;
-}
-
 // ---- JSON-RPC --------------------------------------------------------------
 
 function rpc(conn, method, params) {
   if (conn.transport === "http") return rpcHttp(conn, method, params);
+  if (conn.transport === "sse") return rpcSse(conn, method, params);
   const id = conn.nextId++;
   return new Promise((resolve, reject) => {
     if (conn.dead) return reject(new Error("MCP server not running"));
@@ -368,7 +527,23 @@ async function rpcHttp(conn, method, params, retried = false) {
   }
   if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
   const ct = res.headers.get("content-type") || "";
-  const data = ct.includes("text/event-stream") ? parseSse(await res.text(), id) : await res.json();
+  let data;
+  if (ct.includes("text/event-stream") && res.body) {
+    // Read as it comes: the server may ask us something (sampling, a form)
+    // before it answers, and waits for our reply to go on.
+    let last = null;
+    await readSse(res.body, async ({ data: raw }) => {
+      let msg;
+      try { msg = JSON.parse(raw); } catch { return false; }
+      if (isRequest(msg)) { await replyToServer(conn, msg); return false; }
+      if (msg.id === id) { data = msg; return true; }
+      if (msg.id != null) last = msg;
+      return false;
+    });
+    data ||= last;
+  } else {
+    data = await res.json();
+  }
   if (!data) return undefined;
   if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
   return data.result;
@@ -376,9 +551,11 @@ async function rpcHttp(conn, method, params, retried = false) {
 
 async function notify(conn, method, params) {
   const body = JSON.stringify({ jsonrpc: "2.0", method, params });
-  if (conn.transport === "http") {
+  if (conn.transport === "http" || conn.transport === "sse") {
+    const url = conn.transport === "sse" ? await conn.endpointReady.catch(() => null) : conn.url;
+    if (!url) return;
     const headers = await httpHeaders(conn, { "Content-Type": "application/json" });
-    await fetch(conn.url, { method: "POST", headers, body }).catch(() => {});
+    await fetch(url, { method: "POST", headers, body }).then((r) => r.body?.cancel?.()).catch(() => {});
   } else if (!conn.dead) {
     conn.proc.stdin.write(body + "\n");
   }
@@ -437,12 +614,12 @@ async function openConnection(name) {
     markTrusted(name, def);
   }
 
-  const conn = def.url ? connectHttp(name, def) : connectStdio(name, def);
+  const conn = !def.url ? connectStdio(name, def) : usesSseTransport(def) ? connectSse(name, def) : connectHttp(name, def);
   connections.set(name, conn);
   try {
     await rpc(conn, "initialize", {
       protocolVersion: "2024-11-05",
-      capabilities: {},
+      capabilities: clientCapabilities(),
       clientInfo: { name: "Omni Agent", version: "0.1.0" },
     });
     await notify(conn, "notifications/initialized", {});
@@ -504,6 +681,7 @@ function disconnect(name) {
   conn.dead = true;
   conn.ready = false;
   endHttpSession(conn);
+  try { conn.controller?.abort(); } catch { /* already closed */ }
   try {
     conn.rl?.close();
   } catch {

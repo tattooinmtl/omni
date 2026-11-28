@@ -23,7 +23,8 @@ import {
 } from "../ui.mjs";
 import { runTurn, steeringMessage, steeringText } from "../core/agent.mjs";
 import { Session, turnMaxIterations, resolveSessionCode, describeSession } from "../core/config.mjs";
-import { disconnectAll, setMcpConfirm } from "../integrations/mcp.mjs";
+import { disconnectAll, setMcpConfirm, setMcpClientHandlers } from "../integrations/mcp.mjs";
+import { makeMcpClientHandlers } from "./mcp-client-ui.mjs";
 import { disconnectBridge } from "../integrations/bridge.mjs";
 import { shutdownAll as shutdownLspServers } from "../integrations/lsp.mjs";
 import { classifyIntent, killSidecar } from "../integrations/router.mjs";
@@ -457,7 +458,6 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     return n >= 1 && n <= options.length ? options[n - 1] : answer;
   };
 
-  // One line of input asked in the prompt box, keeping any half-typed draft.
   // /loop puts its prompt in the same queue as typed ones; a tag lets it see
   // whether its last run is still waiting or running.
   ctx.enqueuePrompt = (text, { tag = null, display = text } = {}) => {
@@ -468,6 +468,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   ctx.isQueuedOrRunning = (tag) => runningTag === tag || queue.items.some((i) => i.tag === tag);
   ctx.renderFooter = () => renderFooter();
 
+  // One line of input asked in the prompt box, keeping any half-typed draft.
   ctx.askLine = async function askLine(q) {
     // readline's question() would glue a half-typed draft onto the answer.
     const draft = { line: rl.line || "", cursor: rl.cursor || 0 };
@@ -498,6 +499,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     );
     return /^(y|yes|a|always)$/i.test(String(answer || "").trim());
   });
+  // A server's own requests: sampling (your OK each time) and forms (asked here).
+  setMcpClientHandlers(makeMcpClientHandlers(ctx));
 
   function clearPendingInput() {
     if (typeof rl.line === "string") rl.line = "";
