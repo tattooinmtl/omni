@@ -392,6 +392,7 @@ export async function main(args) {
       if (lost && stop === "done") { stop = "error"; error = lost; }
       if (error && !jsonOut) errorLine(error);
       if (jsonOut) jsonOut.emit(buildResult({ stop, error, messages, session, model: ctx.model, mode: getPermissionMode(), startedAt }));
+      await runHooks("SessionEnd", { reason: stop, sessionFile: session.file, headless: true }).catch(() => {});
       stopBackgroundChildren();
       await shutdown(EXIT[stop] ?? 1);
     };

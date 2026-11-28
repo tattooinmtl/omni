@@ -186,6 +186,18 @@ runs the command detached and ignores its answer.
 | `PreCompact` | `trigger` (`auto`/`manual`), `focus`, `messageCount`, `dropping` | cancel, or add focus for the summary |
 | `Stop` | `lastMessage`, `continuations` | send the agent back to work with a reason (max 3 per turn) |
 | `SubagentStop` | `agentId`, `name`, `model`, `result` | add a note to the sub-agent's result |
+| `SessionEnd` | `reason` (`exit`, or a headless run's stop), `sessionFile` | observe; runs before Omni tears down |
+
+These four run only inside Omni, from an extension's `hooks` export; a
+command hook for them is refused, since they pass the whole conversation or
+run for every token:
+
+| Event | Payload | What the handler can return |
+|---|---|---|
+| `TransformToolResult` | `tool`, `args`, `result` (the full text) | `{ result: "…" }` replaces the result for the model and the history, before `PostToolUse` sees it (`matcher` works). An image result keeps its pixels; only its text changes |
+| `PreModelCall` | `model`, `step`, `messages` (a copy), `tools` (names) | `{ messages: [...] }` to send other messages this step, or `{ additionalContext }` to add to the system message. The history is not changed |
+| `PostModelCall` | `model`, `step`, `content`, `toolCalls` (names), `usage` | `{ content: "…" }` changes what is kept in the history (what streamed is already on screen) |
+| `StreamToken` | `token` | nothing: it is called for each token without waiting. A handler that throws ten times in a row is dropped |
 
 A command hook gets that payload as JSON on stdin, plus `OMNI_HOOK_EVENT` and
 `OMNI_PROJECT_DIR` in its environment. It answers with its exit code and
@@ -215,6 +227,9 @@ export default {
     PreToolUse: { matcher: "write_file", run: ({ args }) =>
       args.path.endsWith(".lock") ? { decision: "deny", reason: "lockfiles are generated" } : undefined },
     Stop: () => undefined,
+    // Keep keys out of what the model reads.
+    TransformToolResult: ({ result }) => ({ result: result.replace(/\bsk-[\w-]{10,}/g, "[key]") }),
+    PreModelCall: ({ step }) => (step === 0 ? { additionalContext: "Prefer small commits." } : undefined),
   },
 };
 ```

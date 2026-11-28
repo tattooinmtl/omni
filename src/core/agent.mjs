@@ -31,7 +31,7 @@ import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
 } from "./context-mode.mjs";
 import fs from "node:fs";
-import { runHooks, hasHooks } from "./hooks.mjs";
+import { runHooks, hasHooks, emitStreamToken } from "./hooks.mjs";
 import { forgeCompact, planCompaction, mechanicalDigest } from "./compaction.mjs";
 import { offeredTools, loadToolsDef, loadTools, LOAD_TOOLS } from "./tool-deferral.mjs";
 import {
@@ -1173,6 +1173,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           onToken(token) {
             tokenCount++;
             router.onToken(token);
+            emitStreamToken(token);
           },
         });
       } else {
@@ -1184,9 +1185,23 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
         const shaped = evictOldImages(isLean ? shrinkOldToolResults(messages, session) : messages);
         const quiet = !hasNewImages(messages);
         const visible = hopModel.vision === true ? shaped : stripImageParts(shaped, hopModel.key, { quiet });
-        const providerMessages = hopTextTools
+        let providerMessages = hopTextTools
           ? messagesWithTextTools(stripImageParts(visible, hopModel.key, { quiet: true }), hopTools)
           : visible;
+        // PreModelCall (extensions): change what this step sends — a new
+        // message array, or text for the system message. The history in
+        // `messages` stays as it is.
+        if (hasHooks("PreModelCall")) {
+          const hook = await runHooks("PreModelCall", {
+            model: hopModel.key, step: i, messages: providerMessages.slice(),
+            tools: (hopTools || []).map((t) => t.function?.name).filter(Boolean),
+          });
+          for (const err of hook.errors) warnLine(`hook ${err}`);
+          if (hook.messages) providerMessages = hook.messages;
+          if (hook.context && providerMessages[0]?.role === "system" && typeof providerMessages[0].content === "string") {
+            providerMessages = [{ ...providerMessages[0], content: `${providerMessages[0].content}\n\n${hook.context}` }, ...providerMessages.slice(1)];
+          }
+        }
         resp = await chatStreamWithRetry({
           model: hopModel,
           settings,
@@ -1203,6 +1218,7 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
           onToken(token) {
             tokenCount++;
             if (!hopTextTools) router.onToken(token);
+            emitStreamToken(token);
           },
         });
       }
@@ -1237,6 +1253,18 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     }
 
     const msg = resp.message;
+
+    // PostModelCall (extensions): see the reply; a { content } answer changes
+    // what is kept in the history (what was streamed is already on screen).
+    if (hasHooks("PostModelCall")) {
+      const hook = await runHooks("PostModelCall", {
+        model: model.key, step: i, content: String(msg.content || ""),
+        toolCalls: (msg.tool_calls || []).map((c) => c.function?.name).filter(Boolean),
+        usage: resp.usage || null,
+      });
+      for (const err of hook.errors) warnLine(`hook ${err}`);
+      if (hook.content !== undefined) msg.content = hook.content;
+    }
 
     // Strip <think> blocks from content on EVERY path — both what gets shown
     // below and what gets stored in history (and therefore re-sent to the
@@ -1517,6 +1545,18 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // notes line up with the results they annotate.
     for (const entry of toolResults) {
       const notes = entry.hookNote ? [entry.hookNote] : [];
+      // TransformToolResult (extensions): replace the result itself, before
+      // PostToolUse hooks and the model see it. An image result keeps its
+      // pixels; only its text can change.
+      if (entry.allowed && hasHooks("TransformToolResult")) {
+        const asText = typeof entry.result === "string" ? entry.result : String(entry.result?.text ?? "");
+        const hook = await runHooks("TransformToolResult", { tool: entry.name, args: entry.args, result: asText });
+        for (const err of hook.errors) warnLine(`hook ${err}`);
+        if (hook.result !== undefined) {
+          if (typeof entry.result === "string") entry.result = hook.result;
+          else if (entry.result && typeof entry.result === "object") entry.result = { ...entry.result, text: hook.result };
+        }
+      }
       if (entry.allowed && hasHooks("PostToolUse")) {
         const text = typeof entry.result === "string" ? entry.result : JSON.stringify(entry.result?.text ?? "");
         const hook = await runHooks("PostToolUse", {

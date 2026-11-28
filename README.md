@@ -618,7 +618,14 @@ Hooks run your own command at a point in the agent loop. Put them in
 ```
 
 Events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PreCompact`, `Stop`, `SubagentStop`. The hook gets the event as JSON on
+`PreCompact`, `Stop`, `SubagentStop`, `SessionEnd`. A JS extension can also
+hook in-process:
+- `TransformToolResult` replaces a tool's result before the model sees it.
+- `PreModelCall` changes what is sent on each step.
+- `PostModelCall` sees the reply, and can change what is kept.
+- `StreamToken` sees every token as it streams.
+
+A command hook gets the event as JSON on
 stdin. Exit 2 blocks (stderr is the reason; on `Stop` it sends the agent back
 to work, up to 3 times a turn). Exit 0 with text adds that text as context.
 A project can ship `.omni/hooks.json`, which only loads once you trust the
