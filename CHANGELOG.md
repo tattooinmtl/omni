@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.32 — 2026-11-28
 
-- **Shipped:** — · — · TattooAI/context-breakdown · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#94](https://github.com/tattooinmtl/omni/pull/94) · 2f88094 · TattooAI/context-breakdown · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`/context` shows what fills the window** (new
   `src/core/context-breakdown.mjs`).
   - It splits the conversation by kind, as estimates at ~4 characters a
