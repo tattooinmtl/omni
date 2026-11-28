@@ -1,5 +1,7 @@
 // Omni extension: web search + page fetch with NO third-party API service.
-// Search uses DuckDuckGo directly (no key, no account); web_fetch reads any
+// Search tries keyless engines in turn (DuckDuckGo lite and html, Mojeek,
+// and the user's own SearXNG if set: src/integrations/web-backends.mjs),
+// moving on when one blocks or comes back empty; web_fetch reads any
 // http(s) page as Markdown.
 //
 // web_fetch also:
@@ -23,6 +25,7 @@ import { htmlToMarkdown, budgetText } from "../src/core/html-markdown.mjs";
 import { HOME } from "../src/core/config.mjs";
 import { fenceUntrusted } from "../src/core/untrusted.mjs";
 import { vendorDir } from "../src/local/runtime-pack.mjs";
+import { searchChain, formatResults } from "../src/integrations/web-backends.mjs";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Omni/0.1 (+https://localhost)";
@@ -171,44 +174,6 @@ function decodeEntities(s) {
     .replace(/&quot;/g, '"')
     .replace(/&#0?39;|&apos;/g, "'")
     .replace(/&nbsp;/g, " ");
-}
-
-// DDG lite wraps result URLs in a redirect: //duckduckgo.com/l/?uddg=<real-url>&rut=…
-function realUrl(href) {
-  const m = href.match(/[?&]uddg=([^&]+)/);
-  if (m) {
-    try { return decodeURIComponent(m[1]); } catch { /* fall through */ }
-  }
-  return href.startsWith("//") ? "https:" + href : href;
-}
-
-async function ddgLite(query, maxResults = 8) {
-  const url = "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query);
-  const res = await fetch(url, { headers: { "User-Agent": UA } });
-  if (!res.ok) return `search failed: HTTP ${res.status}`;
-  const html = await res.text();
-
-  // Links: <a rel="nofollow" href="…" class='result-link'>Title</a>
-  // Snippets follow in <td class='result-snippet'>…</td>. Quote style varies.
-  const linkRe = /<a[^>]+href=['"]([^'"]+)['"][^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>/gi;
-  const snippetRe = /class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/i;
-
-  const results = [];
-  let m;
-  while ((m = linkRe.exec(html)) !== null && results.length < maxResults) {
-    const link = realUrl(decodeEntities(m[1]));
-    const title = decodeEntities(m[2].replace(/<[^>]+>/g, "")).trim();
-    // Look for the snippet in the chunk between this link and the next one.
-    const tail = html.slice(linkRe.lastIndex, linkRe.lastIndex + 2000);
-    const sm = tail.match(snippetRe);
-    const snippet = sm
-      ? decodeEntities(sm[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()
-      : "";
-    if (title && link) {
-      results.push(`- ${title}\n  ${link}${snippet ? `\n  ${snippet}` : ""}`);
-    }
-  }
-  return results.length ? results.join("\n") : "(no results)";
 }
 
 // ---------------------------------------------------------------------------
@@ -667,12 +632,16 @@ export default {
       function: {
         name: "web_search",
         description:
-          "Search the web via DuckDuckGo (no API key, no external service account). Returns result titles, URLs, and snippets. Use for current info or docs, then read a result with web_fetch.",
+          "Search the web (no API key, no account): DuckDuckGo, then Mojeek or the user's own SearXNG when one is blocked or finds nothing. " +
+          "Returns titles, URLs and snippets, and says which engine answered. Use for current info or docs, then read a result with web_fetch.",
         parameters: {
           type: "object",
           properties: {
             query: { type: "string", description: "Search query" },
             max_results: { type: "integer", description: "Max results, default 8" },
+            site: { type: "string", description: "Only results from this site, e.g. nodejs.org" },
+            recency: { type: "string", enum: ["day", "week", "month", "year"], description: "Only results from the last day, week, month or year" },
+            region: { type: "string", description: "Region and language, e.g. us-en, fr-fr, ca-fr (default: none)" },
           },
           required: ["query"],
         },
@@ -725,15 +694,25 @@ export default {
     },
   ],
   impl: {
-    async web_search({ query, max_results = 8 }) {
+    async web_search({ query, max_results = 8, site = "", recency = "", region = "" }) {
+      const q = String(query || "").trim();
+      if (!q) return "web_search error: query is required";
       const n = Math.max(1, Math.min(Number(max_results) || 8, 30));
-      const key = String(query || "").trim().toLowerCase().replace(/\s+/g, " ") + "\u0000" + n;
+      const rec = ["day", "week", "month", "year"].includes(recency) ? recency : "";
+      const reg = /^[a-z]{2}(-[a-z]{2})?$/i.test(String(region || "")) ? String(region).toLowerCase() : "";
+      const key = [q.toLowerCase().replace(/\s+/g, " "), n, String(site || "").toLowerCase(), rec, reg].join("\u0000");
       return memo(searchMemo, key, SEARCH_TTL_MS, async () => {
         try {
-          const lite = await ddgLite(query, n);
-          if (lite && lite !== "(no results)" && !lite.startsWith("search failed")) return { value: fenceUntrusted(lite, "web search results"), keep: true };
-          const instant = await ddgInstant(query);
-          return { value: instant ? fenceUntrusted(instant, "web search results") : lite, keep: !!instant };
+          const r = await searchChain({ query: q, site, recency: rec, region: reg }, { max: n });
+          if (r.results.length) {
+            const [head, ...rest] = formatResults(r).split("\n");
+            return { value: head + "\n" + fenceUntrusted(rest.join("\n"), "web search results"), keep: true };
+          }
+          const skipped = r.tried.map((t) => `${t.backend}: ${t.why}`).join("; ");
+          // Every engine said no: DuckDuckGo's instant answers, if it has one.
+          const instant = site ? null : await ddgInstant(q).catch(() => null);
+          if (instant) return { value: `Results from ddg-instant (skipped: ${skipped}):\n` + fenceUntrusted(instant, "web search results"), keep: true };
+          return { value: `(no results: ${skipped}. Try other words, or /web test to see which engines answer.)`, keep: false };
         } catch (e) {
           return { value: "web_search error: " + e.message, keep: false };
         }

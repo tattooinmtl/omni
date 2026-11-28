@@ -8,6 +8,39 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.26 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/web-search-w2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **`web_search` doesn't depend on one endpoint (W2).** New
+  `src/integrations/web-backends.mjs`: DuckDuckGo lite, DuckDuckGo html,
+  Mojeek, and the user's own SearXNG (`web.searxngUrl`, JSON API) are tried
+  in turn. A block (HTTP 202, 403, 429, 503, or a CAPTCHA / "unusual
+  traffic" page) or an empty answer moves on to the next, and the result
+  starts with which engine answered and why the others were skipped. When
+  every engine fails it says so with each reason (and isn't cached);
+  DuckDuckGo's instant answers stay the last resort. Omni keeps its honest
+  user agent: a CAPTCHA is a reason to move on, never something to get
+  around. No keyed or paid search APIs, as Omni stays keyless.
+- New arguments: `site` (folded into the query as `site:`), `recency`
+  (day/week/month/year: DuckDuckGo `df`, SearXNG `time_range`; Mojeek says
+  it can't filter by date), `region` (DuckDuckGo `kl`, SearXNG `language`).
+  Results are deduplicated by URL (`www.`, a trailing slash, `utm_*` and
+  click ids ignored), and DuckDuckGo's sponsored links are dropped.
+- **`/web`**: shows the engines in order, `/web test` asks each one once and
+  reports ok / why it failed with its time, `/web order <ids>` puts some
+  first, `/web searxng <url>|off` sets your instance. Saved as
+  `settings.web`.
+- Found while testing: from this PC, DuckDuckGo answered 202 (rate-limited)
+  and Mojeek a CAPTCHA after a few test requests in a row. Before, that was
+  a bare "(no results)"; now it is reported, and a local SearXNG is the
+  dependable fallback.
+- Tests: `tests/web-search-w2.test.mjs` (12 cases, every engine mocked):
+  order and settings, each engine's parser, block detection, dedupe, the
+  fall-through from a blocked DDG lite to DDG html to Mojeek to SearXNG, all
+  failing (reported, not cached), site / recency / region in each engine's
+  URL (bad values dropped), and `/web` show, order, searxng and test.
+  `tests/web-fetch-w3.test.mjs` updated for the engine line.
+
 ## 3.6.25 — 2026-11-27
 
 - **Shipped:** [#87](https://github.com/tattooinmtl/omni/pull/87) · 772af94 · TattooAI/web-fetch-w3 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
