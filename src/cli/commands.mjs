@@ -53,6 +53,7 @@ import { runWebCommand } from "./web-cmd.mjs";
 import { runFallbackCommand, FALLBACK_USAGE } from "./fallback-cmd.mjs";
 import { runLoopCommand, LOOP_USAGE } from "./loop-cmd.mjs";
 import { runBgCommand, BG_USAGE } from "./bg-cmd.mjs";
+import { runBackendCommand, BACKEND_USAGE } from "./backend-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -1329,6 +1330,11 @@ export const COMMANDS = [
     name: "computer", aliases: [], usage: "/computer [on|off|status|deny <app…>|undeny <app…>|doctor]", category: "Tools",
     summary: "let the agent see and use your Windows PC (screenshots, UI tree, clicks, typing); off until /computer on, asks per app, deny list, Ctrl+Alt+Esc stops it",
     handler: (ctx, arg) => runComputerCommand(ctx, arg),
+  },
+  {
+    name: "backend", aliases: ["sandbox"], usage: BACKEND_USAGE, category: "Tools",
+    summary: "where the agent's shell commands run: this PC, a Docker container, or an SSH host",
+    handler: (ctx, arg) => runBackendCommand(ctx, arg),
   },
   {
     name: "web", aliases: [], usage: "/web [test | order <id,id,…> | searxng <url>|off]", category: "Tools",

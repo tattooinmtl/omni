@@ -25,6 +25,7 @@ import { atomicWriteFileSync } from "./atomic-write.mjs";
 import { syntheticUser, recordFor } from "./synthetic.mjs";
 import { evictOldImages, imageLabel, toolResultContent } from "./image-context.mjs";
 import { UNTRUSTED_RULE } from "./untrusted.mjs";
+import { syncBackendGuidance } from "./shell-backend.mjs";
 import { classifyFailure, triggerOf, fallbackConfig, buildChain, nextHop, hopLabel, hopMatchesModel, accountOf, rotateReadyAccount, coolDown, cooldownOf, clearCooldown, fmtWait } from "./failover.mjs";
 import {
   appendMetrics, writeState, toolBodyPath, hashToolBody, sessionStateDir,
@@ -1075,6 +1076,8 @@ export async function runTurn({ model, settings = null, messages, session, maxIt
     // The mode can change mid-turn (Shift+Tab, an approved plan), so the
     // note telling the model which mode it's in is refreshed every step.
     syncModeGuidance(messages);
+    // Likewise where its commands run (/backend: local, Docker or SSH).
+    syncBackendGuidance(messages);
 
     // Notes the user sent with /btw while this turn was running: hand them to
     // the model before its next step, so it can steer without being stopped.
