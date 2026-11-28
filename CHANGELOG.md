@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.26 — 2026-11-27
 
-- **Shipped:** — · — · TattooAI/web-search-w2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#88](https://github.com/tattooinmtl/omni/pull/88) · 70a5a56 · TattooAI/web-search-w2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`web_search` doesn't depend on one endpoint (W2).** New
   `src/integrations/web-backends.mjs`: DuckDuckGo lite, DuckDuckGo html,
   Mojeek, and the user's own SearXNG (`web.searxngUrl`, JSON API) are tried
