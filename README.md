@@ -225,6 +225,33 @@ OMNI_NVIDIA2_KEY=nvapi-yyyyyyyy
 # switch manually any time:  /switch-provider nvidia2   (alias /swp)
 ```
 
+**Provider fallback.** When a provider fails, the request goes to the next
+hop of a fallback chain instead of ending the turn. Your own model is always
+tried first, whether or not it is in the chain. What happens next depends on
+the failure:
+
+- **Rate limit (429):** the provider's other accounts are tried first, then the
+  next hop.
+- **Rejected key (401/403) or empty balance (402):** moves on at once.
+- **Server error (5xx), no reply, or dropped connection:** tried once more on
+  the same hop, then on a hop with a different endpoint.
+
+A key that failed is left alone for a while: as long as the provider's
+`retry-after` says, or 1 minute after a 429, 1 hour after a spent quota, and
+6 hours after a rejected key. Later steps and sub-agents skip it too. Once
+your own model's wait is over, the next request goes back to it.
+
+A provider that sends no reply within 120 s counts as down. Local servers
+(`localhost`) are exempt, unless that provider sets its own `timeoutMs`.
+
+```powershell
+/fallback                                    # the chain, each hop's state, what is cooling down
+/fallback set openrouter/llama-3-8b agnes/agnes-2.5-flash@agnes1   # hop = model key, @account pins one
+/fallback add <hop>    /fallback remove <n>    /fallback reset      # reset = the built-in chain
+/fallback when rate-limit server timeout auth    # which failures move on
+/fallback timeout 60   /fallback off   /fallback clear              # clear = forget the cooldowns
+```
+
 **Secrets policy.** The repo contains no keys and no user data, only
 [`settings.example.json`](settings.example.json) and
 [`.env.example`](.env.example) with empty placeholders. `agent/`, `.env` and
@@ -374,7 +401,7 @@ Enter puts it in and sends. `/help` lists everything with usage strings. Unknown
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
 | Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
-| Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
+| Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/fallback` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/computer` `/web` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |
 

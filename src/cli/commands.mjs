@@ -50,6 +50,7 @@ import { updateCommand } from "./update-cmd.mjs";
 import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runComputerCommand } from "./computer-cmd.mjs";
 import { runWebCommand } from "./web-cmd.mjs";
+import { runFallbackCommand, FALLBACK_USAGE } from "./fallback-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -1169,6 +1170,11 @@ export const COMMANDS = [
     handler: (ctx, arg) => providerCommand(ctx, arg),
   },
   {
+    name: "fallback", aliases: ["failover"], usage: FALLBACK_USAGE, category: "Models & Providers",
+    summary: "where a request goes when its provider fails: the chain, cooldowns, triggers",
+    handler: (ctx, arg) => runFallbackCommand(ctx, arg),
+  },
+  {
     name: "switch-provider", aliases: ["swp"], usage: "/switch-provider [account]", category: "Models & Providers",
     summary: "switch between provider accounts (e.g. nvidia1 / nvidia2)",
     handler: async (ctx, arg) => {
@@ -1183,7 +1189,7 @@ export const COMMANDS = [
           }
         }
         if (!any) infoLine("no provider accounts configured — add keys with /apikey nvidia1 <key> /apikey nvidia2 <key>");
-        infoLine("switch: /switch-provider <account>   (rate-limit failover between accounts is automatic)");
+        infoLine("switch: /switch-provider <account>   (rate-limit failover between accounts is automatic; /fallback for the provider chain)");
         return;
       }
       const provName = findAccountProvider(ctx.settings, target);

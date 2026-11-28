@@ -8,6 +8,51 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.27 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/provider-fallback · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Provider fallback builds on the 429 chain.** Before, it only moved on
+  after a 429, only when the session was already on a model in the
+  hardcoded nvidia → agnes → openrouter chain, and it never returned. New
+  `src/core/failover.mjs` handles failure kinds, the chain and cooldowns, and
+  `chatStreamWithRetry` (`src/core/agent.mjs`) acts on them:
+  - **The chain is a setting**, `settings.fallback.chain`: model keys,
+    `key@account` to pin an account. Without it, the old chain is used. The
+    user's own model is always tried first, even when it isn't in the chain,
+    and hops before the current one are tried after the later ones.
+  - **More failures move on.** A 429 tries the provider's other accounts,
+    then the next hop. A 401/403 or 402 moves on at once. A 5xx (500,
+    502–504, 529), a dropped or refused connection, or no reply headers
+    within `fallback.timeoutMs` (default 120 s; localhost exempt unless
+    the provider sets its own `timeoutMs`) is tried once more on the same
+    hop, then on a hop with another endpoint. `fallback.on` picks which of
+    rate-limit / server / timeout / auth move on, and `fallback.enabled:
+    false` turns it off. Account rotation on a 429 stays either way.
+  - **Per-key cooldowns.** A failing key is skipped for as long as the
+    provider's `retry-after` says, or 1 min (429), 1 h (spent quota or
+    balance), 30 s (5xx, timeout, network) or 6 h (rejected key). Every
+    request in the process shares them, so a sub-agent or the next step
+    doesn't hit the same key. A success clears its key.
+  - **Back to the user's model** once its cooldown ends
+    (`fallback.returnToPrimary`, default on), on the live provider object
+    and account.
+  - With every hop tried, the turn ends with the chain, the last error, and
+    which hops were skipped because they're cooling down. A one-hop chain
+    backs off on a 429 or 5xx as before. `self_review`'s fail-fast critic
+    keeps account rotation but not the chain, since it falls back to the
+    session's model.
+- **`/fallback`** (alias `/failover`): the chain with each hop's state
+  (ready, no key, cooling down), the model in use and the one it failed
+  over from, and the cooldowns. `set`, `add`, `remove`, `reset`, `on`/`off`,
+  `when <triggers>`, `timeout <s>` and `clear` (forget the cooldowns).
+- `provider.mjs`: HTTP errors carry `status` and `retryAfter`, and the
+  reply-headers timeout throws a `failoverKind: "timeout"` error that Esc
+  still interrupts. A hop now also copies `vision` and `maxToolIterations`
+  onto the model.
+- New `tests/provider-fallback.test.mjs` (15 checks against local mock
+  providers). `failover-429`, `race-fixes`, `self-review-model` and
+  `subagent` pass unchanged.
+
 ## 3.6.26 — 2026-11-27
 
 - **Shipped:** [#88](https://github.com/tattooinmtl/omni/pull/88) · 70a5a56 · TattooAI/web-search-w2 · session fdbf92f2-27de-4fdf-a1cb-42da54823403

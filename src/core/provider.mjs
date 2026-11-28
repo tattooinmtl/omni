@@ -239,9 +239,13 @@ export function maxTokensCapFrom(text) {
 // ceiling, lower max_tokens to it and try once more. The new cap is kept on
 // `model` for the rest of the session and reported through onTokenCap so the
 // caller can save it.
-async function postWithTokenCap(url, model, body, { signal, onTokenCap } = {}) {
+// timeoutMs: no reply headers within this long is a timeout (an Error with
+// failoverKind "timeout", which agent.mjs fails over on). Local servers are
+// exempt: llama.cpp on a CPU can take minutes over a long prompt before it
+// answers at all.
+async function postWithTokenCap(url, model, body, { signal, onTokenCap, timeoutMs = 0 } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body), signal });
+    const res = await fetchWithTimeout(url, model, { method: "POST", headers: authHeaders(model.provider), body: JSON.stringify(body) }, signal, timeoutMs);
     recordRateLimits(model.provider, res.headers, res.status);
     if (res.ok) return res;
     const text = await res.text().catch(() => "");
@@ -253,21 +257,54 @@ async function postWithTokenCap(url, model, body, { signal, onTokenCap } = {}) {
       try { onTokenCap?.(cap); } catch { /* saving is best effort */ }
       continue;
     }
-    throw new Error(formatProviderError(res, text, model));
+    const err = new Error(formatProviderError(res, text, model));
+    err.status = res.status;
+    err.retryAfter = res.headers?.get?.("retry-after") ?? null;
+    throw err;
   }
 }
 
-export async function chatStream({ model, messages, tools, signal, onToken, onTokenCap }) {
+const LOCAL_URL = /^https?:\/\/(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/|$)/i;
+
+// A provider's own `timeoutMs` (settings.providers.<name>.timeoutMs) wins
+// over the fallback setting, and applies to a local server too.
+async function fetchWithTimeout(url, model, init, signal, timeoutMs) {
+  const own = model.provider?.timeoutMs;
+  if (own != null && Number.isFinite(Number(own))) timeoutMs = Number(own);
+  else if (LOCAL_URL.test(String(model.provider?.baseUrl || ""))) timeoutMs = 0;
+  if (!(timeoutMs > 0)) return fetch(url, { ...init, signal });
+  const timer = new AbortController();
+  let timedOut = false;
+  const t = setTimeout(() => { timedOut = true; timer.abort(); }, timeoutMs);
+  // The combined signal stays in force for the body too: Esc still stops the stream.
+  const combined = !signal ? timer.signal
+    : typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timer.signal])
+    : (() => { if (signal.aborted) timer.abort(); else signal.addEventListener("abort", () => timer.abort(), { once: true }); return timer.signal; })();
+  try {
+    return await fetch(url, { ...init, signal: combined });
+  } catch (e) {
+    if (timedOut && !signal?.aborted) {
+      const err = new Error(`Provider timeout: ${model.providerName || "the provider"} sent no reply within ${Math.round(timeoutMs / 1000)}s (${model.key})`);
+      err.failoverKind = "timeout";
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export async function chatStream({ model, messages, tools, signal, onToken, onTokenCap, timeoutMs = 0 }) {
   const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/chat/completions";
   const body = buildChatBody({ model, messages, tools });
-  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap });
+  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap, timeoutMs });
   return await consumeStream(res, onToken);
 }
 
 // Template-based path: the prompt is already rendered by Jinja2.
 // Uses /v1/completions (raw text) instead of /v1/chat/completions.
 // Tool definitions are baked into the prompt; the caller parses <tool_call> XML.
-export async function completionStream({ model, prompt, signal, onToken, onTokenCap }) {
+export async function completionStream({ model, prompt, signal, onToken, onTokenCap, timeoutMs = 0 }) {
   const url = ensureValidBaseUrl(model.provider, `model ${model.key}`) + "/completions";
   const body = {
     model: model.id,
@@ -280,7 +317,7 @@ export async function completionStream({ model, prompt, signal, onToken, onToken
   applyReasoning(body, model);
   applyRequestExtras(body, model.provider?.baseUrl);
 
-  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap });
+  const res = await postWithTokenCap(url, model, body, { signal, onTokenCap, timeoutMs });
   return await consumeCompletionStream(res, onToken);
 }
 
