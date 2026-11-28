@@ -10,7 +10,7 @@ entries were rebuilt from git history).
 
 ## 3.6.34 — 2026-11-28
 
-- **Shipped:** — · — · TattooAI/acp · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **Shipped:** [#96](https://github.com/tattooinmtl/omni/pull/96) · a9924d0 · TattooAI/acp · session fdbf92f2-27de-4fdf-a1cb-42da54823403
 - **`omni --acp`: the Agent Client Protocol for editors** (new
   `src/cli/acp.mjs`). It is JSON-RPC on stdio like `--rpc`, sharing its
   stdout capture, with the UI on stderr.
