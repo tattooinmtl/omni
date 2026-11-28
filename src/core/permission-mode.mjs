@@ -97,6 +97,7 @@ export function planModeAllows(name, args = {}) {
   if (READ_ONLY_TOOLS.has(name)) return true;
   if (name === "deps") return true; // detect / list / outdated / audit only read
   if (name === "browser_tabs") return !args?.action || args.action === "list";
+  if (name === "schedule") return !args?.action || args.action === "list" || args.action === "inbox";
   if (name === "run_shell") return isReadOnlyCommand(args?.command) && !args?.allow_unsafe;
   return false;
 }

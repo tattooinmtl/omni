@@ -391,6 +391,41 @@ when there are results you haven't seen. Unattended runs never stop to ask,
 so tools set to `ask` are refused. `omni schedule list | run <id> | run-due`
 work from outside Omni too.
 
+**The agent can schedule too.** Ask it to "check the build every weekday at
+6 pm" and it uses its `schedule` tool. It can also list your jobs and read
+the inbox (`schedule` list and inbox), for example to tell you what last
+night's run found. Before it adds or removes a job, Omni shows you the
+timetable and the exact prompt and asks. A job the agent adds runs in
+default or plan mode only. A sub-agent or a scheduled run can't add jobs.
+
+### Loops and background runs
+
+```
+/loop 10m check the build and fix what broke    now, then every 10 minutes
+/loop 1h --times 3 summarize the new issues     three runs, an hour apart
+/loop 5m /inbox                                 a slash command works too
+/loop                                           the loops running here
+/loop stop <id>|all
+
+/bg run the full test suite and list what fails
+/bg --mode plan --agent reviewer review the last three commits
+/bg                                             running and finished runs
+/bg stop <id>|all
+```
+
+A `/loop` run is an ordinary prompt in this conversation. It waits in the
+queue behind a turn that is still going, like something you typed. If the
+last run is still waiting or running when the next one is due, that one is
+skipped instead of piling up. Loops last as long as the session; use
+`/schedule` for something that should run when Omni is closed.
+
+`/bg` runs the prompt in a session of its own (a headless Omni in this
+folder, on the model you're using) while you keep working here. It can't
+ask you anything, so tools set to `ask` are refused; whatever your settings
+allow, it does in this folder. When it ends, a line here says so, the result
+goes to `/inbox`, and Windows shows a notification. Up to three run at once,
+and leaving Omni stops the ones still running.
+
 ## Commands
 
 Typing `/` opens a live menu, at the start of the prompt or after any space,
@@ -400,7 +435,7 @@ Enter puts it in and sends. `/help` lists everything with usage strings. Unknown
 | Category | Commands |
 |---|---|
 | Session | `/help` `/image` `/status` `/clear` `/compact [now] [focus]` `/resume` `/history` `/fork` `/tree` `/export` `/rewind` `/cost` `/usage` `/cwd` `/config` `/version` `/exit` `/personality` `/compare-personality` `/expand-skill` `/expand` |
-| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
+| Agent | `/goal` `/effort` `/thinking` `/route` `/btw` `/diff` `/mode` `/plan` `/instructions` `/init` `/templates` `/agents` `/learned` `/schedule` `/loop` `/bg` `/inbox` `/hooks` `/memory` `/brain` `/rag` `/tools` `/perm` `/workspace` |
 | Models & Providers | `/model` `/models` `/getmodel` `/context` `/probe-contexts` `/default` `/doctor` `/addmodel` `/providers` `/provider` `/switch-provider` `/fallback` `/apikey` `/login` `/logout` `/addprovider` `/llama` `/llama-start` `/llama-stop` `/llama-restart` `/hardware` |
 | Tools | `/browser` `/computer` `/web` `/runtime` `/update-omni` `/omnibots` |
 | Packages & Integrations | `/packages` `/install` `/uninstall` `/mcp` `/connections` `/connect` `/disconnect` `/bridge` |

@@ -138,12 +138,21 @@ export function addJob(spec, { cwd = process.cwd(), home = HOME } = {}) {
   let prompt = rest;
   const opt = {};
   prompt = prompt.replace(/(^|\s)--(mode|model|agent)\s+(\S+)/g, (_, lead, k, v) => { opt[k] = v; return lead; }).trim();
-  if (!prompt) throw new Error("what should it do? Put the prompt after the time");
+  return addJobFrom({ when, prompt, ...opt }, { cwd, home });
+}
+
+// Add a job from its parts: `when` is parseWhen's object or its text. The
+// prompt is kept as it is (no --flags read out of it), which is what the
+// agent's schedule tool needs. createdBy: "user" or "agent".
+export function addJobFrom({ when, prompt, mode = null, model = null, agent = null, createdBy = "user" }, { cwd = process.cwd(), home = HOME } = {}) {
+  const w = typeof when === "string" ? parseWhen(when).when : when;
+  const text = String(prompt || "").trim();
+  if (!text) throw new Error("what should it do? Put the prompt after the time");
   const jobs = loadJobs(home);
   const job = {
-    id: newId(jobs), prompt, when, cwd: path.resolve(cwd),
-    mode: opt.mode || "default", model: opt.model || null, agent: opt.agent || null,
-    created: new Date().toISOString(), lastRun: null, lastStatus: null,
+    id: newId(jobs), prompt: text, when: w, cwd: path.resolve(cwd),
+    mode: mode || "default", model: model || null, agent: agent || null,
+    created: new Date().toISOString(), createdBy, lastRun: null, lastStatus: null,
   };
   jobs.push(job);
   saveJobs(jobs, home);
@@ -166,34 +175,45 @@ export async function runJob(id, { home = HOME, runner = runHeadlessAgent, notif
   const jobs = loadJobs(home);
   const job = jobs.find((j) => j.id === id);
   if (!job) throw new Error(`no scheduled job ${id}`);
-  const startedAt = new Date();
-  let out;
-  try {
-    out = await runner({ cwd: job.cwd, prompt: job.prompt, model: job.model, agent: job.agent, mode: job.mode });
-  } catch (e) {
-    out = { code: null, result: null, stderr: e.message };
-  }
-  const res = out.result || {};
-  const entry = {
-    job: job.id,
-    prompt: job.prompt,
-    cwd: job.cwd,
-    startedAt: startedAt.toISOString(),
-    finishedAt: new Date().toISOString(),
-    ok: Boolean(res.ok),
-    stop: res.stop || "error",
-    result: res.result || "",
-    error: res.error || (out.result ? null : `the run ended without a result (exit ${out.code}): ${String(out.stderr || "").trim().split(/\r?\n/).slice(-2).join(" ")}`),
-    session: res.session || null,
-    read: false,
-  };
-  fs.mkdirSync(inboxDir(home), { recursive: true });
-  atomicWriteFileSync(path.join(inboxDir(home), `${startedAt.toISOString().replace(/[:.]/g, "-")}-${job.id}.json`), JSON.stringify(entry, null, 2) + "\n");
+  const entry = await runAndRecord({ id: job.id, prompt: job.prompt, cwd: job.cwd, model: job.model, agent: job.agent, mode: job.mode }, { home, runner, notifyFn });
   // Re-read before saving: another job may have run at the same time.
   const fresh = loadJobs(home);
   const j = fresh.find((x) => x.id === id);
   if (j) { j.lastRun = entry.finishedAt; j.lastStatus = entry.ok ? "ok" : entry.stop; saveJobs(fresh, home); }
-  try { notifyFn(`Omni · ${job.id} ${entry.ok ? "done" : "failed"}`, (entry.ok ? entry.result : entry.error || "").slice(0, 200)); } catch { /* best effort */ }
+  return entry;
+}
+
+// Run a headless Omni and keep its result in the inbox, with a notification.
+// Shared by scheduled jobs and /bg. `signal` stops the run (/bg stop).
+// Returns the inbox entry.
+export async function runAndRecord({ id, prompt, cwd, model = null, agent = null, mode = "default", kind = "scheduled" }, { home = HOME, runner = runHeadlessAgent, notifyFn = notify, signal = null } = {}) {
+  const startedAt = new Date();
+  let out;
+  try {
+    out = await runner({ cwd, prompt, model, agent, mode, signal });
+  } catch (e) {
+    out = { code: null, result: null, stderr: e.message };
+  }
+  const res = out.result || {};
+  const stopped = Boolean(signal?.aborted);
+  const entry = {
+    job: id,
+    kind,
+    prompt,
+    cwd,
+    startedAt: startedAt.toISOString(),
+    finishedAt: new Date().toISOString(),
+    ok: !stopped && Boolean(res.ok),
+    stop: stopped ? "stopped" : res.stop || "error",
+    result: res.result || "",
+    error: stopped ? "stopped before it finished" : res.error || (out.result ? null : `the run ended without a result (exit ${out.code}): ${String(out.stderr || "").trim().split(/\r?\n/).slice(-2).join(" ")}`),
+    session: res.session || null,
+    read: false,
+  };
+  fs.mkdirSync(inboxDir(home), { recursive: true });
+  atomicWriteFileSync(path.join(inboxDir(home), `${startedAt.toISOString().replace(/[:.]/g, "-")}-${id}.json`), JSON.stringify(entry, null, 2) + "\n");
+  const verb = entry.ok ? "done" : stopped ? "stopped" : "failed";
+  try { notifyFn(`Omni · ${id} ${verb}`, (entry.ok ? entry.result : entry.error || "").slice(0, 200)); } catch { /* best effort */ }
   return entry;
 }
 
