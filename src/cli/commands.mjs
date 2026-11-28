@@ -51,6 +51,8 @@ import { runBrowserCommand } from "./browser-cmd.mjs";
 import { runComputerCommand } from "./computer-cmd.mjs";
 import { runWebCommand } from "./web-cmd.mjs";
 import { runFallbackCommand, FALLBACK_USAGE } from "./fallback-cmd.mjs";
+import { runLoopCommand, LOOP_USAGE } from "./loop-cmd.mjs";
+import { runBgCommand, BG_USAGE } from "./bg-cmd.mjs";
 import { runOmnibotsCommand } from "./omnibots-cmd.mjs";
 import { goalCommand, goalStatusLine } from "./goal.mjs";
 import { providerKeyEnvVar } from "../core/config.mjs";
@@ -706,6 +708,16 @@ export const COMMANDS = [
         console.log(`  ${c.bold(j.id)}  ${sched.describeWhen(j.when)} ${c.dim(`· ${last} · ${j.cwd}`)}\n      ${j.prompt}`);
       }
     },
+  },
+  {
+    name: "loop", aliases: [], usage: LOOP_USAGE, category: "Agent",
+    summary: "send a prompt now and again every so often, while this session is open",
+    handler: (ctx, arg) => runLoopCommand(ctx, arg),
+  },
+  {
+    name: "bg", aliases: ["background"], usage: BG_USAGE, category: "Agent",
+    summary: "run a prompt in its own session in the background; the result lands in /inbox",
+    handler: (ctx, arg) => runBgCommand(ctx, arg),
   },
   {
     name: "inbox", aliases: [], usage: "/inbox [clear]", category: "Agent",
@@ -1741,10 +1753,15 @@ export async function dispatchCommand(ctx, cmdName, arg, parts) {
 // out of the text; other /words (paths like /tmp, unknown names) stay put.
 // The task text keeps its own line breaks and indentation. Returns null when
 // the line is a single /name at its start, so the usual path handles it.
+export const REST_OF_LINE_COMMANDS = new Set(["loop", "bg", "background", "schedule"]);
+
 export function parseSlashLine(ctx, line) {
   const src = String(line || "");
   const tokens = [...src.matchAll(/\S+/g)].map((m) => ({ t: m[0], at: m.index }));
   const kindOf = (t) => (t.length > 1 && t.startsWith("/") ? slashKind(ctx, t) : "unknown");
+  // These take the rest of the line as their prompt, slash commands and all:
+  // "/loop 5m /inbox" is one /loop, not /loop then /inbox.
+  if (tokens.length && REST_OF_LINE_COMMANDS.has(tokens[0].t.slice(1).toLowerCase()) && kindOf(tokens[0].t) === "command") return null;
   const commands = [];
   let i = 0;
   while (i < tokens.length && kindOf(tokens[i].t) === "command") {

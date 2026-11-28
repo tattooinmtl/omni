@@ -43,6 +43,8 @@ import { updateNotice, refreshUpdateCacheInBackground } from "../integrations/up
 import { PasteFilter, pasteInsertion, expandPastes, PASTE_START, PASTE_END } from "./paste.mjs";
 import { createFooter, stripAnsi } from "./footer.mjs";
 import { PromptQueue, extractMouse, MOUSE_ON, MOUSE_OFF } from "./queue.mjs";
+import { stopAllLoops } from "./loop-cmd.mjs";
+import { stopAllBackground } from "./bg-cmd.mjs";
 
 // Rows of the live "/" menu visible at once (plus one hint line below them).
 export const MENU_MAX = 12;
@@ -115,7 +117,7 @@ export function wantBracketedPaste({ tty, env = process.env } = {}) {
 // only read state (or, for /btw, hand the running turn a note). Everything
 // else waits in the queue until the turn ends, since e.g. /model or /clear
 // mid-turn would pull the conversation out from under it.
-export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "usage", "limits", "quota", "version", "about"]);
+export const INSTANT_WHILE_BUSY = new Set(["btw", "help", "status", "cost", "usage", "limits", "quota", "version", "about", "bg", "loop"]);
 
 // Pull the note out of a "/btw …" line, or null when it isn't one.
 export function parseBtw(line) {
@@ -263,6 +265,7 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   let footerNote = "";       // transient hint on the box border
   let footerNoteTimer = null;
   const queue = new PromptQueue();   // prompts waiting behind the running turn
+  let runningTag = null;     // the tag of the queued item now running (/loop)
   let mouseOn = false;       // click reporting, on only while prompts are queued
   let mouseCarry = "";       // a mouse report split across stdin chunks
   let multiLine = "";
@@ -455,6 +458,16 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
   };
 
   // One line of input asked in the prompt box, keeping any half-typed draft.
+  // /loop puts its prompt in the same queue as typed ones; a tag lets it see
+  // whether its last run is still waiting or running.
+  ctx.enqueuePrompt = (text, { tag = null, display = text } = {}) => {
+    queue.add({ text, display, tag });
+    pump();
+    renderFooter();
+  };
+  ctx.isQueuedOrRunning = (tag) => runningTag === tag || queue.items.some((i) => i.tag === tag);
+  ctx.renderFooter = () => renderFooter();
+
   ctx.askLine = async function askLine(q) {
     // readline's question() would glue a half-typed draft onto the answer.
     const draft = { line: rl.line || "", cursor: rl.cursor || 0 };
@@ -964,9 +977,12 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
       while (!replClosed && (item = queue.next())) {
         renderFooter();
         try {
+          runningTag = item.tag || null;
           await handleSubmittedText(item.text, { display: item.display });
         } catch (e) {
           warnLine(e?.message || String(e));
+        } finally {
+          runningTag = null;
         }
       }
     } finally {
@@ -1139,6 +1155,8 @@ export async function startRepl(ctx, { resumeMode = false } = {}) {
     // Each step on its own: one failing teardown used to skip everything
     // after it — including shutdown() — and leave a half-closed Omi running.
     const steps = [
+      () => stopAllLoops(ctx),
+      () => { const n = stopAllBackground(ctx); if (n) infoLine(`stopped ${n} background run(s)`); },
       disconnectAll,
       disconnectBridge,
       killSidecar,

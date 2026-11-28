@@ -20,7 +20,7 @@ export class PromptQueue {
   get length() { return this.items.length; }
 
   add(item) {
-    this.items.push({ text: String(item.text ?? ""), display: String(item.display ?? item.text ?? ""), pastes: item.pastes || null });
+    this.items.push({ text: String(item.text ?? ""), display: String(item.display ?? item.text ?? ""), pastes: item.pastes || null, tag: item.tag || null });
   }
 
   // Next prompt to run, or null. Nothing leaves while one is being edited,

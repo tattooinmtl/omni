@@ -8,6 +8,48 @@ Each entry's **Shipped** line reads:
 `PR · merge commit · branch · session`. A `—` means it wasn't recorded (older
 entries were rebuilt from git history).
 
+## 3.6.28 — 2026-11-27
+
+- **Shipped:** — · — · TattooAI/agent-scheduling · session fdbf92f2-27de-4fdf-a1cb-42da54823403
+- **The agent can schedule (`schedule` tool, new `extensions/scheduling.js`).**
+  Before, it could only tell the user to type `/schedule`.
+  - `list` shows the jobs; `inbox` shows the latest finished runs, inside
+    an untrusted-content fence.
+  - `add` and `remove` ask the user every time. `add` shows the timetable,
+    the folder and the exact prompt.
+  - Only the main conversation can add or remove; a sub-agent or a
+    headless/scheduled run can't.
+  - A job the agent adds runs in default or plan mode only.
+  - In plan mode, `list` and `inbox` are allowed.
+  - New `addJobFrom` in `src/core/scheduler.mjs` takes the job's parts, so
+    `--mode` written inside a prompt is kept as text and never read as an
+    option. Jobs record `createdBy`. `/schedule add` still reads its flags.
+- **`/loop <interval> [--times N] <prompt>`** (new `src/cli/loop-cmd.mjs`)
+  sends a prompt or slash command now, then every 1 min to 24 h while the
+  session is open.
+  - It goes through the REPL's prompt queue like typed input. Queue items
+    now carry a tag, and `ctx.enqueuePrompt` / `ctx.isQueuedOrRunning` are
+    new, so a tick whose last run is still queued or running is skipped
+    instead of piling up.
+  - `/loop` lists the loops, with runs, skips and the next run. `/loop stop
+    <id>|all` ends them. At most 5 at once.
+- **`/bg <prompt>`** (alias `/background`, new `src/cli/bg-cmd.mjs`) runs the
+  prompt in a headless Omni in this folder, on the session's model.
+  - `--mode default|plan|accept-edits`, `--agent` and `--model` are allowed.
+  - When it ends, a line says so, the result goes to `/inbox`, and Windows
+    shows a notification.
+  - `/bg` lists runs; `/bg stop <id>|all` stops them. At most 3 at once.
+    Leaving Omni stops the ones still running.
+  - Scheduled jobs and `/bg` share the new `runAndRecord` (inbox entries
+    have a `kind` and record a stopped run).
+- `/loop` and `/bg` also work while a turn is running.
+- A line that starts with `/loop`, `/bg` or `/schedule` is no longer split
+  into several commands (`REST_OF_LINE_COMMANDS` in `parseSlashLine`), so
+  `/loop 5m /inbox` loops `/inbox`.
+- New `tests/agent-scheduling.test.mjs` (16 checks). `scheduler.test` passes
+  unchanged. Checked live in the REPL: `/loop 1m /version` runs `/version`
+  at once and again a minute later.
+
 ## 3.6.27 — 2026-11-27
 
 - **Shipped:** [#89](https://github.com/tattooinmtl/omni/pull/89) · 9025a42 · TattooAI/provider-fallback · session fdbf92f2-27de-4fdf-a1cb-42da54823403
