@@ -394,6 +394,26 @@ POST http://127.0.0.1:8765/v1/chat/completions   { "model": "omni", "messages": 
   header) is refused, so a site open in your browser can't drive the agent.
 - Requests run one at a time.
 
+### Omni in your editor (ACP)
+
+`omni --acp` speaks the Agent Client Protocol on stdio, so an editor with an
+agent panel can run Omni there: Zed directly, VS Code and JetBrains through
+an ACP plugin. In Zed's `settings.json`:
+
+```json
+"agent_servers": {
+  "Omni": { "command": "node", "args": ["C:/Users/<you>/.omni/app/bin/omni.mjs", "--acp"] }
+}
+```
+
+- Omni's replies stream into the panel, without think blocks.
+- Each tool call shows with its kind (read, edit, execute, …), the file it
+  touches, and its result.
+- A tool that needs your OK opens the editor's permission dialog: allow
+  once, allow for the session, or reject.
+- Files and folders you attach are passed to Omni as context.
+- Omni uses its own MCP servers, not the editor's list.
+
 ### Scheduled runs
 
 ```
